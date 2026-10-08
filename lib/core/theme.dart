@@ -27,7 +27,7 @@ class AppTheme {
         foregroundColor: scheme.onSurface,
         titleTextStyle: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: scheme.onSurface),
       ),
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         elevation: 0,
         margin: EdgeInsets.zero,
         color: scheme.surfaceContainerLow,
