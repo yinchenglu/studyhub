@@ -4,6 +4,28 @@
 
 ---
 
+## 〇、最省事的出包方式：云端编译（推荐先看这个）
+
+**电脑上什么都不用装**。本项目已内置 GitHub Actions 工作流，
+把代码推到 GitHub 后自动编译出 APK 并发布到 Release，直接下载安装即可。
+
+- 工作流文件：`.github/workflows/build-apk.yml`
+- 详细操作步骤：见工作区根目录的 `云端打包-操作指南.md`
+
+**两个必须知道的实现细节**（否则会踩坑）：
+
+1. **Flutter 版本锁定 3.24.5**。这个版本的 Android 模板使用 Groovy `build.gradle`，
+   与 `android_custom/app_build.gradle` 匹配；3.29+ 改用 `build.gradle.kts`，覆盖会失败。
+2. **`MainActivity` 由本仓库提供**（`android_custom/MainActivity.kt`）。
+   因为 `app_build.gradle` 把 namespace 定为 `com.studyhub.app`，
+   而模板生成的 `MainActivity` 在 `com.studyhub.studyhub` 下，
+   清单里的 `.MainActivity` 会解析失败导致一启动就闪退。
+   工作流会删掉模板生成的那份，换成包名正确的这一份。
+
+如果你想走**本地编译**路线（改代码后出包更快），看下面第三节开始的内容。
+
+---
+
 ## 一、这个 App 有什么
 
 底部五个菜单，全部围绕你自己的 WebDAV 服务器：

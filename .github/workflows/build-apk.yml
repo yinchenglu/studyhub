@@ -64,8 +64,23 @@ jobs:
           cp android_custom/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
           cp android_custom/app_build.gradle    android/app/build.gradle
 
-          echo "----- 覆盖后的 build.gradle 前 20 行 -----"
-          head -20 android/app/build.gradle
+          # ★ 修正 MainActivity 的包名 ★
+          # app_build.gradle 把 namespace 定为 com.studyhub.app，
+          # 而模板生成的 MainActivity 在 com.studyhub.studyhub 下，
+          # 会导致启动时找不到类而闪退。这里删掉模板的，换成包名正确的一份。
+          find android/app/src/main -name "MainActivity.kt" -delete
+          find android/app/src/main -name "MainActivity.java" -delete
+          mkdir -p android/app/src/main/kotlin/com/studyhub/app
+          cp android_custom/MainActivity.kt \
+             android/app/src/main/kotlin/com/studyhub/app/MainActivity.kt
+
+          echo "----- 包名自检 -----"
+          echo "namespace  : $(grep -m1 'namespace' android/app/build.gradle)"
+          echo "applicationId: $(grep -m1 'applicationId' android/app/build.gradle)"
+          echo "MainActivity : $(head -1 android/app/src/main/kotlin/com/studyhub/app/MainActivity.kt)"
+          echo "清单里的活动 : $(grep -m1 'android:name=\".MainActivity\"' android/app/src/main/AndroidManifest.xml)"
+          echo "确认没有残留的模板 MainActivity："
+          find android/app/src/main -name "MainActivity.*"
 
       # ---------- 5. 装依赖 ----------
       - name: 下载依赖
