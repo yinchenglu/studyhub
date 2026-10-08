@@ -8,7 +8,7 @@ on:
   push:
     branches: [main, master]
 
-# 需要写权限才能创建 Release
+# 需要写权限才能创建 Release / 推送日志分支
 permissions:
   contents: write
 
@@ -53,14 +53,10 @@ jobs:
             --project-name studyhub \
             /tmp/skeleton
 
-          # 把生成的 android/ 目录搬过来
           rm -rf android
           cp -r /tmp/skeleton/android ./android
-
-          # .metadata 让 flutter 工具链识别工程，一并带上
           cp /tmp/skeleton/.metadata ./.metadata
 
-          # 用我们的清单与构建脚本覆盖模板
           cp android_custom/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
           cp android_custom/app_build.gradle    android/app/build.gradle
 
@@ -75,28 +71,41 @@ jobs:
              android/app/src/main/kotlin/com/studyhub/app/MainActivity.kt
 
           echo "----- 包名自检 -----"
-          echo "namespace  : $(grep -m1 'namespace' android/app/build.gradle)"
+          echo "namespace    : $(grep -m1 'namespace' android/app/build.gradle)"
           echo "applicationId: $(grep -m1 'applicationId' android/app/build.gradle)"
           echo "MainActivity : $(head -1 android/app/src/main/kotlin/com/studyhub/app/MainActivity.kt)"
-          echo "清单里的活动 : $(grep -m1 'android:name=\".MainActivity\"' android/app/src/main/AndroidManifest.xml)"
-          echo "确认没有残留的模板 MainActivity："
           find android/app/src/main -name "MainActivity.*"
 
       # ---------- 5. 装依赖 ----------
       - name: 下载依赖
         run: flutter pub get
 
-      # ---------- 6. 静态检查（只看不拦）----------
+      # ---------- 6. 静态检查 ----------
+      # 结果写入 analyze.log，失败时会被推送到 ci-logs 分支便于排查。
+      # 这一步本身不阻断构建（真正的编译在下一步）。
       - name: 代码检查（不阻断构建）
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
+        run: |
+          set +e
+          flutter analyze --no-fatal-infos --no-fatal-warnings > analyze.log 2>&1
+          echo "analyze 退出码: $?"
+          echo "----- 错误行（最多 60 条）-----"
+          grep -E "error " analyze.log | head -60 || true
+          echo "----- 错误总数 -----"
+          grep -cE "error " analyze.log || true
+          exit 0
 
       # ---------- 7. 编译 ----------
+      # tee 把完整输出写进 build.log，失败时能拿到全部报错。
       - name: 编译 release APK
-        run: flutter build apk --release
+        run: |
+          set -o pipefail
+          flutter build apk --release 2>&1 | tee build.log
 
       # ---------- 8. 同时产出一个只含 arm64 的小包 ----------
       - name: 编译 arm64 精简 APK
-        run: flutter build apk --release --target-platform android-arm64
+        run: |
+          set -o pipefail
+          flutter build apk --release --target-platform android-arm64 2>&1 | tee build-arm64.log
 
       # ---------- 9. 上传产物 ----------
       - name: 上传 APK
@@ -110,8 +119,7 @@ jobs:
           if-no-files-found: warn
 
       # ---------- 10. 发布 Release ----------
-      # 好处：Release 里是直接的 .apk 文件，点一下就能下载，
-      # 不用像 Artifact 那样先下 zip 再解压。
+      # Release 里是直接的 .apk 文件，点一下就能下载，不用先下 zip 再解压。
       - name: 发布 Release
         if: success()
         uses: softprops/action-gh-release@v2
@@ -131,13 +139,53 @@ jobs:
             build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
           fail_on_unmatched_files: false
 
-      # ---------- 11. 失败时把日志也留下 ----------
-      - name: 失败时收集日志
+      # ---------- 11. 失败时：把日志推送到 ci-logs 分支 ----------
+      # 这样即使不登录 GitHub、不提供 token，也能直接读到完整的构建报错。
+      - name: 失败时导出日志到 ci-logs 分支
+        if: failure()
+        run: |
+          set +e
+          mkdir -p /tmp/logdump
+          cd "$GITHUB_WORKSPACE"
+
+          # 各种日志
+          cp analyze.log build.log build-arm64.log /tmp/logdump/ 2>/dev/null
+          cp pubspec.lock /tmp/logdump/ 2>/dev/null
+
+          # 环境诊断信息
+          flutter doctor -v > /tmp/logdump/flutter-doctor.log 2>&1
+          java -version > /tmp/logdump/java-version.log 2>&1
+          {
+            echo "===== ANDROID_SDK_ROOT ===== $ANDROID_SDK_ROOT"
+            echo "===== 已装 NDK ====="
+            ls -1 "$ANDROID_SDK_ROOT/ndk" 2>/dev/null || echo "(无 ndk 目录)"
+            echo "===== build.gradle 关键行 ====="
+            grep -nE "namespace|applicationId|minSdk|compileSdk|ndkVersion|targetSdk" android/app/build.gradle 2>/dev/null
+            echo "===== gradle wrapper 版本 ====="
+            cat android/gradle/wrapper/gradle-wrapper.properties 2>/dev/null
+          } > /tmp/logdump/env-info.log 2>&1
+
+          echo "===== 导出内容 ====="
+          ls -la /tmp/logdump/
+
+          cd /tmp/logdump
+          git init -b ci-logs -q
+          git config user.name "ci-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -Af
+          git commit -q -m "构建失败日志 $(date -u +%Y%m%dT%H%M%SZ)" || echo "无内容可提交"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -f origin ci-logs && echo "✅ 日志已推送到 ci-logs 分支"
+
+      # ---------- 12. 同时留一份 Artifact（方便人工下载）----------
+      - name: 失败时上传日志 Artifact
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
           path: |
-            android/.gradle/**
-          retention-days: 15
+            analyze.log
+            build.log
+            build-arm64.log
+          retention-days: 30
           if-no-files-found: ignore
