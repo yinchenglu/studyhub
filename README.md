@@ -12,27 +12,46 @@
 - 工作流文件：`.github/workflows/build-apk.yml`
 - 详细操作步骤：见工作区根目录的 `云端打包-操作指南.md`
 
-**核心设计：只覆盖清单，不碰 Gradle 脚本**
+**核心设计：模板骨架 + 只覆盖清单 + 注入一行打包配置**
 
 工作流先用 `flutter create` 在临时目录生成 Android 骨架，只把 `android/` 拷回来，
 然后用本仓库的 `android_custom/AndroidManifest.xml` 覆盖清单文件。
-**`android/app/build.gradle(.kts)` 保持模板原样，不做任何覆盖。**
 
-这样做的好处（都是踩过坑换来的）：
+`android/app/build.gradle(.kts)` **不覆盖**，只由脚本在 `android { }` 块开头
+**注入**下面这一段（这是唯一一处必需的改动）：
 
-1. **不怕 Flutter 换 Gradle DSL**。模板在版本之间会在 Groovy `build.gradle`
-   与 Kotlin DSL `build.gradle.kts` 之间切换；自己维护构建脚本必然失效。
-   交给模板维护后，`compileSdk`、`ndkVersion`、JDK 版本全部自动正确。
-2. **不用担心 `MainActivity` 包名对不上**。模板生成的 `MainActivity` 包名与
-   模板的 `namespace` 天然一致，清单里的 `.MainActivity` 能正确解析。
-   （曾经的做法是把 namespace 改成 `com.studyhub.app`，结果和模板生成的
-   `com.studyhub.studyhub` 对不上，App 一启动就闪退。）
-3. **release 签名开箱可用**。Flutter 模板默认给 release 包用 debug 签名，
-   不需要额外配置 keystore 就能打出可安装的 APK。
+```kotlin
+android {
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+    // ……模板原有内容保持不变
+}
+```
 
-**关于 Flutter 版本**：工作流安装的是**当前最新稳定版**（写在 `.github/workflows/build-apk.yml` 里）。
-不要随便降到旧版本 —— 本项目依赖的 `media_kit` 系媒体库要求 `compileSdk 36`，
-而这个值由 Flutter 版本决定，旧版 Flutter 给不到 36，会在 Gradle 阶段直接失败。
+| 为什么这么做 | 说明 |
+| --- | --- |
+| **① 必须注入 `useLegacyPackaging = true`** | media_kit 的 libmpv 要求 `.so` 解压到文件系统后才能加载（`media_kit_libs_android_video` 1.0.2 的 CHANGELOG 写着 "perf: enable extractNativeLibs"）。AGP 8 + minSdk≥23 默认**不**解压，libmpv 会加载失败。 |
+| **② 不能写在清单里** | 新版 AGP 在 `packageRelease` 任务里会硬报错：`Avoid setting android:extractNativeLibs="true" explicitly in AndroidManifest.xml`。必须改由 Gradle 脚本设置。 |
+| **③ 其余一律交给模板** | 模板在 Groovy `build.gradle` 与 Kotlin DSL `build.gradle.kts` 之间来回切；自己维护整套构建脚本必然失效。交给模板维护后，`compileSdk`、`ndkVersion`、`MainActivity` 包名、release 用 debug 签名全部自动正确。 |
+
+> 踩过的坑：早期版本自己维护 `app_build.gradle` + 覆盖 `MainActivity`，
+> 结果 Groovy/Kotlin DSL 切换导致覆盖失效、包名与 namespace 不一致导致 App 一启动就闪退。
+> 现在这方案把这两类问题一起消除了。
+
+**关于 Flutter 版本**：工作流**锁定 3.47.6**，不用 `latest`。两个理由：
+
+1. `media_kit` 系媒体库要求 `compileSdk 36`，该值由 Flutter 版本决定；
+   旧版（如 3.24.x 只给 34）会在 Gradle 阶段直接失败。
+2. 3.27 起 `ThemeData.cardTheme` 的参数类型由 `CardTheme` 改为 `CardThemeData`。
+   锁住版本可避免被上游变更再次打断。
+
+**APK 产物**：用 `--split-per-abi` 一次产出按 CPU 架构分包的结果 ——
+`app-arm64-v8a-release.apk`（近几年手机装这个）与 `app-armeabi-v7a-release.apk`（老机型）。
+不要用「先 build 通用包、再 build `--target-platform android-arm64`」，
+因为后者输出的文件名仍然是 `app-release.apk`，会把通用包覆盖掉。
 
 如果想走**本地编译**路线（改代码后出包更快），看下面第三节开始的内容。
 
@@ -60,10 +79,9 @@
 studyhub_app/
 ├─ pubspec.yaml                    依赖清单
 ├─ analysis_options.yaml           代码检查规则
-├─ android_custom/                 ★ 需要覆盖到 Android 工程里的两个文件
+├─ android_custom/                 ★ 需要覆盖到 Android 工程里的文件
 │   ├─ AndroidManifest.xml         权限声明（网络、相册、相机等）
-│   ├─ app_build.gradle            构建脚本（minSdk 23、签名回退、播放器兼容）
-│   └─ key.properties.example      正式签名模板
+│   └─ key.properties.example      正式签名模板（可选）
 ├─ lib/
 │   ├─ main.dart                   入口：初始化播放器内核 + 本地库
 │   ├─ app.dart                    主框架 + 底部五个菜单
@@ -132,14 +150,34 @@ cp studyhub_app_tmp/.gitignore studyhub_app/ 2>/dev/null
 
 # 4. 用我的清单覆盖 Android 声明（权限、名称、明文流量）
 cp studyhub_app/android_custom/AndroidManifest.xml studyhub_app/android/app/src/main/AndroidManifest.xml
-#    注意：不要覆盖 android/app/build.gradle(.kts)，交给 Flutter 模板自己维护
 
-# 5. 清理临时工程
+# 5. 往 build.gradle.kts 注入 media_kit 必需的打包配置
+#    只加这一段，模板原有内容不动（不能写在清单里，新版 AGP 会报错）
+python3 - <<'PY'
+import os
+path = "studyhub_app/android/app/build.gradle.kts"
+if not os.path.exists(path):
+    path = "studyhub_app/android/app/build.gradle"
+src = open(path, encoding="utf-8").read()
+assert "useLegacyPackaging" not in src, "已存在，无需重复注入"
+inject = ("android {\n"
+          "    packagingOptions {\n"
+          "        jniLibs {\n"
+          "            useLegacyPackaging = true\n"
+          "        }\n"
+          "    }\n")
+new = src.replace("android {", inject, 1)
+assert new != src, "未找到 android { 块"
+open(path, "w", encoding="utf-8").write(new)
+print("已注入 ->", path)
+PY
+
+# 6. 清理临时工程
 rm -rf studyhub_app_tmp
 ```
 
 > **更简单的方式**：如果你想少几步，也可以直接 `cd studyhub_app && flutter create --org com.studyhub --platforms=android .`，
-> 它会补齐缺失的平台文件（已存在的 `lib/` 和 `pubspec.yaml` 不会被破坏），然后再执行上面的第 4 步覆盖清单和构建脚本。
+> 它会补齐缺失的平台文件（已存在的 `lib/` 和 `pubspec.yaml` 不会被破坏），然后再执行上面的第 4、5 步。
 
 ---
 

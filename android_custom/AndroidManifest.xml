@@ -32,16 +32,16 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true"
-        android:extractNativeLibs="true"
         android:usesCleartextTraffic="true">
 
         <!--
           usesCleartextTraffic=true：允许用 http:// 连自建服务器（群晖 5005 端口、chfs 默认都是 http）
           如果你只用 https，可以删掉这一行。
 
-          extractNativeLibs=true：等价于 Gradle 的 useLegacyPackaging = true，
-          media_kit 的 libmpv 解码库需要它（插件官方文档要求）。
-          AGP 8 在未显式设置 useLegacyPackaging 时会采用本清单里的这个值。
+          注意：不要在这个清单里声明任何与「原生库解压」相关的属性。
+          新版 AGP 会直接报错（packageRelease 任务失败），要求改由 Gradle 脚本设置
+          jniLibs.useLegacyPackaging = true —— media_kit 的 libmpv 需要解压到文件系统才能加载。
+          该设置已由工作流 / README 中的构建步骤写入 android/app/build.gradle.kts。
         -->
 
         <activity

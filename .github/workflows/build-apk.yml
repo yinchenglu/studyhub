@@ -30,9 +30,11 @@ jobs:
           java-version: "17"
 
       # ---------- 3. Flutter SDK ----------
-      # 用当前最新稳定版。理由：本项目依赖的媒体库（media_kit 系）
-      # 要求 compileSdk 36，而 compileSdk 由 Flutter 版本决定。
-      # 老版本 Flutter 给不到 36，会在 Gradle 阶段直接失败。
+      # 版本刻意锁死（不用 latest）。理由：
+      #   a) media_kit 系插件要求 compileSdk 36，compileSdk 由 Flutter 版本决定，
+      #      老版本（如 3.24.x 只给 34）会在 Gradle 阶段直接失败；
+      #   b) 3.27 起 ThemeData.cardTheme 的类型从 CardTheme 改为 CardThemeData，
+      #      锁住版本可避免被上游变更再次打断。
       - name: 安装 Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -40,15 +42,24 @@ jobs:
           channel: stable
           cache: true
 
-      # ---------- 4. 生成 Android 工程骨架 ----------
+      # ---------- 4. 缓存 Gradle 依赖 ----------
+      # 每轮构建大头是重复下载 Gradle 依赖，缓存后能省 1~2 分钟。
+      - name: 缓存 Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # ---------- 5. 生成 Android 工程骨架 ----------
       # 在临时目录生成骨架，只把 android/ 拷回来，
       # 保证不会覆盖我们写好的 lib/ 和 pubspec.yaml。
       #
-      # 关键决策：只覆盖 AndroidManifest.xml，不动任何 Gradle 脚本。
-      # 原因：Flutter 模板在版本之间会在 Groovy(build.gradle) 与
-      # Kotlin DSL(build.gradle.kts) 之间切换，自己维护构建脚本极易失效。
-      # 交给模板维护后，compileSdk / ndkVersion / 签名回退（release 用 debug 签名）
-      # 全部自动正确，我们只负责声明权限。
+      # 设计决策：只覆盖 AndroidManifest.xml，Gradle 脚本一律用模板自带的，
+      # 但必须「注入」一段 jniLibs.useLegacyPackaging = true（见下方说明）。
       - name: 生成 Android 骨架并覆盖清单
         run: |
           set -e
@@ -64,33 +75,74 @@ jobs:
 
           cp android_custom/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
 
+          # ---------- 注入 jniLibs.useLegacyPackaging = true ----------
+          # 为什么必须：
+          #   media_kit 的 libmpv 要求 .so 解压到文件系统后才能加载
+          #   （media_kit_libs_android_video 1.0.2 changelog: "perf: enable extractNativeLibs"）。
+          #   AGP 8 + minSdk>=23 的默认行为是不解压（页面对齐直接 mmap），libmpv 会加载失败。
+          # 为什么不写在 AndroidManifest.xml：
+          #   新版 AGP 在 packageRelease 任务里会直接报错 ——
+          #   "Avoid setting android:extractNativeLibs=true explicitly in AndroidManifest.xml,
+          #    and instead set android.packagingOptions.jniLibs.useLegacyPackaging to true in the build script."
+          python3 - <<'PY'
+          import os
+          path = None
+          for c in ("android/app/build.gradle.kts", "android/app/build.gradle"):
+              if os.path.exists(c):
+                  path = c
+                  break
+          assert path, "找不到 android/app/build.gradle(.kts)"
+          src = open(path, encoding="utf-8").read()
+          if "useLegacyPackaging" in src:
+              print("已存在 useLegacyPackaging，跳过注入")
+          else:
+              inject = (
+                  "android {\n"
+                  "    packagingOptions {\n"
+                  "        jniLibs {\n"
+                  "            useLegacyPackaging = true\n"
+                  "        }\n"
+                  "    }\n"
+              )
+              new = src.replace("android {", inject, 1)
+              assert new != src, "未找到 android { 块，注入失败"
+              open(path, "w", encoding="utf-8").write(new)
+              print("已注入 useLegacyPackaging = true ->", path)
+          PY
+
           echo "========== 自检 =========="
-          echo "--- Android 构建脚本（模板自带，未改动）---"
-          ls -1 android/app/build.gradle* 2>/dev/null
+          echo "--- Android 构建脚本 ---"
+          ls -1 android/app/build.gradle*
+          echo "--- 注入结果（必须能看到 useLegacyPackaging = true）---"
+          grep -n "useLegacyPackaging" android/app/build.gradle* || { echo "!!! 注入失败，终止"; exit 1; }
+          echo "--- 注入后的 android 块前 16 行 ---"
+          sed -n '/^android {/,/^}/p' android/app/build.gradle* | head -16
           echo "--- namespace / applicationId ---"
-          grep -nE "namespace|applicationId" android/app/build.gradle* 2>/dev/null || true
+          grep -nE "namespace|applicationId" android/app/build.gradle* || true
           echo "--- MainActivity（模板生成，包名需与 namespace 一致）---"
           find android/app/src/main -name "MainActivity.*"
-          head -1 $(find android/app/src/main -name "MainActivity.kt" | head -1) 2>/dev/null || true
-          echo "--- 清单关键项检查（应为 2：extractNativeLibs + usesCleartextTraffic）---"
-          grep -cE "extractNativeLibs|usesCleartextTraffic" android/app/src/main/AndroidManifest.xml
-          echo "--- 清单里的启动活动 ---"
-          grep -n "MainActivity" android/app/src/main/AndroidManifest.xml
+          echo "--- 清单关键项（只应有 usesCleartextTraffic，绝不能有 extractNativeLibs）---"
+          grep -nE "usesCleartextTraffic|extractNativeLibs" android/app/src/main/AndroidManifest.xml || true
+          if grep -q "extractNativeLibs" android/app/src/main/AndroidManifest.xml; then
+            echo "!!! 清单里出现了 extractNativeLibs，会导致 packageRelease 失败"
+            exit 1
+          fi
           echo "=========================="
 
-      # ---------- 5. 装依赖 ----------
+      # ---------- 6. 装依赖 ----------
       - name: 下载依赖
         run: flutter pub get
 
-      # ---------- 6. 打印关键依赖版本（便于排查）----------
+      # ---------- 7. 打印关键依赖版本（便于排查）----------
       - name: 依赖版本速览
         run: |
           set +e
           grep -A1 -E "^  (media_kit|media_kit_video|media_kit_libs_android_video|flutter_markdown|package_info_plus|wakelock_plus|image_picker|cached_network_image|sqflite|dio|flutter_riverpod):" pubspec.lock | grep -E "^  \w|version" || true
 
-      # ---------- 7. 静态检查 ----------
+      # ---------- 8. 静态检查 ----------
       # 结果写入 analyze.log，失败时会被推送到 ci-logs 分支便于排查。
-      # 这一步本身不阻断构建（真正的编译在下一步）。
+      # 这一步本身不阻断构建（真正的编译在下一步），
+      # 但 analyze 的 error 条数就是「能否编译通过」的直接指标。
       - name: 代码检查（不阻断构建）
         run: |
           set +e
@@ -102,27 +154,22 @@ jobs:
           grep -E "^\s*error" analyze.log | head -80 || true
           exit 0
 
-      # ---------- 8. 编译 ----------
+      # ---------- 9. 编译 ----------
+      # 用 --split-per-abi 一次产出各架构独立的 APK。
+      # 注意：不要用「先 build 通用包、再 build --target-platform android-arm64」，
+      # 因为后者输出的仍然叫 app-release.apk，会把通用包覆盖掉。
       # tee 把完整输出写进 build.log，失败时能拿到全部报错。
-      - name: 编译 release APK
+      - name: 编译 APK（按 ABI 分包）
         run: |
           set -o pipefail
-          flutter build apk --release 2>&1 | tee build.log
-
-      # ---------- 9. 同时产出一个只含 arm64 的小包 ----------
-      - name: 编译 arm64 精简 APK
-        run: |
-          set -o pipefail
-          flutter build apk --release --target-platform android-arm64 2>&1 | tee build-arm64.log
+          flutter build apk --release --split-per-abi 2>&1 | tee build.log
 
       # ---------- 10. 上传产物 ----------
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
           name: studyhub-apk
-          path: |
-            build/app/outputs/flutter-apk/app-release.apk
-            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          path: build/app/outputs/flutter-apk/*-release.apk
           retention-days: 90
           if-no-files-found: warn
 
@@ -137,14 +184,13 @@ jobs:
           body: |
             自动构建产出，可直接下载安装。
 
-            - `app-release.apk` —— 通用包，兼容所有安卓手机（体积较大）
-            - `app-arm64-v8a-release.apk` —— 精简包，体积约为通用包一半；
-              近几年的手机基本都是 arm64，**优先装这个**
+            - `app-arm64-v8a-release.apk` —— 64 位 ARM，**近几年的手机基本都是这个，优先装它**
+            - `app-armeabi-v7a-release.apk` —— 32 位 ARM，老机型（约 2016 年前）才需要
 
             安装前需在手机上允许「安装未知来源应用」。
           files: |
-            build/app/outputs/flutter-apk/app-release.apk
             build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
           fail_on_unmatched_files: false
 
       # ---------- 12. 失败时：把日志推送到 ci-logs 分支 ----------
@@ -156,7 +202,7 @@ jobs:
           mkdir -p /tmp/logdump
           cd "$GITHUB_WORKSPACE"
 
-          cp analyze.log build.log build-arm64.log /tmp/logdump/ 2>/dev/null
+          cp analyze.log build.log /tmp/logdump/ 2>/dev/null
           cp pubspec.lock /tmp/logdump/ 2>/dev/null
 
           flutter doctor -v > /tmp/logdump/flutter-doctor.log 2>&1
@@ -198,6 +244,5 @@ jobs:
           path: |
             analyze.log
             build.log
-            build-arm64.log
           retention-days: 30
           if-no-files-found: ignore
