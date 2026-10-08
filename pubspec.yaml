@@ -1,0 +1,54 @@
+name: studyhub
+description: 学聚 —— 自用学习 App，资料全部存放在自己的 WebDAV 服务器
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 状态管理
+  flutter_riverpod: ^2.5.1
+
+  # 网络 + WebDAV
+  dio: ^5.7.0
+  xml: ^6.5.0
+
+  # 本地存储
+  shared_preferences: ^2.3.2
+  flutter_secure_storage: ^9.2.2
+  sqflite: ^2.3.3+1
+  path_provider: ^2.1.4
+  path: ^1.9.0
+
+  # 全格式播放器内核（libmpv），mkv / avi / flv / rmvb / ts 等都能放
+  media_kit: ^1.1.11
+  media_kit_video: ^1.2.5
+  media_kit_libs_android_video: ^1.3.6
+
+  # Markdown 阅读
+  flutter_markdown: ^0.7.3+1
+
+  # 图片 / 动图（支持 GIF、WebP 动图）与磁盘缓存
+  cached_network_image: ^3.4.1
+
+  # 工具
+  intl: ^0.19.0
+  qr_flutter: ^4.1.0
+  crypto: ^3.0.5
+  flutter_colorpicker: ^1.1.0
+  file_picker: ^8.1.2
+  image_picker: ^1.1.2
+  url_launcher: ^6.3.0
+  share_plus: ^10.0.2
+  package_info_plus: ^8.0.2
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

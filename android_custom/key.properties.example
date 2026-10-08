@@ -1,0 +1,9 @@
+# 正式签名配置模板
+# 用法：把这个文件重命名为 key.properties，放到 studyhub_app/android/ 目录下，
+#       并把下面的路径改成本机 keystore 的真实路径。
+# 不配置也能打包（会自动用 debug 签名），只是不能覆盖安装不同签名的版本。
+
+storePassword=你的keystore密码
+keyPassword=你的key密码
+keyAlias=studyhub
+storeFile=C:/Users/YCL/studyhub-key.jks

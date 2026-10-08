@@ -1,0 +1,173 @@
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../core/constants.dart';
+import '../models/models.dart';
+
+/// 本地设置 + 账号（密码单独用系统加密存储保存）
+class SettingsStore {
+  SettingsStore._();
+  static final SettingsStore instance = SettingsStore._();
+
+  static const _kAccount = 'dav_account';
+  static const _kTheme = 'theme_mode';
+  static const _kSpeed = 'playback_speed';
+  static const _kQuizCount = 'quiz_count';
+  static const _kExamCount = 'exam_count';
+  static const _kExamMinutes = 'exam_minutes';
+  static const _kCacheLimit = 'cache_limit_mb';
+  static const _kAutoNext = 'quiz_auto_next';
+  static const _kShowAnswer = 'quiz_show_answer_now';
+  static const _kLastServerCheck = 'last_server_check';
+
+  final _secure = const FlutterSecureStorage();
+  SharedPreferences? _p;
+
+  Future<void> init() async {
+    _p ??= await SharedPreferences.getInstance();
+  }
+
+  Future<SharedPreferences> get _prefs async {
+    _p ??= await SharedPreferences.getInstance();
+    return _p!;
+  }
+
+  // ----------------------------------------------------------- 账号
+
+  DavAccount? _account;
+
+  DavAccount? get account => _account;
+
+  bool get isLoggedIn => _account != null && _account!.baseUrl.isNotEmpty;
+
+  /// 从本地恢复上次登录的账号
+  Future<DavAccount?> loadAccount() async {
+    final p = await _prefs;
+    final s = p.getString(_kAccount);
+    if (s == null) return null;
+    try {
+      final j = jsonDecode(s) as Map<String, dynamic>;
+      final acc = DavAccount.fromJson(j);
+      final pwd = await _secure.read(key: acc.secretKey) ?? '';
+      _account = acc.copyWith(password: pwd);
+      return _account;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> saveAccount(DavAccount acc) async {
+    final p = await _prefs;
+    await _secure.write(key: acc.secretKey, value: acc.password);
+    await p.setString(_kAccount, jsonEncode(acc.toJson()));
+    _account = acc;
+  }
+
+  Future<void> logout() async {
+    final p = await _prefs;
+    await p.remove(_kAccount);
+    _account = null;
+  }
+
+  // ----------------------------------------------------------- 外观与偏好
+
+  Future<ThemeMode> themeMode() async {
+    final p = await _prefs;
+    switch (p.getString(_kTheme)) {
+      case 'dark':
+        return ThemeMode.dark;
+      case 'light':
+        return ThemeMode.light;
+      default:
+        return ThemeMode.system;
+    }
+  }
+
+  Future<void> setThemeMode(ThemeMode m) async {
+    final p = await _prefs;
+    await p.setString(_kTheme, m.name);
+  }
+
+  Future<double> playbackSpeed() async {
+    final p = await _prefs;
+    return p.getDouble(_kSpeed) ?? Defaults.playbackSpeed;
+  }
+
+  Future<void> setPlaybackSpeed(double v) async {
+    final p = await _prefs;
+    await p.setDouble(_kSpeed, v);
+  }
+
+  Future<int> quizCount() async {
+    final p = await _prefs;
+    return p.getInt(_kQuizCount) ?? Defaults.quizCountPerRound;
+  }
+
+  Future<void> setQuizCount(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kQuizCount, v);
+  }
+
+  Future<int> examCount() async {
+    final p = await _prefs;
+    return p.getInt(_kExamCount) ?? Defaults.examCount;
+  }
+
+  Future<void> setExamCount(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kExamCount, v);
+  }
+
+  Future<int> examMinutes() async {
+    final p = await _prefs;
+    return p.getInt(_kExamMinutes) ?? Defaults.examMinutes;
+  }
+
+  Future<void> setExamMinutes(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kExamMinutes, v);
+  }
+
+  Future<int> cacheLimitMb() async {
+    final p = await _prefs;
+    return p.getInt(_kCacheLimit) ?? Defaults.cacheLimitMb;
+  }
+
+  Future<void> setCacheLimitMb(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kCacheLimit, v);
+  }
+
+  Future<bool> autoNext() async {
+    final p = await _prefs;
+    return p.getBool(_kAutoNext) ?? false;
+  }
+
+  Future<void> setAutoNext(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kAutoNext, v);
+  }
+
+  Future<bool> showAnswerNow() async {
+    final p = await _prefs;
+    return p.getBool(_kShowAnswer) ?? true;
+  }
+
+  Future<void> setShowAnswerNow(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kShowAnswer, v);
+  }
+
+  Future<void> setLastServerCheck(String text) async {
+    final p = await _prefs;
+    await p.setString(_kLastServerCheck, text);
+  }
+
+  Future<String?> lastServerCheck() async {
+    final p = await _prefs;
+    return p.getString(_kLastServerCheck);
+  }
+}

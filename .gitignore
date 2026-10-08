@@ -1,0 +1,36 @@
+# ---- Flutter / Dart ----
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+.flutter-devtools/
+
+# ---- Android ----
+# 注意：android/ 由云端工作流的 flutter create 生成，不用提交
+# 但 android_custom/ 是必须提交的，不在忽略之列
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/debug/
+android/app/profile/
+android/app/release/
+*.jks
+*.keystore
+
+# ---- IDE ----
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 其他 ----
+*.log
+*.tmp
+*.bak

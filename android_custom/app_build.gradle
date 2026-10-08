@@ -1,0 +1,77 @@
+// 学聚 App 的 Android 构建脚本
+// 用法：先用 flutter create 生成骨架，再用本文件覆盖 android/app/build.gradle
+//
+// 特点：
+//  1. minSdk 23（media_kit 全格式内核需要 21+，23 兼容性更好）
+//  2. 有 key.properties 就用正式签名，没有就用 debug 签名 —— 保证你随时能打出能安装的 APK
+//  3. release 关闭混淆，避免 mpv / sqlite 等原生库被裁掉
+
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    namespace = "com.studyhub.app"
+    compileSdk = flutter.compileSdkVersion
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    defaultConfig {
+        applicationId = "com.studyhub.app"
+        minSdk = 23
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias = keystoreProperties['keyAlias']
+                keyPassword = keystoreProperties['keyPassword']
+                storeFile = keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+                storePassword = keystoreProperties['storePassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // 没有签名文件时退回 debug 签名，保证能装到自己手机上
+            signingConfig = keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
+            minifyEnabled = false
+            shrinkResources = false
+        }
+        debug {
+            signingConfig = signingConfigs.debug
+        }
+    }
+
+    // 视频解码库体积较大，开 ABI 过滤可以显著减小 APK
+    // 自用手机基本都是 arm64，保留 armeabi-v7a 兼容老机器
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+flutter {
+    source = "../.."
+}

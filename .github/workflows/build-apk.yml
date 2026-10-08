@@ -1,0 +1,128 @@
+name: 编译 APK
+
+# 什么时候触发：
+#   1. 在 GitHub 网页上点 "Run workflow" 手动触发
+#   2. 往 main / master 分支推代码时自动触发
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+# 需要写权限才能创建 Release
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建 release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ---------- 1. 拉取源码 ----------
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      # ---------- 2. JDK 17（Gradle 编译安卓必须 17）----------
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # ---------- 3. Flutter SDK ----------
+      # 固定 3.24.5 是有意的：
+      #   这个版本的 Android 模板用 Groovy build.gradle，
+      #   和本项目 android_custom/app_build.gradle 完全对得上。
+      #   换成 3.29+ 模板改用 build.gradle.kts，覆盖会失败。
+      - name: 安装 Flutter 3.24.5
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.5"
+          channel: stable
+          cache: true
+
+      # ---------- 4. 生成 Android 工程骨架 ----------
+      # 关键：在临时目录生成骨架，只把 android/ 拷回来。
+      # 这样绝对不会碰到我们写好的 lib/ 和 pubspec.yaml。
+      - name: 生成 Android 骨架并覆盖配置
+        run: |
+          set -e
+          flutter create \
+            --org com.studyhub \
+            --platforms=android \
+            --project-name studyhub \
+            /tmp/skeleton
+
+          # 把生成的 android/ 目录搬过来
+          rm -rf android
+          cp -r /tmp/skeleton/android ./android
+
+          # .metadata 让 flutter 工具链识别工程，一并带上
+          cp /tmp/skeleton/.metadata ./.metadata
+
+          # 用我们的清单与构建脚本覆盖模板
+          cp android_custom/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          cp android_custom/app_build.gradle    android/app/build.gradle
+
+          echo "----- 覆盖后的 build.gradle 前 20 行 -----"
+          head -20 android/app/build.gradle
+
+      # ---------- 5. 装依赖 ----------
+      - name: 下载依赖
+        run: flutter pub get
+
+      # ---------- 6. 静态检查（只看不拦）----------
+      - name: 代码检查（不阻断构建）
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
+
+      # ---------- 7. 编译 ----------
+      - name: 编译 release APK
+        run: flutter build apk --release
+
+      # ---------- 8. 同时产出一个只含 arm64 的小包 ----------
+      - name: 编译 arm64 精简 APK
+        run: flutter build apk --release --target-platform android-arm64
+
+      # ---------- 9. 上传产物 ----------
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: studyhub-apk
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          retention-days: 90
+          if-no-files-found: warn
+
+      # ---------- 10. 发布 Release ----------
+      # 好处：Release 里是直接的 .apk 文件，点一下就能下载，
+      # 不用像 Artifact 那样先下 zip 再解压。
+      - name: 发布 Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: 学聚 APK v${{ github.run_number }}
+          body: |
+            自动构建产出，可直接下载安装。
+
+            - `app-release.apk` —— 通用包，兼容所有安卓手机（体积较大）
+            - `app-arm64-v8a-release.apk` —— 精简包，体积约为通用包一半；
+              近几年的手机基本都是 arm64，**优先装这个**
+
+            安装前需在手机上允许「安装未知来源应用」。
+          files: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          fail_on_unmatched_files: false
+
+      # ---------- 11. 失败时把日志也留下 ----------
+      - name: 失败时收集日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            android/.gradle/**
+          retention-days: 15
+          if-no-files-found: ignore
