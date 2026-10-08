@@ -159,7 +159,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: (_ok ? scheme.primaryContainer : scheme.errorContainer).withOpacity(0.5),
+                color: (_ok ? scheme.primaryContainer : scheme.errorContainer).withValues(alpha: 0.5),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Row(

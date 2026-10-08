@@ -304,25 +304,25 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     final picked = mine.contains(j);
     final isRight = q.answer.contains(j);
 
-    Color bg = scheme.surfaceContainerHighest.withOpacity(0.35);
+    Color bg = scheme.surfaceContainerHighest.withValues(alpha: 0.35);
     Color border = Colors.transparent;
     Color fg = scheme.onSurface;
     IconData? icon;
 
     if (_submitted) {
       if (isRight) {
-        bg = const Color(0xFF1D9E75).withOpacity(0.14);
+        bg = const Color(0xFF1D9E75).withValues(alpha: 0.14);
         border = const Color(0xFF1D9E75);
         fg = const Color(0xFF0F6E56);
         icon = Icons.check_circle;
       } else if (picked) {
-        bg = scheme.errorContainer.withOpacity(0.5);
+        bg = scheme.errorContainer.withValues(alpha: 0.5);
         border = scheme.error;
         fg = scheme.error;
         icon = Icons.cancel;
       }
     } else if (picked) {
-      bg = scheme.primaryContainer.withOpacity(0.55);
+      bg = scheme.primaryContainer.withValues(alpha: 0.55);
       border = scheme.primary;
     }
 
@@ -336,7 +336,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
           decoration: BoxDecoration(
             color: bg,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: border == Colors.transparent ? scheme.outlineVariant.withOpacity(0.5) : border, width: 1),
+            border: Border.all(color: border == Colors.transparent ? scheme.outlineVariant.withValues(alpha: 0.5) : border, width: 1),
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -347,7 +347,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: picked || (_submitted && isRight) ? scheme.primary.withOpacity(0.15) : scheme.surface,
+                  color: picked || (_submitted && isRight) ? scheme.primary.withValues(alpha: 0.15) : scheme.surface,
                   border: Border.all(color: scheme.outlineVariant),
                 ),
                 child: Text(String.fromCharCode(65 + j), style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: fg)),
@@ -369,7 +369,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: (correct ? const Color(0xFF1D9E75) : scheme.error).withOpacity(0.08),
+        color: (correct ? const Color(0xFF1D9E75) : scheme.error).withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -401,7 +401,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
-        border: Border(top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5), width: 0.6)),
+        border: Border(top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5), width: 0.6)),
       ),
       child: SafeArea(
         top: false,
@@ -466,7 +466,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
                         decoration: BoxDecoration(
                           color: _choices.containsKey(k)
                               ? Theme.of(context).colorScheme.primaryContainer
-                              : Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                              : Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
                           borderRadius: BorderRadius.circular(8),
                           border: k == _i ? Border.all(color: Theme.of(context).colorScheme.primary, width: 1.5) : null,
                         ),
@@ -512,7 +512,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: (score >= 60 ? const Color(0xFF1D9E75) : scheme.error).withOpacity(0.12),
+                  color: (score >= 60 ? const Color(0xFF1D9E75) : scheme.error).withValues(alpha: 0.12),
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -599,7 +599,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
 
   Widget _tag(String text, Color color) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(6)),
+        decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
         child: Text(text, style: TextStyle(fontSize: 11.5, color: color)),
       );
 }

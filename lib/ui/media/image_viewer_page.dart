@@ -103,7 +103,7 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
       right: 0,
       child: SafeArea(
         child: Container(
-          color: Colors.black.withOpacity(0.35),
+          color: Colors.black.withValues(alpha: 0.35),
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
           child: Row(
             children: [
@@ -143,7 +143,7 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
       right: 0,
       child: SafeArea(
         child: Container(
-          color: Colors.black.withOpacity(0.35),
+          color: Colors.black.withValues(alpha: 0.35),
           padding: const EdgeInsets.symmetric(vertical: 10),
           child: Center(
             child: Text('${_index + 1} / ${widget.images.length}', style: const TextStyle(color: Colors.white70, fontSize: 13)),

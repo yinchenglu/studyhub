@@ -180,7 +180,7 @@ class _NotesPageState extends ConsumerState<NotesPage> {
                       : isImg
                           ? const Color(0xFF1D9E75)
                           : const Color(0xFF7F77DD))
-                  .withOpacity(0.12),
+                  .withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(

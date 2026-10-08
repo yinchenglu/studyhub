@@ -32,11 +32,16 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true"
+        android:extractNativeLibs="true"
         android:usesCleartextTraffic="true">
 
         <!--
           usesCleartextTraffic=true：允许用 http:// 连自建服务器（群晖 5005 端口、chfs 默认都是 http）
           如果你只用 https，可以删掉这一行。
+
+          extractNativeLibs=true：等价于 Gradle 的 useLegacyPackaging = true，
+          media_kit 的 libmpv 解码库需要它（插件官方文档要求）。
+          AGP 8 在未显式设置 useLegacyPackaging 时会采用本清单里的这个值。
         -->
 
         <activity

@@ -114,7 +114,7 @@ class _UnitConverterPageState extends State<UnitConverterPage> {
             width: double.infinity,
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.4),
+              color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.4),
               borderRadius: BorderRadius.circular(14),
             ),
             child: Column(
@@ -251,7 +251,7 @@ class _TimestampPageState extends State<TimestampPage> {
               width: double.infinity,
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.35),
+                color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.35),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: SelectableText(_out, style: const TextStyle(fontSize: 15, height: 1.6)),
@@ -370,7 +370,7 @@ class _LotteryPageState extends State<LotteryPage> {
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.4), borderRadius: BorderRadius.circular(14)),
+              decoration: BoxDecoration(color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.4), borderRadius: BorderRadius.circular(14)),
               child: Column(
                 children: [
                   const Text('抽签结果', style: TextStyle(fontSize: 12)),
@@ -434,7 +434,7 @@ class _PomodoroPageState extends State<PomodoroPage> {
               width: 220,
               height: 220,
               alignment: Alignment.center,
-              decoration: BoxDecoration(shape: BoxShape.circle, color: color.withOpacity(0.1), border: Border.all(color: color.withOpacity(0.4), width: 3)),
+              decoration: BoxDecoration(shape: BoxShape.circle, color: color.withValues(alpha: 0.1), border: Border.all(color: color.withValues(alpha: 0.4), width: 3)),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -636,7 +636,7 @@ class _MorsePageState extends State<MorsePage> {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5), borderRadius: BorderRadius.circular(12)),
+            decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5), borderRadius: BorderRadius.circular(12)),
             child: SelectableText(_out.isEmpty ? '结果会显示在这里' : _out, style: const TextStyle(fontFamily: 'monospace', fontSize: 16, height: 1.7)),
           ),
         ],
@@ -735,7 +735,7 @@ class _CipherPageState extends State<CipherPage> {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5), borderRadius: BorderRadius.circular(12)),
+            decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5), borderRadius: BorderRadius.circular(12)),
             child: SelectableText(_out.isEmpty ? '结果' : _out, style: const TextStyle(fontFamily: 'monospace', fontSize: 14, height: 1.6)),
           ),
           const SizedBox(height: 10),
@@ -893,7 +893,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.35), borderRadius: BorderRadius.circular(14)),
+            decoration: BoxDecoration(color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.35), borderRadius: BorderRadius.circular(14)),
             child: SelectableText(_result, style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w600)),
           ),
           const SizedBox(height: 20),

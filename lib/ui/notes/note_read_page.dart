@@ -147,14 +147,14 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                             placeholder: (_, __) => Container(
                               height: 120,
                               alignment: Alignment.center,
-                              color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.4),
+                              color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
                               child: const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2)),
                             ),
                             errorWidget: (_, url, err) => Container(
                               height: 90,
                               alignment: Alignment.center,
                               decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.errorContainer.withOpacity(0.4),
+                                color: Theme.of(context).colorScheme.errorContainer.withValues(alpha: 0.4),
                                 borderRadius: BorderRadius.circular(10),
                               ),
                               child: Text('图片加载失败：${baseName(url)}', style: const TextStyle(fontSize: 12)),
@@ -170,12 +170,12 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                     h2: const TextStyle(fontSize: 19, fontWeight: FontWeight.w600, height: 1.5),
                     h3: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
                     blockquoteDecoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
                       borderRadius: BorderRadius.circular(8),
                       border: Border(left: BorderSide(color: Theme.of(context).colorScheme.primary, width: 3)),
                     ),
                     codeblockDecoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.55),
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
                       borderRadius: BorderRadius.circular(8),
                     ),
                   ),

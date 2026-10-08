@@ -40,7 +40,7 @@ class ToolsPage extends ConsumerWidget {
         children: [
           Container(
             padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(color: scheme.primaryContainer.withOpacity(0.35), borderRadius: BorderRadius.circular(14)),
+            decoration: BoxDecoration(color: scheme.primaryContainer.withValues(alpha: 0.35), borderRadius: BorderRadius.circular(14)),
             child: Row(
               children: [
                 Icon(Icons.offline_bolt_outlined, size: 18, color: scheme.primary),
@@ -79,7 +79,7 @@ class ToolsPage extends ConsumerWidget {
                       children: [
                         Container(
                           padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(color: t.color.withOpacity(0.12), borderRadius: BorderRadius.circular(12)),
+                          decoration: BoxDecoration(color: t.color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)),
                           child: Icon(t.icon, color: t.color, size: 22),
                         ),
                         const SizedBox(height: 10),

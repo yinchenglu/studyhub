@@ -463,7 +463,7 @@ class WebDavClient {
   /// 断点下载：已下载部分会继续，支持取消
   Future<void> download(String rel, String savePath, {CancelToken? cancelToken, void Function(int, int)? onProgress}) async {
     try {
-      final dir = Directory(savePath.substring(0, savePath.lastIndexOf(File.separator)));
+      final dir = Directory(savePath.substring(0, savePath.lastIndexOf(Platform.pathSeparator)));
       if (!await dir.exists()) await dir.create(recursive: true);
       await _dio.download(
         urlFor(rel),

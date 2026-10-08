@@ -382,7 +382,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                 ),
               ),
               // 亮度遮罩（左半屏上下滑动的效果）
-              if (_dim > 0) Positioned.fill(child: IgnorePointer(child: Container(color: Colors.black.withOpacity(_dim)))),
+              if (_dim > 0) Positioned.fill(child: IgnorePointer(child: Container(color: Colors.black.withValues(alpha: _dim)))),
 
               if (_buffering && _error == null) const Center(child: CircularProgressIndicator(color: Colors.white70)),
 
@@ -424,7 +424,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   Widget _seekPreview(BoxConstraints c) => Center(
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-          decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(12)),
+          decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.7), borderRadius: BorderRadius.circular(12)),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -441,7 +441,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         right: 0,
         child: SafeArea(
           child: Container(
-            color: Colors.black.withOpacity(0.35),
+            color: Colors.black.withValues(alpha: 0.35),
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
             child: Row(
               children: [
@@ -515,7 +515,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         right: 0,
         child: SafeArea(
           child: Container(
-            color: Colors.black.withOpacity(0.4),
+            color: Colors.black.withValues(alpha: 0.4),
             padding: const EdgeInsets.fromLTRB(12, 4, 12, 6),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -589,7 +589,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                     padding: const EdgeInsets.only(bottom: 2),
                     child: Text(
                       '双击左右快进快退 · 左右滑拖进度 · 右半屏上下滑音量 · 左半屏上下滑亮度 · 长按 2 倍速',
-                      style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 10.5),
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 10.5),
                     ),
                   ),
               ],
@@ -606,7 +606,7 @@ class _Badge extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(color: Colors.black.withOpacity(0.6), borderRadius: BorderRadius.circular(20)),
+        decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.6), borderRadius: BorderRadius.circular(20)),
         child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 12)),
       );
 }

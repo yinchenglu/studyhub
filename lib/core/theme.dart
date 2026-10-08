@@ -36,7 +36,7 @@ class AppTheme {
       listTileTheme: const ListTileThemeData(minVerticalPadding: 8, contentPadding: EdgeInsets.symmetric(horizontal: 16)),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: scheme.surfaceContainerHighest.withOpacity(0.45),
+        fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
       ),
@@ -47,7 +47,7 @@ class AppTheme {
           textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
         ),
       ),
-      dividerTheme: DividerThemeData(color: scheme.outlineVariant.withOpacity(0.5), thickness: 0.6, space: 1),
+      dividerTheme: DividerThemeData(color: scheme.outlineVariant.withValues(alpha: 0.5), thickness: 0.6, space: 1),
       snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
     );
   }

@@ -30,25 +30,30 @@ jobs:
           java-version: "17"
 
       # ---------- 3. Flutter SDK ----------
-      # 固定 3.24.5 是有意的：
-      #   这个版本的 Android 模板用 Groovy build.gradle，
-      #   和本项目 android_custom/app_build.gradle 完全对得上。
-      #   换成 3.29+ 模板改用 build.gradle.kts，覆盖会失败。
-      - name: 安装 Flutter 3.24.5
+      # 用当前最新稳定版。理由：本项目依赖的媒体库（media_kit 系）
+      # 要求 compileSdk 36，而 compileSdk 由 Flutter 版本决定。
+      # 老版本 Flutter 给不到 36，会在 Gradle 阶段直接失败。
+      - name: 安装 Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.5"
+          flutter-version: "3.47.6"
           channel: stable
           cache: true
 
       # ---------- 4. 生成 Android 工程骨架 ----------
-      # 关键：在临时目录生成骨架，只把 android/ 拷回来。
-      # 这样绝对不会碰到我们写好的 lib/ 和 pubspec.yaml。
-      - name: 生成 Android 骨架并覆盖配置
+      # 在临时目录生成骨架，只把 android/ 拷回来，
+      # 保证不会覆盖我们写好的 lib/ 和 pubspec.yaml。
+      #
+      # 关键决策：只覆盖 AndroidManifest.xml，不动任何 Gradle 脚本。
+      # 原因：Flutter 模板在版本之间会在 Groovy(build.gradle) 与
+      # Kotlin DSL(build.gradle.kts) 之间切换，自己维护构建脚本极易失效。
+      # 交给模板维护后，compileSdk / ndkVersion / 签名回退（release 用 debug 签名）
+      # 全部自动正确，我们只负责声明权限。
+      - name: 生成 Android 骨架并覆盖清单
         run: |
           set -e
           flutter create \
-            --org com.studyhub \
+            --org com.yinchenglu \
             --platforms=android \
             --project-name studyhub \
             /tmp/skeleton
@@ -58,29 +63,32 @@ jobs:
           cp /tmp/skeleton/.metadata ./.metadata
 
           cp android_custom/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
-          cp android_custom/app_build.gradle    android/app/build.gradle
 
-          # ★ 修正 MainActivity 的包名 ★
-          # app_build.gradle 把 namespace 定为 com.studyhub.app，
-          # 而模板生成的 MainActivity 在 com.studyhub.studyhub 下，
-          # 会导致启动时找不到类而闪退。这里删掉模板的，换成包名正确的一份。
-          find android/app/src/main -name "MainActivity.kt" -delete
-          find android/app/src/main -name "MainActivity.java" -delete
-          mkdir -p android/app/src/main/kotlin/com/studyhub/app
-          cp android_custom/MainActivity.kt \
-             android/app/src/main/kotlin/com/studyhub/app/MainActivity.kt
-
-          echo "----- 包名自检 -----"
-          echo "namespace    : $(grep -m1 'namespace' android/app/build.gradle)"
-          echo "applicationId: $(grep -m1 'applicationId' android/app/build.gradle)"
-          echo "MainActivity : $(head -1 android/app/src/main/kotlin/com/studyhub/app/MainActivity.kt)"
+          echo "========== 自检 =========="
+          echo "--- Android 构建脚本（模板自带，未改动）---"
+          ls -1 android/app/build.gradle* 2>/dev/null
+          echo "--- namespace / applicationId ---"
+          grep -nE "namespace|applicationId" android/app/build.gradle* 2>/dev/null || true
+          echo "--- MainActivity（模板生成，包名需与 namespace 一致）---"
           find android/app/src/main -name "MainActivity.*"
+          head -1 $(find android/app/src/main -name "MainActivity.kt" | head -1) 2>/dev/null || true
+          echo "--- 清单关键项检查（应为 2：extractNativeLibs + usesCleartextTraffic）---"
+          grep -cE "extractNativeLibs|usesCleartextTraffic" android/app/src/main/AndroidManifest.xml
+          echo "--- 清单里的启动活动 ---"
+          grep -n "MainActivity" android/app/src/main/AndroidManifest.xml
+          echo "=========================="
 
       # ---------- 5. 装依赖 ----------
       - name: 下载依赖
         run: flutter pub get
 
-      # ---------- 6. 静态检查 ----------
+      # ---------- 6. 打印关键依赖版本（便于排查）----------
+      - name: 依赖版本速览
+        run: |
+          set +e
+          grep -A1 -E "^  (media_kit|media_kit_video|media_kit_libs_android_video|flutter_markdown|package_info_plus|wakelock_plus|image_picker|cached_network_image|sqflite|dio|flutter_riverpod):" pubspec.lock | grep -E "^  \w|version" || true
+
+      # ---------- 7. 静态检查 ----------
       # 结果写入 analyze.log，失败时会被推送到 ci-logs 分支便于排查。
       # 这一步本身不阻断构建（真正的编译在下一步）。
       - name: 代码检查（不阻断构建）
@@ -88,26 +96,26 @@ jobs:
           set +e
           flutter analyze --no-fatal-infos --no-fatal-warnings > analyze.log 2>&1
           echo "analyze 退出码: $?"
-          echo "----- 错误行（最多 60 条）-----"
-          grep -E "error " analyze.log | head -60 || true
           echo "----- 错误总数 -----"
-          grep -cE "error " analyze.log || true
+          grep -cE "^\s*error" analyze.log || true
+          echo "----- 错误明细（最多 80 条）-----"
+          grep -E "^\s*error" analyze.log | head -80 || true
           exit 0
 
-      # ---------- 7. 编译 ----------
+      # ---------- 8. 编译 ----------
       # tee 把完整输出写进 build.log，失败时能拿到全部报错。
       - name: 编译 release APK
         run: |
           set -o pipefail
           flutter build apk --release 2>&1 | tee build.log
 
-      # ---------- 8. 同时产出一个只含 arm64 的小包 ----------
+      # ---------- 9. 同时产出一个只含 arm64 的小包 ----------
       - name: 编译 arm64 精简 APK
         run: |
           set -o pipefail
           flutter build apk --release --target-platform android-arm64 2>&1 | tee build-arm64.log
 
-      # ---------- 9. 上传产物 ----------
+      # ---------- 10. 上传产物 ----------
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
@@ -118,7 +126,7 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-      # ---------- 10. 发布 Release ----------
+      # ---------- 11. 发布 Release ----------
       # Release 里是直接的 .apk 文件，点一下就能下载，不用先下 zip 再解压。
       - name: 发布 Release
         if: success()
@@ -139,7 +147,7 @@ jobs:
             build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
           fail_on_unmatched_files: false
 
-      # ---------- 11. 失败时：把日志推送到 ci-logs 分支 ----------
+      # ---------- 12. 失败时：把日志推送到 ci-logs 分支 ----------
       # 这样即使不登录 GitHub、不提供 token，也能直接读到完整的构建报错。
       - name: 失败时导出日志到 ci-logs 分支
         if: failure()
@@ -148,21 +156,25 @@ jobs:
           mkdir -p /tmp/logdump
           cd "$GITHUB_WORKSPACE"
 
-          # 各种日志
           cp analyze.log build.log build-arm64.log /tmp/logdump/ 2>/dev/null
           cp pubspec.lock /tmp/logdump/ 2>/dev/null
 
-          # 环境诊断信息
           flutter doctor -v > /tmp/logdump/flutter-doctor.log 2>&1
           java -version > /tmp/logdump/java-version.log 2>&1
           {
+            echo "===== Flutter 版本 ====="; flutter --version 2>&1
             echo "===== ANDROID_SDK_ROOT ===== $ANDROID_SDK_ROOT"
-            echo "===== 已装 NDK ====="
-            ls -1 "$ANDROID_SDK_ROOT/ndk" 2>/dev/null || echo "(无 ndk 目录)"
-            echo "===== build.gradle 关键行 ====="
-            grep -nE "namespace|applicationId|minSdk|compileSdk|ndkVersion|targetSdk" android/app/build.gradle 2>/dev/null
+            echo "===== 已装 NDK ====="; ls -1 "$ANDROID_SDK_ROOT/ndk" 2>/dev/null || echo "(无 ndk 目录)"
+            echo "===== 已装 Android Platform ====="; ls -1 "$ANDROID_SDK_ROOT/platforms" 2>/dev/null
+            echo "===== Android 构建脚本 ====="
+            ls -1 android/app/build.gradle* 2>/dev/null
+            cat android/app/build.gradle 2>/dev/null || cat android/app/build.gradle.kts 2>/dev/null
+            echo "===== settings 脚本 ====="
+            cat android/settings.gradle 2>/dev/null || cat android/settings.gradle.kts 2>/dev/null
             echo "===== gradle wrapper 版本 ====="
             cat android/gradle/wrapper/gradle-wrapper.properties 2>/dev/null
+            echo "===== 清单 ====="
+            cat android/app/src/main/AndroidManifest.xml 2>/dev/null
           } > /tmp/logdump/env-info.log 2>&1
 
           echo "===== 导出内容 ====="
@@ -175,9 +187,9 @@ jobs:
           git add -Af
           git commit -q -m "构建失败日志 $(date -u +%Y%m%dT%H%M%SZ)" || echo "无内容可提交"
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-          git push -f origin ci-logs && echo "✅ 日志已推送到 ci-logs 分支"
+          git push -f origin ci-logs && echo "日志已推送到 ci-logs 分支"
 
-      # ---------- 12. 同时留一份 Artifact（方便人工下载）----------
+      # ---------- 13. 同时留一份 Artifact（方便人工下载）----------
       - name: 失败时上传日志 Artifact
         if: failure()
         uses: actions/upload-artifact@v4

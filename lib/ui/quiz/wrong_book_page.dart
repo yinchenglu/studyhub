@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/utils.dart';
 import '../../data/models/models.dart';
+import '../../data/repositories/quiz_repo.dart';
 import '../../providers/providers.dart';
 import 'answer_page.dart';
 
@@ -159,7 +160,7 @@ class _WrongBookPageState extends ConsumerState<WrongBookPage> {
                         height: 30,
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          color: items[i].mastered ? const Color(0xFF1D9E75).withOpacity(0.14) : scheme.errorContainer.withOpacity(0.5),
+                          color: items[i].mastered ? const Color(0xFF1D9E75).withValues(alpha: 0.14) : scheme.errorContainer.withValues(alpha: 0.5),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: items[i].mastered
@@ -243,10 +244,10 @@ class _WrongDetailPage extends ConsumerWidget {
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
                 color: record.answer.contains(j)
-                    ? const Color(0xFF1D9E75).withOpacity(0.12)
+                    ? const Color(0xFF1D9E75).withValues(alpha: 0.12)
                     : record.lastChoice.contains(j)
-                        ? scheme.errorContainer.withOpacity(0.35)
-                        : scheme.surfaceContainerHighest.withOpacity(0.3),
+                        ? scheme.errorContainer.withValues(alpha: 0.35)
+                        : scheme.surfaceContainerHighest.withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Row(
@@ -262,7 +263,7 @@ class _WrongDetailPage extends ConsumerWidget {
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(color: scheme.surfaceContainerHighest.withOpacity(0.4), borderRadius: BorderRadius.circular(12)),
+              decoration: BoxDecoration(color: scheme.surfaceContainerHighest.withValues(alpha: 0.4), borderRadius: BorderRadius.circular(12)),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -326,7 +327,7 @@ class _WrongDetailPage extends ConsumerWidget {
 
   Widget _chip(String text, Color color) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(6)),
+        decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
         child: Text(text, style: TextStyle(fontSize: 11.5, color: color)),
       );
 }

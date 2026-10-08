@@ -19,7 +19,7 @@ class ServerGuidePage extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: scheme.primaryContainer.withOpacity(0.45),
+              color: scheme.primaryContainer.withValues(alpha: 0.45),
               borderRadius: BorderRadius.circular(14),
             ),
             child: Column(
@@ -67,7 +67,7 @@ class ServerGuidePage extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           Card(
-            color: scheme.surfaceContainerHighest.withOpacity(0.4),
+            color: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Row(
@@ -99,7 +99,7 @@ class _TreeCard extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withOpacity(0.5),
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -143,7 +143,7 @@ class _DirTile extends StatelessWidget {
           Container(
             margin: const EdgeInsets.only(top: 3),
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(color: scheme.primaryContainer.withOpacity(0.6), borderRadius: BorderRadius.circular(6)),
+            decoration: BoxDecoration(color: scheme.primaryContainer.withValues(alpha: 0.6), borderRadius: BorderRadius.circular(6)),
             child: Text(dir, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
           ),
           const SizedBox(width: 10),

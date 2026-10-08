@@ -12,17 +12,29 @@
 - 工作流文件：`.github/workflows/build-apk.yml`
 - 详细操作步骤：见工作区根目录的 `云端打包-操作指南.md`
 
-**两个必须知道的实现细节**（否则会踩坑）：
+**核心设计：只覆盖清单，不碰 Gradle 脚本**
 
-1. **Flutter 版本锁定 3.24.5**。这个版本的 Android 模板使用 Groovy `build.gradle`，
-   与 `android_custom/app_build.gradle` 匹配；3.29+ 改用 `build.gradle.kts`，覆盖会失败。
-2. **`MainActivity` 由本仓库提供**（`android_custom/MainActivity.kt`）。
-   因为 `app_build.gradle` 把 namespace 定为 `com.studyhub.app`，
-   而模板生成的 `MainActivity` 在 `com.studyhub.studyhub` 下，
-   清单里的 `.MainActivity` 会解析失败导致一启动就闪退。
-   工作流会删掉模板生成的那份，换成包名正确的这一份。
+工作流先用 `flutter create` 在临时目录生成 Android 骨架，只把 `android/` 拷回来，
+然后用本仓库的 `android_custom/AndroidManifest.xml` 覆盖清单文件。
+**`android/app/build.gradle(.kts)` 保持模板原样，不做任何覆盖。**
 
-如果你想走**本地编译**路线（改代码后出包更快），看下面第三节开始的内容。
+这样做的好处（都是踩过坑换来的）：
+
+1. **不怕 Flutter 换 Gradle DSL**。模板在版本之间会在 Groovy `build.gradle`
+   与 Kotlin DSL `build.gradle.kts` 之间切换；自己维护构建脚本必然失效。
+   交给模板维护后，`compileSdk`、`ndkVersion`、JDK 版本全部自动正确。
+2. **不用担心 `MainActivity` 包名对不上**。模板生成的 `MainActivity` 包名与
+   模板的 `namespace` 天然一致，清单里的 `.MainActivity` 能正确解析。
+   （曾经的做法是把 namespace 改成 `com.studyhub.app`，结果和模板生成的
+   `com.studyhub.studyhub` 对不上，App 一启动就闪退。）
+3. **release 签名开箱可用**。Flutter 模板默认给 release 包用 debug 签名，
+   不需要额外配置 keystore 就能打出可安装的 APK。
+
+**关于 Flutter 版本**：工作流安装的是**当前最新稳定版**（写在 `.github/workflows/build-apk.yml` 里）。
+不要随便降到旧版本 —— 本项目依赖的 `media_kit` 系媒体库要求 `compileSdk 36`，
+而这个值由 Flutter 版本决定，旧版 Flutter 给不到 36，会在 Gradle 阶段直接失败。
+
+如果想走**本地编译**路线（改代码后出包更快），看下面第三节开始的内容。
 
 ---
 
@@ -118,9 +130,9 @@ cp -r studyhub_app_tmp/android studyhub_app/
 cp studyhub_app_tmp/.metadata studyhub_app/ 2>/dev/null
 cp studyhub_app_tmp/.gitignore studyhub_app/ 2>/dev/null
 
-# 4. 用我的清单与构建脚本覆盖 Android 配置
+# 4. 用我的清单覆盖 Android 声明（权限、名称、明文流量）
 cp studyhub_app/android_custom/AndroidManifest.xml studyhub_app/android/app/src/main/AndroidManifest.xml
-cp studyhub_app/android_custom/app_build.gradle        studyhub_app/android/app/build.gradle
+#    注意：不要覆盖 android/app/build.gradle(.kts)，交给 Flutter 模板自己维护
 
 # 5. 清理临时工程
 rm -rf studyhub_app_tmp

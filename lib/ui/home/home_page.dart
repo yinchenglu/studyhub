@@ -66,7 +66,7 @@ class _NotLoggedInView extends ConsumerWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 24, 16, 32),
       children: [
-        Icon(Icons.cloud_sync_outlined, size: 56, color: scheme.primary.withOpacity(0.8)),
+        Icon(Icons.cloud_sync_outlined, size: 56, color: scheme.primary.withValues(alpha: 0.8)),
         const SizedBox(height: 12),
         Text('先把你的 WebDAV 服务器连上', textAlign: TextAlign.center, style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
         const SizedBox(height: 6),
@@ -108,7 +108,7 @@ class _NotLoggedInView extends ConsumerWidget {
                     width: double.infinity,
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: scheme.surfaceContainerHighest.withOpacity(0.5),
+                      color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: const SelectableText(
@@ -313,7 +313,7 @@ class _LoggedInView extends ConsumerWidget {
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: scheme.errorContainer.withOpacity(0.6),
+                      color: scheme.errorContainer.withValues(alpha: 0.6),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Icon(Icons.error_outline, color: scheme.error, size: 22),
@@ -428,9 +428,9 @@ class _Chip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
+          color: color.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: color.withOpacity(0.35), width: 0.6),
+          border: Border.all(color: color.withValues(alpha: 0.35), width: 0.6),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -526,7 +526,7 @@ class _StatsSkeleton extends StatelessWidget {
   Widget _box(BuildContext context) => Container(
         height: 84,
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.4),
+          color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
           borderRadius: BorderRadius.circular(14),
         ),
       );

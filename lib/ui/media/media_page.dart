@@ -174,7 +174,7 @@ class _MediaPageState extends ConsumerState<MediaPage> {
             leading: Container(
               width: 44,
               height: 44,
-              decoration: BoxDecoration(color: const Color(0xFF7F77DD).withOpacity(0.12), borderRadius: BorderRadius.circular(10)),
+              decoration: BoxDecoration(color: const Color(0xFF7F77DD).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(10)),
               child: const Icon(Icons.folder_rounded, color: Color(0xFF7F77DD)),
             ),
             title: Text(e.name),
@@ -264,7 +264,7 @@ class _MediaPageState extends ConsumerState<MediaPage> {
         width: 56,
         height: 44,
         decoration: BoxDecoration(
-          color: const Color(0xFF7F77DD).withOpacity(0.1),
+          color: const Color(0xFF7F77DD).withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Icon(icon, color: const Color(0xFF7F77DD), size: 20),

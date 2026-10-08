@@ -230,7 +230,7 @@ class _NoteEditPageState extends ConsumerState<NoteEditPage> {
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
       decoration: BoxDecoration(
         color: scheme.surfaceContainerLow,
-        border: Border(top: BorderSide(color: scheme.outlineVariant.withOpacity(0.5), width: 0.6)),
+        border: Border(top: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5), width: 0.6)),
       ),
       child: SafeArea(
         top: false,
@@ -244,13 +244,12 @@ class _NoteEditPageState extends ConsumerState<NoteEditPage> {
               _tb(Icons.format_list_bulleted, '列表', () => _insert('\n- 条目')),
               _tb(Icons.format_list_numbered, '编号', () => _insert('\n1. 条目')),
               _tb(Icons.check_box_outlined, '待办', () => _insert('\n- [ ] 待办')),
-              _tb(Icons.quote, '引用', () => _insert('\n> 引用\n')),
+              _tb(Icons.format_quote, '引用', () => _insert('\n> 引用\n')),
               _tb(Icons.code, '代码', () => _insert('\n```\n代码\n```\n')),
               _tb(Icons.table_chart_outlined, '表格', () => _insert('\n| 列1 | 列2 |\n| --- | --- |\n| 内容 | 内容 |\n')),
               _tb(Icons.link, '链接', () => _insert('[标题](https://)')),
               _tb(Icons.image_outlined, '插图', _pickImage),
               _tb(Icons.horizontal_rule, '分割线', () => _insert('\n---\n')),
-              _tb(Icons.undo, '撤销', () => _ctrl.undo()),
             ],
           ),
         ),

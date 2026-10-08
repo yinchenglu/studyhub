@@ -5,9 +5,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/local/db.dart';
 import '../../data/models/models.dart';
+import '../../data/repositories/quiz_repo.dart';
 import '../../providers/providers.dart';
 import '../home/login_page.dart';
 import 'answer_page.dart';
+import 'wrong_book_page.dart';
 
 /// 刷题：自动识别服务器 quiz 目录下的每套题库
 class QuizPage extends ConsumerStatefulWidget {
@@ -119,7 +121,7 @@ class _QuizPageState extends ConsumerState<QuizPage> {
             child: ListTile(
               leading: Container(
                 padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(color: scheme.errorContainer.withOpacity(0.6), borderRadius: BorderRadius.circular(10)),
+                decoration: BoxDecoration(color: scheme.errorContainer.withValues(alpha: 0.6), borderRadius: BorderRadius.circular(10)),
                 child: Icon(Icons.rule_folder_outlined, color: scheme.error, size: 20),
               ),
               title: const Text('错题本'),
@@ -165,7 +167,7 @@ class _QuizPageState extends ConsumerState<QuizPage> {
                       Container(
                         width: 44,
                         height: 44,
-                        decoration: BoxDecoration(color: const Color(0xFFEF9F27).withOpacity(0.14), borderRadius: BorderRadius.circular(11)),
+                        decoration: BoxDecoration(color: const Color(0xFFEF9F27).withValues(alpha: 0.14), borderRadius: BorderRadius.circular(11)),
                         child: Icon(b.isWordBank ? Icons.abc : Icons.quiz_outlined, color: const Color(0xFFEF9F27)),
                       ),
                       const SizedBox(width: 14),
