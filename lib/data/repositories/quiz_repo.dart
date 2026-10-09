@@ -25,6 +25,9 @@ class QuizRepo {
 
   String get _root => AppDirs.quiz;
 
+  /// 列出某个相对目录下的直接子项（子目录 + 文件），刷题页的目录浏览用
+  Future<List<DavEntry>> listChildren(String sub) => dav.list(joinPath(_root, sub), depth: 1);
+
   /// 题库概览：每个子目录 = 一套题库
   Future<List<QuestionBank>> listBanks() async {
     final List<DavEntry> dirs;

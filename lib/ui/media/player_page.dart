@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import '../../core/downloader.dart';
 import '../../core/utils.dart';
 import '../../data/local/db.dart';
 import '../../data/local/settings_store.dart';
@@ -133,6 +134,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   Future<void> _saveProgress() async {
     if (_duration.inMilliseconds <= 0) return;
     try {
+      // 「设置 → 保存浏览记录」关掉后不再写入进度
+      if (!await SettingsStore.instance.saveViewHistory()) return;
       await AppDb.instance.saveProgress(_current.path, _position.inMilliseconds, _duration.inMilliseconds);
     } catch (_) {}
   }
@@ -176,37 +179,16 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     }
   }
 
-  /// 下载当前视频到本地（离线看）
+  /// 下载当前视频到「设置 → 下载目录」
   Future<void> _download() async {
     final client = ref.read(davClientProvider);
-    if (client == null) return;
-    final file = await CacheManager.instance.downloadedFile(_current.path);
-    if (await file.exists()) {
-      _toast('已经在本地了：${file.path}');
-      return;
-    }
-    final controller = showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => StatefulBuilder(
-        builder: (context, setD) => AlertDialog(
-          title: Text('下载 ${_current.name}', maxLines: 1, overflow: TextOverflow.ellipsis),
-          content: const SizedBox(
-            height: 70,
-            child: Center(child: Text('正在下载，请保持网络连接…', style: TextStyle(fontSize: 13))),
-          ),
-        ),
-      ),
+    if (client == null || !mounted) return;
+    await Downloader.withUi(
+      context,
+      client.urlFor(_current.path),
+      _current.name,
+      headers: client.headers,
     );
-    try {
-      await client.download(_current.path, file.path, onProgress: (a, b) {});
-      if (mounted) Navigator.of(context).pop();
-      _toast('已下载，离线也能看');
-    } catch (e) {
-      if (mounted) Navigator.of(context).pop();
-      _toast('下载失败：$e');
-    }
-    unawaited(controller);
   }
 
   void _toast(String s) {

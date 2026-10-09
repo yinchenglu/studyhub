@@ -12,6 +12,12 @@ class AppDirs {
 
   static const List<String> all = [notes, media, quiz, tools, backup];
 
+  /// 笔记配图统一放在「笔记所在目录」下的这个子目录里，方便集中管理
+  static const String imageDirName = 'image';
+
+  /// 列表里不显示的目录（配图目录属于附属资源，只让 .md 笔记可见）
+  static const Set<String> hiddenDirNames = {imageDirName};
+
   /// 目录用途说明（未登录首页的引导卡片直接用它渲染）
   static const Map<String, String> usage = {
     notes: '笔记：每篇一个 .md 文件，配图放同一目录；子目录就是分类',
@@ -69,4 +75,7 @@ class Defaults {
   static const int examMinutes = 40;
   static const int cacheLimitMb = 2048; // 缓存上限 2GB
   static const int scanMaxDepth = 4; // 媒体库最大扫描深度
+
+  /// 默认下载目录（Android）：系统「下载」目录下的 StudyHub 文件夹
+  static const String androidDownloadFolder = 'StudyHub';
 }

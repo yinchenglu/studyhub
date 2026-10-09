@@ -6,7 +6,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../../core/constants.dart';
 import '../models/models.dart';
+import 'settings_store.dart';
 
 /// 本地 SQLite：错题本、播放进度、收藏、媒体索引缓存
 class AppDb {
@@ -292,13 +294,56 @@ class CacheManager {
     return _cacheDir!;
   }
 
+  /// 默认下载目录：Android 放系统「下载 / StudyHub」，其他平台放应用文档目录
+  static Future<String> defaultDownloadPath() async {
+    if (Platform.isAndroid) {
+      try {
+        final base = await getExternalStorageDirectory();
+        if (base != null) {
+          const mark = '/Android/';
+          final i = base.path.indexOf(mark);
+          final root = i > 0 ? base.path.substring(0, i) : base.path;
+          return p.join(root, 'Download', Defaults.androidDownloadFolder);
+        }
+      } catch (_) {}
+      return '/storage/emulated/0/Download/${Defaults.androidDownloadFolder}';
+    }
+    final docs = await getApplicationDocumentsDirectory();
+    return p.join(docs.path, Defaults.androidDownloadFolder);
+  }
+
+  /// 应用专属目录：不需要任何权限，一定能写；缺点是文件管理器里不太好找
+  static Future<String> appPrivateDownloadPath() async {
+    try {
+      final base = await getExternalStorageDirectory();
+      if (base != null) return p.join(base.path, Defaults.androidDownloadFolder);
+    } catch (_) {}
+    final docs = await getApplicationDocumentsDirectory();
+    return p.join(docs.path, Defaults.androidDownloadFolder);
+  }
+
   /// 用户主动下载的离线文件（和临时缓存分开，清理缓存不会删掉它）
+  /// 目录可以在「设置 → 下载目录」里改
   Future<Directory> get downloadDir async {
     if (_downloadDir != null) return _downloadDir!;
-    final base = await getApplicationDocumentsDirectory();
-    _downloadDir = Directory(p.join(base.path, 'downloads'));
-    if (!await _downloadDir!.exists()) await _downloadDir!.create(recursive: true);
-    return _downloadDir!;
+    var target = (await SettingsStore.instance.downloadDirPath())?.trim() ?? '';
+    if (target.isEmpty) target = await defaultDownloadPath();
+    final d = Directory(target);
+    if (!await d.exists()) await d.create(recursive: true);
+    _downloadDir = d;
+    return d;
+  }
+
+  /// 设置里改过下载目录后调用，下次重新解析
+  void resetDownloadDirCache() => _downloadDir = null;
+
+  /// 当前下载目录的路径字符串（设置页展示用，解析失败时给个兜底值）
+  Future<String> downloadDirPath() async {
+    try {
+      return (await downloadDir).path;
+    } catch (_) {
+      return await defaultDownloadPath();
+    }
   }
 
   /// 缓存文件命名：路径 hash + 原文件名，避免中文与重名

@@ -138,6 +138,7 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                               images: [resolved.toString()],
                               headers: repo?.authHeaders ?? const {},
                               initialIndex: 0,
+                              titles: [baseName(resolved.path)],
                             ),
                           )),
                           child: CachedNetworkImage(

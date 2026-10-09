@@ -16,10 +16,10 @@ class NotesPage extends ConsumerStatefulWidget {
   const NotesPage({super.key});
 
   @override
-  ConsumerState<NotesPage> createState() => _NotesPageState();
+  ConsumerState<NotesPage> createState() => NotesPageState();
 }
 
-class _NotesPageState extends ConsumerState<NotesPage> {
+class NotesPageState extends ConsumerState<NotesPage> {
   /// 当前所在子目录（相对 notes），空串表示根
   String _sub = '';
   bool _loading = false;
@@ -31,6 +31,36 @@ class _NotesPageState extends ConsumerState<NotesPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  /// 从别的菜单切进来 / 再次点「笔记」时调用：回到根目录并刷新
+  Future<void> reload() async {
+    if (_sub.isNotEmpty || _flatAll) {
+      setState(() {
+        _sub = '';
+        _flatAll = false;
+      });
+    }
+    await _load();
+  }
+
+  /// 手机返回键：优先返回上级目录；已经在本页根目录时返回 false，交给外层处理
+  bool handleBack() {
+    if (_flatAll) {
+      setState(() => _flatAll = false);
+      _load();
+      return true;
+    }
+    if (_sub.isNotEmpty) {
+      _goUp();
+      return true;
+    }
+    return false;
+  }
+
+  void _goUp() {
+    setState(() => _sub = parentOf(_sub));
+    _load();
   }
 
   Future<void> _load() async {
@@ -74,8 +104,20 @@ class _NotesPageState extends ConsumerState<NotesPage> {
   @override
   Widget build(BuildContext context) {
     final logged = ref.watch(accountProvider).isLoggedIn;
+    // 登录成功后自动拉一次内容（App 启动时往往还没登录，那时列表是空的）
+    ref.listen(accountProvider.select((s) => s.isLoggedIn), (prev, next) {
+      if (next && prev != next) _load();
+    });
     return Scaffold(
+      automaticallyImplyLeading: false,
       appBar: AppBar(
+        leading: _sub.isNotEmpty
+            ? IconButton(
+                tooltip: '返回上级目录',
+                onPressed: _goUp,
+                icon: const Icon(Icons.arrow_back),
+              )
+            : null,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -317,9 +359,9 @@ class _NotesPageState extends ConsumerState<NotesPage> {
     if (repo == null) return;
     setState(() => _loading = true);
     try {
-      final name = await repo.uploadImage(_sub, x.path, baseName(x.path));
+      final rel = await repo.uploadImage(_sub, x.path, baseName(x.path));
       await _load();
-      _toast('已上传 $name（在笔记里写 ![]($name) 即可引用）');
+      _toast('已存到 $rel，笔记里写 ![]($rel) 就能引用');
     } catch (e) {
       _toast('上传失败：$e');
     } finally {

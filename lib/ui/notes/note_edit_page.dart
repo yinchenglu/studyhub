@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../core/constants.dart';
 import '../../core/utils.dart';
 import '../../providers/providers.dart';
 
@@ -91,6 +92,14 @@ class _NoteEditPageState extends ConsumerState<NoteEditPage> {
     );
   }
 
+  /// 当前笔记相对 notes 的目录（'' 表示 notes 根目录）
+  String _noteDirSub() {
+    final dir = parentOf(widget.path); // notes 或 notes/子目录
+    if (dir == AppDirs.notes) return '';
+    if (dir.startsWith('${AppDirs.notes}/')) return dir.substring(AppDirs.notes.length + 1);
+    return '';
+  }
+
   Future<void> _pickImage() async {
     final picker = ImagePicker();
     final source = await showModalBottomSheet<ImageSource>(
@@ -114,10 +123,11 @@ class _NoteEditPageState extends ConsumerState<NoteEditPage> {
 
     setState(() => _saving = true);
     try {
-      final dirSub = parentOf(widget.path).replaceFirst('notes/', '');
-      final name = await repo.uploadImage(dirSub, x.path, baseName(x.path));
-      _insert('\n![${name.split('.').first}]($name)\n');
-      _toast('图片已上传，插入的是相对路径，换设备也能正常显示');
+      // 图片统一存到「当前笔记目录 / image」下，markdown 里引用 image/xxx.png
+      final rel = await repo.uploadImage(_noteDirSub(), x.path, baseName(x.path));
+      final alt = baseName(rel).split('.').first;
+      _insert('\n![$alt]($rel)\n');
+      _toast('图片已存到 image 目录，已插入引用 ![]($rel)');
     } catch (e) {
       _toast('上传失败：$e');
     } finally {

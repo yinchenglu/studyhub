@@ -1,7 +1,7 @@
 name: studyhub
 description: 学聚 —— 自用学习 App，资料全部存放在自己的 WebDAV 服务器
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -43,9 +43,12 @@ dependencies:
   flutter_colorpicker: ^1.1.0
   image_picker: ^1.1.2
 
-  # 说明：以下依赖原本已声明但代码中从未使用，为保证首次编译顺利已移除，
+  # 下载到自定义目录时的存储权限申请
+  permission_handler: ^11.3.1
+
+  # 说明：以下依赖原本声明过但代码中未使用，为保证首次编译顺利已移除，
   # 需要时随时加回来即可：
-  #   file_picker, share_plus, package_info_plus, permission_handler, url_launcher
+  #   file_picker, share_plus, package_info_plus, url_launcher
 
 dev_dependencies:
   flutter_lints: ^4.0.0

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
+import '../../data/local/settings_store.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
 import 'server_guide_page.dart';
@@ -25,6 +26,65 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   bool _busy = false;
   String? _msg;
   bool _ok = false;
+
+  /// 用过的服务器地址（不含用户名密码）
+  List<DavAccount> _history = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+  }
+
+  /// 预填上次用过的服务器地址；用户名和密码一律留空，由用户自己填
+  Future<void> _loadHistory() async {
+    final list = await SettingsStore.instance.recentServers();
+    if (!mounted) return;
+    setState(() => _history = list);
+    if (list.isNotEmpty && _url.text.trim().isEmpty) {
+      final first = list.first;
+      _alias.text = first.alias.isEmpty ? '我的服务器' : first.alias;
+      _url.text = first.baseUrl;
+      _root.text = first.root;
+    }
+  }
+
+  void _showHistory() {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(bottom: 6),
+              child: Text('用过的服务器地址', style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            for (final s in _history)
+              ListTile(
+                leading: const Icon(Icons.dns_outlined),
+                title: Text(s.alias.isEmpty ? s.baseUrl : s.alias),
+                subtitle: Text('${s.baseUrl}\n根目录 ${s.root}', style: const TextStyle(fontSize: 11.5)),
+                isThreeLine: true,
+                onTap: () {
+                  Navigator.pop(context);
+                  setState(() {
+                    _alias.text = s.alias.isEmpty ? '我的服务器' : s.alias;
+                    _url.text = s.baseUrl;
+                    _root.text = s.root;
+                    // 用户名 / 密码保持为空
+                    _user.clear();
+                    _pwd.clear();
+                  });
+                },
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -88,6 +148,12 @@ class _LoginPageState extends ConsumerState<LoginPage> {
       appBar: AppBar(
         title: const Text('连接 WebDAV 服务器'),
         actions: [
+          if (_history.isNotEmpty)
+            IconButton(
+              tooltip: '用过的服务器地址',
+              icon: const Icon(Icons.history),
+              onPressed: _showHistory,
+            ),
           TextButton.icon(
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ServerGuidePage())),
             icon: const Icon(Icons.folder_open, size: 18),

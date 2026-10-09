@@ -111,6 +111,10 @@ final accountProvider = StateNotifierProvider<AccountNotifier, AccountState>((re
 /// 当前登录用的 WebDAV 客户端（未登录为 null）
 final davClientProvider = Provider<WebDavClient?>((ref) => ref.watch(accountProvider).client);
 
+/// 底部导航当前选中的下标。
+/// 首页的四宫格点了以后直接切到对应模块，这样返回键的行为和点底部菜单完全一致。
+final tabIndexProvider = StateProvider<int>((ref) => 0);
+
 // ------------------------------------------------------------- 各模块仓库
 
 final noteRepoProvider = Provider<NoteRepo?>((ref) {

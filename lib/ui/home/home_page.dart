@@ -3,12 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme.dart';
 import '../../core/utils.dart';
+import '../../data/local/db.dart';
 import '../../providers/providers.dart';
-import '../media/media_page.dart';
-import '../notes/notes_page.dart';
-import '../quiz/quiz_page.dart';
 import '../quiz/wrong_book_page.dart';
-import '../tools/tools_page.dart';
 import 'login_page.dart';
 import 'server_guide_page.dart';
 import 'settings_page.dart';
@@ -261,7 +258,7 @@ class _LoggedInView extends ConsumerWidget {
                     unit: '篇',
                     icon: Icons.description_outlined,
                     color: ModuleColors.notes,
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NotesPage())),
+                    onTap: () => _goTab(ref, 1),
                   ),
                   const SizedBox(width: 12),
                   _StatTile(
@@ -270,7 +267,7 @@ class _LoggedInView extends ConsumerWidget {
                     unit: '个',
                     icon: Icons.movie_outlined,
                     color: ModuleColors.media,
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MediaPage())),
+                    onTap: () => _goTab(ref, 2),
                   ),
                 ],
               ),
@@ -283,7 +280,7 @@ class _LoggedInView extends ConsumerWidget {
                     unit: '套',
                     icon: Icons.quiz_outlined,
                     color: ModuleColors.quiz,
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const QuizPage())),
+                    onTap: () => _goTab(ref, 3),
                   ),
                   const SizedBox(width: 12),
                   _StatTile(
@@ -292,7 +289,7 @@ class _LoggedInView extends ConsumerWidget {
                     unit: '个',
                     icon: Icons.widgets_outlined,
                     color: ModuleColors.tools,
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ToolsPage())),
+                    onTap: () => _goTab(ref, 4),
                   ),
                 ],
               ),
@@ -341,13 +338,35 @@ class _LoggedInView extends ConsumerWidget {
         ),
         const SizedBox(height: 16),
 
+        // ---- 服务器目录规范 ----
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.account_tree_outlined),
+            title: const Text('服务器目录规范'),
+            subtitle: const Text('每个目录放什么、怎么建'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ServerGuidePage())),
+          ),
+        ),
+        const SizedBox(height: 16),
+
         // ---- 最近浏览 ----
         Row(
           children: [
             Text('最近浏览', style: text.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
             const Spacer(),
+            recent.maybeWhen(
+              data: (list) => list.isEmpty
+                  ? const SizedBox.shrink()
+                  : TextButton.icon(
+                      onPressed: () => _clearRecent(context, ref),
+                      icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                      label: const Text('清除'),
+                    ),
+              orElse: () => const SizedBox.shrink(),
+            ),
             TextButton(
-              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MediaPage())),
+              onPressed: () => _goTab(ref, 2),
               child: const Text('去媒体库'),
             ),
           ],
@@ -377,7 +396,7 @@ class _LoggedInView extends ConsumerWidget {
                             style: const TextStyle(fontSize: 12),
                           ),
                           trailing: const Icon(Icons.chevron_right, size: 18),
-                          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MediaPage())),
+                          onTap: () => _goTab(ref, 2),
                         ),
                       ],
                     ],
@@ -385,31 +404,29 @@ class _LoggedInView extends ConsumerWidget {
                 ),
           orElse: () => const SizedBox.shrink(),
         ),
-        const SizedBox(height: 20),
-
-        // ---- 设置入口 ----
-        Card(
-          child: Column(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.settings_outlined),
-                title: const Text('软件设置'),
-                subtitle: const Text('账号、缓存、播放、刷题偏好'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage())),
-              ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.account_tree_outlined),
-                title: const Text('服务器目录规范'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ServerGuidePage())),
-              ),
-            ],
-          ),
-        ),
       ],
     );
+  }
+
+  /// 切到底部菜单的某个模块（返回键行为因此和点底部菜单完全一致）
+  void _goTab(WidgetRef ref, int i) => ref.read(tabIndexProvider.notifier).state = i;
+
+  /// 清空「最近浏览」和所有播放进度
+  Future<void> _clearRecent(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('清除浏览记录？'),
+        content: const Text('会清空「最近浏览」，同时把每个视频的观看进度归零。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('清除')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await AppDb.instance.clearProgress();
+    ref.invalidate(recentProvider);
   }
 }
 

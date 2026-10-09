@@ -22,6 +22,9 @@ class SettingsStore {
   static const _kAutoNext = 'quiz_auto_next';
   static const _kShowAnswer = 'quiz_show_answer_now';
   static const _kLastServerCheck = 'last_server_check';
+  static const _kSaveHistory = 'save_view_history';
+  static const _kDownloadDir = 'download_dir';
+  static const _kRecentServers = 'recent_servers';
 
   final _secure = const FlutterSecureStorage();
   SharedPreferences? _p;
@@ -64,12 +67,50 @@ class SettingsStore {
     await _secure.write(key: acc.secretKey, value: acc.password);
     await p.setString(_kAccount, jsonEncode(acc.toJson()));
     _account = acc;
+    await rememberServer(acc);
   }
 
+  /// 退出登录：只清账号本体。
+  /// 已登录过的「服务器地址」保留下来，下次打开登录页可以直接选，用户名密码留空。
   Future<void> logout() async {
     final p = await _prefs;
     await p.remove(_kAccount);
     _account = null;
+  }
+
+  // ----------------------------------------------------------- 历史服务器地址
+
+  /// 记住一个用过的服务器地址（只存别名 / 地址 / 根目录，不存用户名密码），最多 8 条
+  Future<void> rememberServer(DavAccount acc) async {
+    if (acc.baseUrl.trim().isEmpty) return;
+    final p = await _prefs;
+    final list = await recentServers();
+    list.removeWhere((e) => e.baseUrl == acc.baseUrl && e.root == acc.root);
+    list.insert(
+      0,
+      DavAccount(alias: acc.alias, baseUrl: acc.baseUrl, username: '', password: '', root: acc.root),
+    );
+    await p.setString(_kRecentServers, jsonEncode(list.take(8).map((e) => e.toJson()).toList()));
+  }
+
+  Future<List<DavAccount>> recentServers() async {
+    final p = await _prefs;
+    final s = p.getString(_kRecentServers);
+    if (s == null || s.isEmpty) return [];
+    try {
+      return (jsonDecode(s) as List)
+          .map((e) => DavAccount.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> forgetServer(String baseUrl) async {
+    final p = await _prefs;
+    final list = await recentServers();
+    list.removeWhere((e) => e.baseUrl == baseUrl);
+    await p.setString(_kRecentServers, jsonEncode(list.map((e) => e.toJson()).toList()));
   }
 
   // ----------------------------------------------------------- 外观与偏好
@@ -169,5 +210,34 @@ class SettingsStore {
   Future<String?> lastServerCheck() async {
     final p = await _prefs;
     return p.getString(_kLastServerCheck);
+  }
+
+  // ----------------------------------------------------------- 浏览记录 / 下载目录
+
+  /// 是否记录浏览（播放）记录。关掉后不再写入播放进度，首页「最近浏览」也不再新增
+  Future<bool> saveViewHistory() async {
+    final p = await _prefs;
+    return p.getBool(_kSaveHistory) ?? true;
+  }
+
+  Future<void> setSaveViewHistory(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kSaveHistory, v);
+  }
+
+  /// 自定义下载目录。null / 空串表示用默认目录
+  Future<String?> downloadDirPath() async {
+    final p = await _prefs;
+    final v = p.getString(_kDownloadDir);
+    return (v == null || v.trim().isEmpty) ? null : v.trim();
+  }
+
+  Future<void> setDownloadDirPath(String? path) async {
+    final p = await _prefs;
+    if (path == null || path.trim().isEmpty) {
+      await p.remove(_kDownloadDir);
+    } else {
+      await p.setString(_kDownloadDir, path.trim());
+    }
   }
 }

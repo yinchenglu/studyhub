@@ -16,8 +16,14 @@ class NoteRepo {
 
   String get _root => AppDirs.notes;
 
-  /// 列出某个相对目录（相对 notes）下的条目
-  Future<List<DavEntry>> listDir(String sub) => dav.list(joinPath(_root, sub), depth: 1);
+  /// 列出某个相对目录（相对 notes）下的条目。
+  /// 配图目录（image/）是附属资源，不作为笔记目录显示出来。
+  Future<List<DavEntry>> listDir(String sub) async {
+    final entries = await dav.list(joinPath(_root, sub), depth: 1);
+    return entries
+        .where((e) => !(e.isDir && AppDirs.hiddenDirNames.contains(e.name)))
+        .toList();
+  }
 
   /// 列出某个目录下的 .md 笔记
   Future<List<NoteMeta>> listNotes(String sub, {bool recursive = false}) async {
@@ -42,6 +48,8 @@ class NoteRepo {
       }
       for (final e in entries) {
         if (e.isDir) {
+          // 配图目录不进笔记统计
+          if (AppDirs.hiddenDirNames.contains(e.name)) continue;
           if (cur.value + 1 <= maxDepth) queue.add(MapEntry(e.path.substring(AppDirs.notes.length + 1), cur.value + 1));
         } else if (FileTypes.isMarkdown(e.name)) {
           out.add(NoteMeta(path: e.path, title: titleFromFileName(e.name), modified: e.modified, size: e.size));
@@ -86,16 +94,18 @@ class NoteRepo {
 
   Future<void> renameEntry(String from, String to) => dav.move(from, to);
 
-  /// 上传图片到笔记所在目录，返回可直接写进 markdown 的文件名
+  /// 上传图片到「笔记所在目录下的 image 子目录」，返回可直接写进 markdown 的相对路径。
+  /// 例如当前笔记是 notes/绳结/平结.md，图片会存到 notes/绳结/image/xxx.png，
+  /// 返回 "image/xxx.png" —— 和文件真实位置一致，换设备也不会丢图。
   Future<String> uploadImage(String dirSub, String localPath, String nameHint) async {
     final bytes = await File(localPath).readAsBytes();
     final ext = p.extension(localPath).replaceAll('.', '');
     var name = nameHint.trim();
     if (name.isEmpty) name = 'img_${DateTime.now().millisecondsSinceEpoch}';
     if (!name.contains('.')) name = '$name.$ext';
-    final rel = joinPath(joinPath(_root, dirSub), name);
+    final rel = joinPath(joinPath(joinPath(_root, dirSub), AppDirs.imageDirName), name);
     await dav.writeBytes(rel, Uint8List.fromList(bytes), contentType: _mimeOf(ext));
-    return name; // markdown 里用相对路径引用
+    return '${AppDirs.imageDirName}/$name';
   }
 
   /// 把 markdown 里的相对图片路径解析成 WebDAV 完整地址

@@ -4,7 +4,9 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// 图片 / 动图查看器：左右滑动切换、双指缩放、保存提示
+import '../../core/downloader.dart';
+
+/// 图片 / 动图查看器：左右滑动切换、双指缩放、点按钮下载到本地
 /// 动图（GIF / 动画 WebP）会直接动起来。
 class ImageViewerPage extends StatefulWidget {
   final List<String> images;
@@ -121,19 +123,34 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
                 ),
               ),
               IconButton(
-                tooltip: '保存到手机相册',
+                tooltip: '下载到本地',
                 icon: const Icon(Icons.download_outlined, color: Colors.white),
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('长按图片可另存：本版本请在「视频」里用长按菜单下载到本地')),
-                  );
-                },
+                onPressed: _saving ? null : _saveCurrent,
               ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  bool _saving = false;
+
+  /// 把当前这张图片存到「设置 → 下载目录」
+  Future<void> _saveCurrent() async {
+    final url = widget.images[_index];
+    var name = (widget.titles != null && _index < widget.titles!.length) ? widget.titles![_index] : '';
+    if (name.trim().isEmpty) {
+      try {
+        name = Uri.decodeComponent(Uri.parse(url).pathSegments.last);
+      } catch (_) {
+        name = 'image_${_index + 1}';
+      }
+    }
+    setState(() => _saving = true);
+    if (!mounted) return;
+    await Downloader.withUi(context, url, name, headers: widget.headers, title: name);
+    if (mounted) setState(() => _saving = false);
   }
 
   Widget _indicator() {

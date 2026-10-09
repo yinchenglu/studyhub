@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
+import '../../core/downloader.dart';
 import '../../core/utils.dart';
 import '../../data/dav/webdav_client.dart';
 import '../../data/local/db.dart';
@@ -16,10 +17,10 @@ class MediaPage extends ConsumerStatefulWidget {
   const MediaPage({super.key});
 
   @override
-  ConsumerState<MediaPage> createState() => _MediaPageState();
+  ConsumerState<MediaPage> createState() => MediaPageState();
 }
 
-class _MediaPageState extends ConsumerState<MediaPage> {
+class MediaPageState extends ConsumerState<MediaPage> {
   String _sub = '';
   bool _flat = false;
   bool _loading = false;
@@ -32,6 +33,36 @@ class _MediaPageState extends ConsumerState<MediaPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  /// 从别的菜单切进来 / 再次点「视频」时调用：回到根目录并刷新
+  Future<void> reload() async {
+    if (_sub.isNotEmpty || _flat) {
+      setState(() {
+        _sub = '';
+        _flat = false;
+      });
+    }
+    await _load();
+  }
+
+  /// 手机返回键：优先返回上级目录；已在本页根目录时返回 false
+  bool handleBack() {
+    if (_flat) {
+      setState(() => _flat = false);
+      _load();
+      return true;
+    }
+    if (_sub.isNotEmpty) {
+      _goUp();
+      return true;
+    }
+    return false;
+  }
+
+  void _goUp() {
+    setState(() => _sub = parentOf(_sub));
+    _load();
   }
 
   Future<void> _load() async {
@@ -70,9 +101,28 @@ class _MediaPageState extends ConsumerState<MediaPage> {
   Widget build(BuildContext context) {
     final logged = ref.watch(accountProvider).isLoggedIn;
     final scheme = Theme.of(context).colorScheme;
+    // 登录成功后自动拉一次内容
+    ref.listen(accountProvider.select((s) => s.isLoggedIn), (prev, next) {
+      if (next && prev != next) _load();
+    });
 
     return Scaffold(
+      automaticallyImplyLeading: false,
       appBar: AppBar(
+        leading: (_sub.isNotEmpty || _flat)
+            ? IconButton(
+                tooltip: '返回上级目录',
+                onPressed: () {
+                  if (_flat) {
+                    setState(() => _flat = false);
+                    _load();
+                  } else {
+                    _goUp();
+                  }
+                },
+                icon: const Icon(Icons.arrow_back),
+              )
+            : null,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -199,6 +249,7 @@ class _MediaPageState extends ConsumerState<MediaPage> {
             color: scheme.primary,
           ),
           onTap: () => _open(MediaItem(path: e.path, isVideo: isVideo, size: e.size, modified: e.modified)),
+          onLongPress: () => _showActions(e),
         );
       },
     );
@@ -231,9 +282,59 @@ class _MediaPageState extends ConsumerState<MediaPage> {
           ),
           trailing: Icon(m.isVideo ? Icons.play_circle_outline : Icons.photo_outlined, color: scheme.primary),
           onTap: () => _open(m),
+          onLongPress: () => _showActions(
+            DavEntry(path: m.path, isDir: false, size: m.size, modified: m.modified),
+          ),
         );
       },
     );
+  }
+
+  /// 长按菜单：可以不用打开就直接下载
+  void _showActions(DavEntry e) {
+    final isVideo = FileTypes.isPlayable(e.name);
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Row(
+                children: [
+                  Expanded(child: Text(e.name, style: const TextStyle(fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                ],
+              ),
+            ),
+            ListTile(
+              leading: Icon(isVideo ? Icons.play_circle_outline : Icons.image_outlined),
+              title: const Text('打开'),
+              onTap: () {
+                Navigator.pop(context);
+                _open(MediaItem(path: e.path, isVideo: isVideo, size: e.size, modified: e.modified));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.download_outlined),
+              title: const Text('下载到本地'),
+              subtitle: Text('保存到下载目录（${formatBytes(e.size)}）', style: const TextStyle(fontSize: 12)),
+              onTap: () {
+                Navigator.pop(context);
+                _downloadEntry(e);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _downloadEntry(DavEntry e) async {
+    final client = ref.read(davClientProvider);
+    if (client == null) return;
+    await Downloader.withUi(context, client.urlFor(e.path), e.name, headers: client.headers);
   }
 
   Widget _thumb(DavEntry e, bool isVideo) => _thumbFromPath(e.path, isVideo);

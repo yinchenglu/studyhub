@@ -3,6 +3,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/constants.dart';
+import '../../core/utils.dart';
 import '../../data/local/db.dart';
 import '../../data/models/models.dart';
 import '../../data/repositories/quiz_repo.dart';
@@ -11,16 +13,21 @@ import '../home/login_page.dart';
 import 'answer_page.dart';
 import 'wrong_book_page.dart';
 
-/// 刷题：自动识别服务器 quiz 目录下的每套题库
+/// 刷题：按目录浏览服务器 quiz 目录，每个含 .json 的目录 = 一套题库
 class QuizPage extends ConsumerStatefulWidget {
   const QuizPage({super.key});
 
   @override
-  ConsumerState<QuizPage> createState() => _QuizPageState();
+  ConsumerState<QuizPage> createState() => QuizPageState();
 }
 
-class _QuizPageState extends ConsumerState<QuizPage> {
-  List<QuestionBank> _banks = const [];
+class QuizPageState extends ConsumerState<QuizPage> {
+  /// 当前所在子目录（相对 quiz），空串表示根
+  String _sub = '';
+  /// 当前目录下的子目录（每项带题目数量）
+  List<_BankNode> _nodes = const [];
+  /// 当前目录本身如果放了 json，就是一套「本目录题库」
+  QuestionBank? _hereBank;
   Map<String, int> _wrongByBank = const {};
   bool _loading = false;
   String? _error;
@@ -31,12 +38,37 @@ class _QuizPageState extends ConsumerState<QuizPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
+  /// 从别的菜单切进来 / 再次点「刷题」时调用：回到根目录并刷新
+  Future<void> reload() async {
+    if (_sub.isNotEmpty) setState(() => _sub = '');
+    await _load();
+  }
+
+  /// 手机返回键：优先返回上级目录；已在本页根目录时返回 false
+  bool handleBack() {
+    if (_sub.isNotEmpty) {
+      _goUp();
+      return true;
+    }
+    return false;
+  }
+
+  void _goUp() {
+    setState(() => _sub = parentOf(_sub));
+    _load();
+  }
+
+  /// 服务器路径 → 相对 quiz 的路径
+  String _relOf(String path) =>
+      path.startsWith('${AppDirs.quiz}/') ? path.substring(AppDirs.quiz.length + 1) : '';
+
   Future<void> _load() async {
     final repo = ref.read(quizRepoProvider);
     final wrongMap = await AppDb.instance.wrongCountByBank();
     if (repo == null) {
       setState(() {
-        _banks = const [];
+        _nodes = const [];
+        _hereBank = null;
         _wrongByBank = wrongMap;
       });
       return;
@@ -46,10 +78,38 @@ class _QuizPageState extends ConsumerState<QuizPage> {
       _error = null;
     });
     try {
-      final banks = await repo.listBanks();
+      final entries = await repo.listChildren(_sub);
+      final dirs = entries.where((e) => e.isDir).toList();
+      final loose = entries.where((e) => !e.isDir && FileTypes.isJson(e.name)).toList();
+
+      final nodes = <_BankNode>[];
+      for (final d in dirs) {
+        QuestionBank? bank;
+        try {
+          bank = await repo.loadBank(d.path);
+        } catch (_) {}
+        final b = bank;
+        nodes.add(_BankNode(
+          entry: d,
+          name: (b != null && b.name.isNotEmpty) ? b.name : d.name,
+          count: b?.count ?? 0,
+          isWordBank: b?.isWordBank ?? false,
+        ));
+      }
+
+      // 当前目录直接放了 json 就是一套题库
+      QuestionBank? here;
+      if (loose.isNotEmpty) {
+        try {
+          final b = await repo.loadBank(joinPath(AppDirs.quiz, _sub));
+          if (b.count > 0) here = b;
+        } catch (_) {}
+      }
+
       if (!mounted) return;
       setState(() {
-        _banks = banks;
+        _nodes = nodes;
+        _hereBank = here;
         _wrongByBank = wrongMap;
         _loading = false;
       });
@@ -65,10 +125,32 @@ class _QuizPageState extends ConsumerState<QuizPage> {
   Widget build(BuildContext context) {
     final logged = ref.watch(accountProvider).isLoggedIn;
     final scheme = Theme.of(context).colorScheme;
+    // 登录成功后自动拉一次
+    ref.listen(accountProvider.select((s) => s.isLoggedIn), (prev, next) {
+      if (next && prev != next) _load();
+    });
 
     return Scaffold(
+      automaticallyImplyLeading: false,
       appBar: AppBar(
-        title: const Text('刷题'),
+        leading: _sub.isNotEmpty
+            ? IconButton(
+                tooltip: '返回上级目录',
+                onPressed: _goUp,
+                icon: const Icon(Icons.arrow_back),
+              )
+            : null,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('刷题'),
+            if (logged)
+              Text(
+                '/${AppDirs.quiz}${_sub.isEmpty ? '' : '/$_sub'}',
+                style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+              ),
+          ],
+        ),
         actions: [
           IconButton(tooltip: '刷新题库', onPressed: _load, icon: const Icon(Icons.refresh)),
         ],
@@ -97,7 +179,9 @@ class _QuizPageState extends ConsumerState<QuizPage> {
 
   Widget _body() {
     final scheme = Theme.of(context).colorScheme;
-    if (_loading && _banks.isEmpty) return const Center(child: CircularProgressIndicator());
+    if (_loading && _nodes.isEmpty && _hereBank == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
     if (_error != null) {
       return ListView(
         children: [
@@ -110,6 +194,8 @@ class _QuizPageState extends ConsumerState<QuizPage> {
         ],
       );
     }
+
+    final empty = _nodes.isEmpty && _hereBank == null;
 
     return ListView(
       padding: const EdgeInsets.only(bottom: 32),
@@ -125,7 +211,7 @@ class _QuizPageState extends ConsumerState<QuizPage> {
                 child: Icon(Icons.rule_folder_outlined, color: scheme.error, size: 20),
               ),
               title: const Text('错题本'),
-              subtitle: Text('本地保存 · 按题库和知识点分组'),
+              subtitle: const Text('本地保存 · 按题库和知识点分组'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const WrongBookPage())).then((_) => _load()),
             ),
@@ -133,68 +219,163 @@ class _QuizPageState extends ConsumerState<QuizPage> {
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-          child: Text('题库（共 ${_banks.length} 套）', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: scheme.primary)),
+          child: Text(
+            _sub.isEmpty ? '题库目录' : '目录：$_sub',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: scheme.primary),
+          ),
         ),
-        if (_banks.isEmpty)
+        if (empty)
           Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
               children: [
                 Icon(Icons.quiz_outlined, size: 44, color: scheme.onSurfaceVariant),
                 const SizedBox(height: 12),
-                const Text('没读到题库'),
+                Text(_sub.isEmpty ? '没读到题库' : '这个目录里没有题库'),
                 const SizedBox(height: 8),
                 Text(
-                  '在服务器 ${AppDirsQuizHint.path} 下建一个子目录，'
-                  '把题库 .json 放进去，App 每次进来都会重新读。',
+                  '在服务器 ${AppDirs.quiz}/ 下建目录，把题库 .json 放进去；'
+                  '也可以放进多级子目录，App 支持一层层点进去。',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 12.5, height: 1.6, color: scheme.onSurfaceVariant),
                 ),
               ],
             ),
           ),
-        for (final b in _banks)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
-            child: Card(
-              child: InkWell(
-                borderRadius: BorderRadius.circular(14),
-                onTap: () => _showModes(b),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
+
+        // 当前目录自身的题库
+        if (_hereBank != null) _bankCard(_hereBank!, title: '本目录题库'),
+
+        // 子目录
+        for (final n in _nodes) _dirCard(n),
+      ],
+    );
+  }
+
+  Widget _bankCard(QuestionBank b, {String? title}) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+      child: Card(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => _showModes(b),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(color: const Color(0xFFEF9F27).withValues(alpha: 0.14), borderRadius: BorderRadius.circular(11)),
+                  child: Icon(b.isWordBank ? Icons.abc : Icons.quiz_outlined, color: const Color(0xFFEF9F27)),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(color: const Color(0xFFEF9F27).withValues(alpha: 0.14), borderRadius: BorderRadius.circular(11)),
-                        child: Icon(b.isWordBank ? Icons.abc : Icons.quiz_outlined, color: const Color(0xFFEF9F27)),
+                      Text(title ?? b.name, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 3),
+                      Text(
+                        '${b.count} 题'
+                        '${(_wrongByBank[b.dir] ?? 0) > 0 ? ' · 错题 ${_wrongByBank[b.dir]}' : ''}'
+                        '${b.isWordBank ? ' · 单词库' : ''}',
+                        style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
                       ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(b.name, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600)),
-                            const SizedBox(height: 3),
-                            Text(
-                              '${b.count} 题'
-                              '${(_wrongByBank[b.dir] ?? 0) > 0 ? ' · 错题 ${_wrongByBank[b.dir]}' : ''}'
-                              '${b.isWordBank ? ' · 单词库' : ''}',
-                              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const Icon(Icons.chevron_right),
                     ],
                   ),
                 ),
-              ),
+                const Icon(Icons.chevron_right),
+              ],
             ),
           ),
-      ],
+        ),
+      ),
     );
+  }
+
+  /// 子目录：含 json 就是一个题库（点击选练法），否则点进去看下一层
+  Widget _dirCard(_BankNode n) {
+    final scheme = Theme.of(context).colorScheme;
+    final hasBank = n.count > 0;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+      child: Card(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () async {
+            if (hasBank) {
+              await _openBankOf(n);
+            } else {
+              setState(() => _sub = _relOf(n.entry.path));
+              await _load();
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: (hasBank ? const Color(0xFFEF9F27) : const Color(0xFF7F77DD)).withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+                  child: Icon(
+                    hasBank ? (n.isWordBank ? Icons.abc : Icons.quiz_outlined) : Icons.folder_rounded,
+                    color: hasBank ? const Color(0xFFEF9F27) : const Color(0xFF7F77DD),
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(n.name, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+                      const SizedBox(height: 3),
+                      Text(
+                        '${hasBank ? '${n.count} 题' : '目录，点进去看下一层'}'
+                        '${hasBank && (_wrongByBank[n.entry.path] ?? 0) > 0 ? ' · 错题 ${_wrongByBank[n.entry.path]}' : ''}'
+                        '${hasBank && n.isWordBank ? ' · 单词库' : ''}',
+                        style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+                if (hasBank)
+                  IconButton(
+                    tooltip: '进入目录',
+                    icon: const Icon(Icons.folder_open_outlined),
+                    onPressed: () async {
+                      setState(() => _sub = _relOf(n.entry.path));
+                      await _load();
+                    },
+                  ),
+                Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openBankOf(_BankNode n) async {
+    final repo = ref.read(quizRepoProvider);
+    if (repo == null) return;
+    try {
+      final bank = await repo.loadBank(n.entry.path);
+      if (bank.count == 0) {
+        _toast('这个目录里没有题目');
+        return;
+      }
+      if (!mounted) return;
+      _showModes(bank);
+    } catch (e) {
+      _toast('读取题库失败：$e');
+    }
   }
 
   /// 五种练法
@@ -220,6 +401,10 @@ class _QuizPageState extends ConsumerState<QuizPage> {
             _mode(Icons.replay, '只练错题', '把该题库的错题全部重做一遍', () => _start(bank, _Mode.wrongOnly)),
             _mode(Icons.auto_awesome, '智能复习', '错题优先 + 没做过的题优先', () => _start(bank, _Mode.smart)),
             _mode(Icons.timer_outlined, '模拟考试', '${ref.read(quizPrefsProvider).examCount} 题 / ${ref.read(quizPrefsProvider).examMinutes} 分钟', () => _setupExam(bank)),
+            _mode(Icons.folder_open_outlined, '进入该目录', '看看里面还有哪些子目录/题库', () {
+              setState(() => _sub = _relOf(bank.dir));
+              _load();
+            }),
             const SizedBox(height: 8),
           ],
         ),
@@ -378,6 +563,17 @@ class _QuizPageState extends ConsumerState<QuizPage> {
 
 enum _Mode { order, random, wrongOnly, smart }
 
-class AppDirsQuizHint {
-  static const path = '/StudyHub/quiz/';
+/// 刷题页目录树上的一项
+class _BankNode {
+  final DavEntry entry;
+  final String name;
+  final int count;
+  final bool isWordBank;
+
+  const _BankNode({
+    required this.entry,
+    required this.name,
+    required this.count,
+    required this.isWordBank,
+  });
 }

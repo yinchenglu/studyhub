@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
 
 import '../../core/utils.dart';
 import '../../data/local/db.dart';
@@ -23,6 +26,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   double _speed = 1.0;
   int _cacheLimit = 2048;
   bool _busy = false;
+  bool _saveHistory = true;
+  String _downloadDir = '';
 
   @override
   void initState() {
@@ -35,12 +40,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final dl = await CacheManager.instance.downloadSize();
     final sp = await SettingsStore.instance.playbackSpeed();
     final limit = await SettingsStore.instance.cacheLimitMb();
+    final saveHist = await SettingsStore.instance.saveViewHistory();
+    final dlDir = await CacheManager.instance.downloadDirPath();
     if (!mounted) return;
     setState(() {
       _cacheBytes = cache;
       _downloadBytes = dl;
       _speed = sp;
       _cacheLimit = limit;
+      _saveHistory = saveHist;
+      _downloadDir = dlDir;
     });
   }
 
@@ -159,6 +168,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             margin: const EdgeInsets.symmetric(horizontal: 16),
             child: Column(
               children: [
+                ListTile(
+                  leading: const Icon(Icons.save_alt_outlined),
+                  title: const Text('下载目录'),
+                  subtitle: Text(
+                    _downloadDir.isEmpty ? '（读取中…）' : _downloadDir,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  isThreeLine: false,
+                  trailing: const Icon(Icons.edit_outlined, size: 20),
+                  onTap: _editDownloadDir,
+                ),
+                const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.cleaning_services_outlined),
                   title: const Text('临时缓存'),
@@ -363,6 +384,17 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   },
                 ),
                 const Divider(height: 1),
+                SwitchListTile(
+                  secondary: const Icon(Icons.history_outlined),
+                  title: const Text('保存浏览记录'),
+                  subtitle: const Text('关掉后不再记录观看进度，「最近浏览」也不再新增'),
+                  value: _saveHistory,
+                  onChanged: (v) async {
+                    await SettingsStore.instance.setSaveViewHistory(v);
+                    if (mounted) setState(() => _saveHistory = v);
+                  },
+                ),
+                const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.history_toggle_off),
                   title: const Text('清空播放进度'),
@@ -430,6 +462,91 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
         ),
       );
+
+  /// 修改下载目录：可以手填，也可以一键选「系统下载目录 / 应用专属目录」
+  Future<void> _editDownloadDir() async {
+    final scheme = Theme.of(context).colorScheme;
+    final sysPath = await CacheManager.defaultDownloadPath();
+    final appPath = await CacheManager.appPrivateDownloadPath();
+    if (!mounted) return;
+
+    final ctrl = TextEditingController(text: _downloadDir.isEmpty ? sysPath : _downloadDir);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('下载目录'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: ctrl,
+                decoration: const InputDecoration(
+                  labelText: '保存路径',
+                  hintText: '/storage/emulated/0/Download/StudyHub',
+                ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ActionChip(
+                    avatar: const Icon(Icons.download_outlined, size: 16),
+                    label: const Text('系统下载目录'),
+                    onPressed: () => ctrl.text = sysPath,
+                  ),
+                  ActionChip(
+                    avatar: const Icon(Icons.phone_android_outlined, size: 16),
+                    label: const Text('应用专属目录'),
+                    onPressed: () => ctrl.text = appPath,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '说明\n'
+                '· 写「下载」这类公共目录需要「所有文件访问」权限，第一次下载时会弹窗申请\n'
+                '· 应用专属目录不需要权限，但文件管理器里不太好找\n'
+                '· 目录不存在会自动创建',
+                style: TextStyle(fontSize: 12, height: 1.6, color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, '__cancel__'), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('保存')),
+        ],
+      ),
+    );
+    if (result == null || result == '__cancel__') return;
+
+    // 试建目录并写一个探针文件，确认真的可写
+    final target = result.isEmpty ? sysPath : result;
+    try {
+      final d = Directory(target);
+      if (!await d.exists()) await d.create(recursive: true);
+      final probe = File(p.join(d.path, '.studyhub_write_test'));
+      await probe.writeAsString('ok');
+      if (await probe.exists()) await probe.delete();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('这个目录写不进去，换一个试试：$e')),
+        );
+      }
+      return;
+    }
+
+    await SettingsStore.instance.setDownloadDirPath(result.isEmpty ? null : result);
+    CacheManager.instance.resetDownloadDirCache();
+    await _load();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载目录已改为 $target')));
+    }
+  }
 
   /// 把错题本导出成 markdown 写到服务器的 backup 目录
   Future<void> _exportWrong() async {
