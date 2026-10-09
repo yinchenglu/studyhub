@@ -7,13 +7,17 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_device_apps/flutter_device_apps.dart';
-import 'package:intl/intl.dart';
+// 必须 hide TextDirection！intl 里也有一个同名的 TextDirection（用 LTR / RTL 大写），
+// 它会把 Flutter 那个带 .ltr / .rtl 的 TextDirection 遮蔽掉，
+// 于是文件里所有 TextDirection.ltr 都变成「getter 'ltr' isn't defined」。
+import 'package:intl/intl.dart' hide TextDirection;
 import 'package:noise_meter/noise_meter.dart';
 import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:torch_light/torch_light.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../core/downloader.dart';
 import '../../core/permissions.dart';
@@ -21,6 +25,24 @@ import '../../core/utils.dart';
 import '../../data/local/db.dart';
 
 // ============================================================ 公共小工具
+
+/// 保持屏幕常亮。
+///
+/// 原先这批工具页全都在调 `SystemChrome.setKeepScreenOn(...)` ——
+/// 但 Flutter 的 SystemChrome 里**压根没有这个方法**，20 处调用没有一处能编译。
+/// 「不熄屏」这件事只有一个正路：wakelock_plus。
+///
+/// 失败不抛出去：有些机型 / 省电策略下会拒绝，那是正常情况，
+/// 不该因为它把工具页本身搞崩。
+/// 返回 Future 但调用点（dispose / 按钮回调）直接忽略 ——
+/// 本项目 analysis_options 用的是 flutter_lints 默认集，没开 unawaited_futures，不会报。
+Future<void> keepScreenOn(bool on) async {
+  try {
+    await WakelockPlus.toggle(enable: on);
+  } catch (_) {
+    // 拿不到 wakelock 就算了，工具照常用
+  }
+}
 
 /// 所有工具页共用的外壳：统一标题栏 + 背景
 class ToolScaffold extends StatelessWidget {
@@ -734,13 +756,13 @@ class _PomodoroPageState extends State<PomodoroPage> {
   @override
   void dispose() {
     _t?.cancel();
-    SystemChrome.setKeepScreenOn(false);
+    keepScreenOn(false);
     super.dispose();
   }
 
   void _start() {
     setState(() => _running = true);
-    SystemChrome.setKeepScreenOn(true);
+    keepScreenOn(true);
     _t?.cancel();
     _t = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
@@ -755,7 +777,7 @@ class _PomodoroPageState extends State<PomodoroPage> {
   void _pause() {
     _t?.cancel();
     setState(() => _running = false);
-    SystemChrome.setKeepScreenOn(false);
+    keepScreenOn(false);
   }
 
   void _reset() {
@@ -766,7 +788,7 @@ class _PomodoroPageState extends State<PomodoroPage> {
       _left = _work * 60;
       _done = 0;
     });
-    SystemChrome.setKeepScreenOn(false);
+    keepScreenOn(false);
   }
 
   void _finishPhase() {
@@ -784,7 +806,7 @@ class _PomodoroPageState extends State<PomodoroPage> {
     });
     _t?.cancel();
     setState(() => _running = false);
-    SystemChrome.setKeepScreenOn(false);
+    keepScreenOn(false);
     final msg = wasWork
         ? '专注结束，休息 ${_done % _rounds == 0 ? _long : _short} 分钟'
         : '休息结束，开始下一个番茄';
@@ -1297,7 +1319,10 @@ class _ColorConvertPageState extends State<ColorConvertPage> {
                       width: 62,
                       padding: const EdgeInsets.symmetric(vertical: 10),
                       decoration: BoxDecoration(
-                        color: item.$2,
+                        // 这里原本直接写 item.$2 —— 但那是 '#EF4444' 这种字符串，
+                        // BoxDecoration.color 要的是 Color，编不过。
+                        // 下面一行取亮度时已经用了 parseColor()，这里补上。
+                        color: parseColor(item.$2),
                         borderRadius: BorderRadius.circular(9),
                         border: Border.all(color: scheme.outlineVariant),
                       ),
@@ -1866,7 +1891,7 @@ class _LedMarqueePageState extends State<LedMarqueePage> with SingleTickerProvid
     _anim = AnimationController(vsync: this, duration: Duration(seconds: _speed.round()))
       ..repeat();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    SystemChrome.setKeepScreenOn(true);
+    keepScreenOn(true);
   }
 
   @override
@@ -1874,7 +1899,7 @@ class _LedMarqueePageState extends State<LedMarqueePage> with SingleTickerProvid
     _anim.dispose();
     _text.dispose();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    SystemChrome.setKeepScreenOn(false);
+    keepScreenOn(false);
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     super.dispose();
   }

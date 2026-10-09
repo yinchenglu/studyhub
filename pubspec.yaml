@@ -76,6 +76,13 @@ dependencies:
   # 运行服务器 tools 目录里的 html 小工具
   webview_flutter: ^4.14.1
 
+  # 工具页要「保持屏幕常亮」（LED 屏幕、提词器、SOS 手电筒、屏幕坏点检测…）。
+  # Flutter 的 SystemChrome 里**根本没有** setKeepScreenOn —— 之前凭印象写的那 20 处
+  # 整个编不过，第 10 轮构建就死在这。这件事只能靠 wakelock_plus，
+  # 它本来就在依赖树里（media_kit_video 拉的），现在改成直接依赖。
+  # 上限必须钉死 <1.6.0：1.6.0 起它要 win32 ^6，会和 share_plus 的 win32 ^5 打架。
+  wakelock_plus: ">=1.5.2 <1.6.0"
+
   # 量角器、挂画助手（水平仪）用重力/磁力传感器
   sensors_plus: ^7.1.1
 

@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+// Platform 在这个文件里用来判断 Android/iOS（手电筒、相机权限那些）
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -7,6 +9,9 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+// 时间戳转换要用 DateFormat。注意 Dart 的 import 不传递 ——
+// tool_pages.dart 里引了 intl，这个文件也照样得自己引一份。
+import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:sensors_plus/sensors_plus.dart';
@@ -269,7 +274,7 @@ class _SosTorchPageState extends State<SosTorchPage> {
   void dispose() {
     _timer?.cancel();
     _turnOff();
-    SystemChrome.setKeepScreenOn(false);
+    keepScreenOn(false);
     super.dispose();
   }
 
@@ -307,7 +312,7 @@ class _SosTorchPageState extends State<SosTorchPage> {
     _timer?.cancel();
     _timer = null;
     _turnOff();
-    SystemChrome.setKeepScreenOn(false);
+    keepScreenOn(false);
     if (mounted) setState(() => _on = false);
   }
 
@@ -328,7 +333,7 @@ class _SosTorchPageState extends State<SosTorchPage> {
       _on = true;
       _step = 0;
     });
-    SystemChrome.setKeepScreenOn(true);
+    keepScreenOn(true);
 
     if (mode == 'on') {
       try {
@@ -372,7 +377,7 @@ class _SosTorchPageState extends State<SosTorchPage> {
 
     _torchOn();
     visible = true;
-    _timer = Timer(const Duration(milliseconds: _sos[0]), tick);
+    _timer = Timer(Duration(milliseconds: _sos[0]), tick);
   }
 
   Future<void> _torchOn() async {
@@ -389,7 +394,7 @@ class _SosTorchPageState extends State<SosTorchPage> {
       _on = true;
       _step = 0;
     });
-    SystemChrome.setKeepScreenOn(true);
+    keepScreenOn(true);
     var visible = true;
     void tick() {
       if (!mounted) return;
@@ -415,7 +420,7 @@ class _SosTorchPageState extends State<SosTorchPage> {
     }
 
     setState(() => _screenOn = true);
-    if (mode != 'on') _timer = Timer(const Duration(milliseconds: _sos[0]), tick);
+    if (mode != 'on') _timer = Timer(Duration(milliseconds: _sos[0]), tick);
   }
 
   @override
@@ -1217,7 +1222,9 @@ class _MorsePageState extends State<MorsePage> {
     '.': '.-.-.-', ',': '--..--', '?': '..--..', '!': '-.-.--', "'": '.----.',
     '"': '.-..-.', '/': '-..-.', '(': '-.--.', ')': '-.--.-', '&': '.-...',
     ':': '---...', ';': '-.-.-.', '=': '-...-', '+': '.-.-.', '-': '-....-',
-    '_': '..--.-', '$': '...-..-', '@': '.--.-.',
+    // 注意 '$' 必须转义成 '\$'：Dart 里 $ 是字符串插值符号，
+    // 裸写一个 $ 会直接报「A '$' has special meaning inside a string」。
+    '_': '..--.-', '\$': '...-..-', '@': '.--.-.',
   };
 
   static final _reverse = {for (final e in _table.entries) e.value: e.key};
@@ -1274,7 +1281,7 @@ class _MorsePageState extends State<MorsePage> {
         _flashing = false;
         _light = false;
       });
-      SystemChrome.setKeepScreenOn(false);
+      keepScreenOn(false);
       return;
     }
     final morse = _toMorse ? _output : _input.text.trim();
@@ -1298,7 +1305,7 @@ class _MorsePageState extends State<MorsePage> {
       _flashing = true;
       _light = false;
     });
-    SystemChrome.setKeepScreenOn(true);
+    keepScreenOn(true);
     var i = 0;
     void tick() {
       if (!mounted) return;
@@ -1308,7 +1315,7 @@ class _MorsePageState extends State<MorsePage> {
           _flashing = false;
           _light = false;
         });
-        SystemChrome.setKeepScreenOn(false);
+        keepScreenOn(false);
         return;
       }
       setState(() => _light = !_light);
@@ -1692,7 +1699,7 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
     _script.dispose();
     _scroll.dispose();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    SystemChrome.setKeepScreenOn(false);
+    keepScreenOn(false);
     super.dispose();
   }
 
@@ -1700,12 +1707,12 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
     if (_playing) {
       _timer?.cancel();
       setState(() => _playing = false);
-      SystemChrome.setKeepScreenOn(false);
+      keepScreenOn(false);
       return;
     }
     setState(() => _playing = true);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    SystemChrome.setKeepScreenOn(true);
+    keepScreenOn(true);
     _timer = Timer.periodic(const Duration(milliseconds: 33), (_) {
       if (!mounted || !_scroll.hasClients) return;
       final max = _scroll.position.maxScrollExtent;
@@ -1713,7 +1720,7 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
       if (next >= max) {
         _timer?.cancel();
         setState(() => _playing = false);
-        SystemChrome.setKeepScreenOn(false);
+        keepScreenOn(false);
         return;
       }
       _scroll.jumpTo(next);
@@ -2113,14 +2120,14 @@ class _DeadPixelPageState extends State<DeadPixelPage> {
   void initState() {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    SystemChrome.setKeepScreenOn(true);
+    keepScreenOn(true);
   }
 
   @override
   void dispose() {
     _t?.cancel();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    SystemChrome.setKeepScreenOn(false);
+    keepScreenOn(false);
     super.dispose();
   }
 
