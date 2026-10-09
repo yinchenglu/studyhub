@@ -107,8 +107,8 @@ class MediaPageState extends ConsumerState<MediaPage> {
     });
 
     return Scaffold(
-      automaticallyImplyLeading: false,
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         leading: (_sub.isNotEmpty || _flat)
             ? IconButton(
                 tooltip: '返回上级目录',

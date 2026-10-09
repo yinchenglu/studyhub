@@ -131,8 +131,8 @@ class QuizPageState extends ConsumerState<QuizPage> {
     });
 
     return Scaffold(
-      automaticallyImplyLeading: false,
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         leading: _sub.isNotEmpty
             ? IconButton(
                 tooltip: '返回上级目录',

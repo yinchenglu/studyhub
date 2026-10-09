@@ -109,8 +109,8 @@ class NotesPageState extends ConsumerState<NotesPage> {
       if (next && prev != next) _load();
     });
     return Scaffold(
-      automaticallyImplyLeading: false,
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         leading: _sub.isNotEmpty
             ? IconButton(
                 tooltip: '返回上级目录',
