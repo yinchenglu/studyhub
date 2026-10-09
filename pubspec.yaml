@@ -92,6 +92,27 @@ dependencies:
   # 需要时随时加回来即可：
   #   file_picker, package_info_plus
 
+# ---- 依赖覆盖：解决 win32 三方死锁 ----
+#
+# 冲突链条（pub 原话）：
+#   share_plus >=10.0.3 <13.0.0  要 win32 ^5.5.3
+#   device_info_plus >=13.1.0    要 win32 ^6.0.1
+#   而 syncfusion_flutter_pdfviewer >=33.2.13+1 强制 device_info_plus ^13.1.0
+#   → share_plus 和 syncfusion 不可能共存，pub get 直接「version solving failed」。
+#
+# 为什么敢把 device_info_plus 压在 12.x：
+#   翻遍 syncfusion_flutter_pdfviewer 35.1.39 的源码，它只用到三样东西 ——
+#     DeviceInfoPlugin()、androidInfo.version.sdkInt、androidInfo.systemFeatures
+#     （外加 web 端的 webBrowserInfo.maxTouchPoints）
+#   这些从 device_info_plus 4.x 起就没变过。13.x 相对 12.x 的改动只发生在它自己的
+#   Windows 实现里，而我们只出 Android 包，那条代码路径根本不会跑到。
+#   device_info_plus 12.4.0 要 win32 ^5.11.0，与 share_plus 的 ^5.5.3 兼容 → 冲突消失。
+#
+# 另外注意：share_plus 一旦升到 13.x 就要求 mime ^2.0.0，
+# 而 image_picker 这条链要 mime ^1.0.4，同样无解。所以 share_plus 必须停在 12.x。
+dependency_overrides:
+  device_info_plus: ">=12.0.0 <13.0.0"
+
 dev_dependencies:
   flutter_lints: ^4.0.0
 
