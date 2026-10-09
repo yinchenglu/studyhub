@@ -497,5 +497,5 @@ class WebDavClient {
 
 /// 标准目录常量（避免循环依赖，单独放一份）
 class AppDirsConst {
-  static const List<String> fixedDirs = ['notes', 'media', 'quiz', 'tools', 'backup'];
+  static const List<String> fixedDirs = ['notes', 'media', 'quiz', 'tools', 'download', 'backup'];
 }

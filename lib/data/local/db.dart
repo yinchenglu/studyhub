@@ -32,7 +32,7 @@ class AppDb {
     final path = p.join(dir.path, 'studyhub.db');
     return openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE wrong (
@@ -79,10 +79,96 @@ class AppDb {
             added_at INTEGER
           )
         ''');
+        await db.execute('''
+          CREATE TABLE quiz_done (
+            bank_dir TEXT NOT NULL,
+            question_id TEXT NOT NULL,
+            done_at INTEGER NOT NULL,
+            PRIMARY KEY (bank_dir, question_id)
+          )
+        ''');
         await db.execute('CREATE INDEX idx_wrong_bank ON wrong(bank_dir)');
         await db.execute('CREATE INDEX idx_wrong_mastered ON wrong(mastered)');
+        await db.execute('CREATE INDEX idx_quiz_done_bank ON quiz_done(bank_dir)');
+      },
+      onUpgrade: (db, from, to) async {
+        if (from < 2) {
+          // v1.2.0 新增：记录每套题库刷过哪些题，用来显示进度条
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS quiz_done (
+              bank_dir TEXT NOT NULL,
+              question_id TEXT NOT NULL,
+              done_at INTEGER NOT NULL,
+              PRIMARY KEY (bank_dir, question_id)
+            )
+          ''');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_quiz_done_bank ON quiz_done(bank_dir)');
+        }
       },
     );
+  }
+
+  // ------------------------------------------------------------ 刷题进度
+
+  /// 标记某套题库里的某道题「刷过了」（对错都算刷过）
+  Future<void> markDone(String bankDir, String questionId) async {
+    if (bankDir.isEmpty || questionId.isEmpty) return;
+    final d = await db;
+    await d.insert(
+      'quiz_done',
+      {
+        'bank_dir': bankDir,
+        'question_id': questionId,
+        'done_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> markDoneBatch(Iterable<(String, String)> items) async {
+    final d = await db;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final batch = d.batch();
+    for (final it in items) {
+      if (it.$1.isEmpty || it.$2.isEmpty) continue;
+      batch.insert(
+        'quiz_done',
+        {'bank_dir': it.$1, 'question_id': it.$2, 'done_at': now},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// 单套题库已刷题数
+  Future<int> doneCount(String bankDir) async {
+    final d = await db;
+    final r = await d.rawQuery(
+        'SELECT COUNT(*) AS c FROM quiz_done WHERE bank_dir = ?', [bankDir]);
+    return Sqflite.firstIntValue(r) ?? 0;
+  }
+
+  /// 所有题库的已刷题数：bank_dir → 已刷数量
+  Future<Map<String, int>> doneCountByBank() async {
+    final d = await db;
+    final rows = await d.rawQuery('SELECT bank_dir, COUNT(*) AS c FROM quiz_done GROUP BY bank_dir');
+    return {for (final r in rows) r['bank_dir'].toString(): (r['c'] as int?) ?? 0};
+  }
+
+  /// 某套题库刷过的题目 id 集合（做「只练没刷过的」时用）
+  Future<Set<String>> doneIds(String bankDir) async {
+    final d = await db;
+    final rows = await d.query('quiz_done', columns: ['question_id'], where: 'bank_dir = ?', whereArgs: [bankDir]);
+    return rows.map((r) => r['question_id'].toString()).toSet();
+  }
+
+  Future<void> clearDone({String? bankDir}) async {
+    final d = await db;
+    if (bankDir == null) {
+      await d.delete('quiz_done');
+    } else {
+      await d.delete('quiz_done', where: 'bank_dir = ?', whereArgs: [bankDir]);
+    }
   }
 
   // ------------------------------------------------------------ 错题本

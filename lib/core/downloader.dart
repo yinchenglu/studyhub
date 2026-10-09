@@ -9,6 +9,29 @@ import '../data/local/db.dart';
 import 'permissions.dart';
 import 'utils.dart';
 
+/// 落盘目标目录：优先手机「下载」目录（要先拿到存储权限），
+/// 拿不到权限就退回应用专属目录 —— 保证一定写得进去，不会静默失败。
+///
+/// 放在这里而不是各页面里，是为了让「写入」和「判断文件是否已下载」
+/// 用的是同一个目录，标记不会对不上。
+Future<Directory?> downloadTargetDir() async {
+  try {
+    if (Platform.isAndroid) {
+      final ok = await ensureStoragePermission();
+      return ok
+          ? await CacheManager.instance.downloadDir
+          : Directory(await CacheManager.appPrivateDownloadPath());
+    }
+    return await CacheManager.instance.downloadDir;
+  } catch (_) {
+    try {
+      return Directory(await CacheManager.appPrivateDownloadPath());
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
 /// 统一的下载工具。
 /// 所有「下载到本地」都走这里：落到设置里的下载目录，并处理存储权限与进度提示。
 class Downloader {

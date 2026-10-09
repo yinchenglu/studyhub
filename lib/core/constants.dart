@@ -7,10 +7,14 @@ class AppDirs {
   static const String notes = 'notes'; // 笔记
   static const String media = 'media'; // 视频与图片
   static const String quiz = 'quiz'; // 题库
-  static const String tools = 'tools'; // 词库 / 速查表
+  static const String tools = 'tools'; // 词库 / 速查表 / html 小工具
   static const String backup = 'backup'; // 错题本、设置备份
 
-  static const List<String> all = [notes, media, quiz, tools, backup];
+  /// 下载站：专门放「想直接在手机上下载下来」的文件。
+  /// 工具页最上面那个按钮就是它，相当于一个迷你下载站。
+  static const String download = 'download';
+
+  static const List<String> all = [notes, media, quiz, tools, download, backup];
 
   /// 笔记配图统一放在「笔记所在目录」下的这个子目录里，方便集中管理
   static const String imageDirName = 'image';
@@ -18,20 +22,25 @@ class AppDirs {
   /// 列表里不显示的目录（配图目录属于附属资源，只让 .md 笔记可见）
   static const Set<String> hiddenDirNames = {imageDirName};
 
+  /// html 小工具的入口文件名（优先级从高到低）
+  static const List<String> htmlEntryNames = ['index.html', 'index.htm', 'main.html'];
+
   /// 目录用途说明（未登录首页的引导卡片直接用它渲染）
   static const Map<String, String> usage = {
-    notes: '笔记：每篇一个 .md 文件，配图放同一目录；子目录就是分类',
+    notes: '笔记：每篇一个 .md 文件，配图放同一目录；子目录就是分类。支持导出 PDF / HTML',
     media: '视频与图片：子目录会自动变成分类',
-    quiz: '题库：每个子目录 = 一套题库，里面放 .json',
-    tools: '工具资源：词库、速查表、模板',
+    quiz: '题库：一个 .json 就是一套题库，可以按套刷，也可以把整目录合并起来刷',
+    tools: '工具资源：词库、速查表，以及可直接运行的 html 小工具（一个子文件夹 = 一个分类）',
+    download: '下载站：专门放想在手机上下载的文件，工具页最上面的按钮直接进入',
     backup: 'App 回写：错题本、设置备份',
   };
 
   static const Map<String, String> sample = {
     notes: '中医/人体穴位图.png、中医/经络知识.md、绳结/平结演示.gif',
     media: '教学视频/xxx.mp4、图片/xxx.jpg',
-    quiz: 'python基础/python基础.json',
-    tools: '四级词汇.csv、公式速查.md',
+    quiz: 'python基础/第一章.json、python基础/第二章.json',
+    tools: '四级词汇.csv、公式速查.md、小工具/单位换算/index.html',
+    download: '软件/apk、课件/讲义.pdf',
     backup: '错题本.json',
   };
 }
@@ -62,6 +71,17 @@ class FileTypes {
   static bool isAudio(String name) => audio.contains(ext(name));
   static bool isMarkdown(String name) => ext(name) == 'md';
   static bool isJson(String name) => ext(name) == 'json';
+  static bool isPdf(String name) => ext(name) == 'pdf';
+  static bool isHtml(String name) {
+    final e = ext(name);
+    return e == 'html' || e == 'htm';
+  }
+
+  /// 能当纯文本直接读的类型（笔记导出、速查表预览都用它）
+  static bool isReadableText(String name) {
+    final e = ext(name);
+    return e == 'md' || e == 'txt' || e == 'json' || e == 'csv' || e == 'log' || e == 'xml' || e == 'yaml' || e == 'yml';
+  }
 
   /// 播放器可播的类型
   static bool isPlayable(String name) => isVideo(name) || isAudio(name);

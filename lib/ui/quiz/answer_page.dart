@@ -88,9 +88,13 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     return true;
   }
 
-  /// 记录对错：错 → 进错题本；对 → 错题本里标记为已掌握
+  /// 记录对错：错 → 进错题本；对 → 错题本里标记为已掌握。
+  /// 同时对错都会写入「已刷题」记录，刷题列表的进度条就是靠它统计的。
   Future<void> _record(Question q, List<int> mine, bool correct) async {
     try {
+      if (q.bankDir.isNotEmpty && q.id.isNotEmpty) {
+        await AppDb.instance.markDone(q.bankDir, q.id);
+      }
       if (correct) {
         if (q.bankDir.isNotEmpty && q.id.isNotEmpty) {
           await AppDb.instance.markMastered(q.bankDir, q.id, true);
@@ -164,10 +168,11 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
 
   Future<void> _submitExam() async {
     _timer?.cancel();
-    // 统一记录对错
+    // 统一记录对错（没作答的题不计入错题本，也不计入「已刷」）
     for (var k = 0; k < _list.length; k++) {
       final q = _list[k];
       final mine = _choices[k] ?? const <int>[];
+      if (mine.isEmpty) continue;
       await _record(q, mine, _isCorrect(q, mine));
     }
     ref.invalidate(wrongProvider);

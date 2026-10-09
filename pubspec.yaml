@@ -1,7 +1,7 @@
 name: studyhub
 description: 学聚 —— 自用学习 App，资料全部存放在自己的 WebDAV 服务器
 publish_to: 'none'
-version: 1.1.0+2
+version: 1.2.0+3
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -46,12 +46,45 @@ dependencies:
   # 下载到自定义目录时的存储权限申请
   permission_handler: ^11.3.1
 
+  # ---- 笔记导出：Markdown → PDF（纯 Dart，不引入任何原生代码）----
+  # 注意：pdf 3.13 起要求 xml 7.x，本项目 WebDAV 客户端用的是 xml 6.x，
+  # 所以这里刻意停在 3.12（xml >=6.3.0 <7.0.0）。
+  pdf: ^3.12.0
+
+  # ---- PDF 预览：Syncfusion 的 PDF 查看器是纯 Dart 实现，
+  #      不像原生插件那样需要在 Gradle 里加依赖，构建风险最低 ----
+  syncfusion_flutter_pdfviewer: ^35.1.39
+
+  # 导出后直接分享 / 打开外部查询页面
+  share_plus: ^13.3.1
+  url_launcher: ^6.3.3
+
+  # 运行服务器 tools 目录里的 html 小工具
+  webview_flutter: ^4.14.1
+
+  # 量角器、挂画助手（水平仪）用重力/磁力传感器
+  sensors_plus: ^7.1.1
+
+  # 噪声测量（麦克风）
+  noise_meter: ^6.0.0
+
+  # SOS 手电筒
+  torch_light: ^2.0.0
+
+  # 应用管理：读取已安装应用列表（带 apkPath，可提取安装包）
+  flutter_device_apps: ^1.0.0
+
   # 说明：以下依赖原本声明过但代码中未使用，为保证首次编译顺利已移除，
   # 需要时随时加回来即可：
-  #   file_picker, share_plus, package_info_plus, url_launcher
+  #   file_picker, package_info_plus
 
 dev_dependencies:
   flutter_lints: ^4.0.0
 
 flutter:
   uses-material-design: true
+
+  # 只作为「资源文件」打包，用 rootBundle 读字节喂给 PDF 生成器。
+  # 故意不写进 fonts:，否则会被注册成界面字体（没必要，还容易和系统字体冲突）。
+  assets:
+    - assets/fonts/NotoSansSC-Regular.ttf

@@ -86,13 +86,19 @@ jobs:
           #    and instead set android.packagingOptions.jniLibs.useLegacyPackaging to true in the build script."
           python3 - <<'PY'
           import os
+          import re
+
           path = None
           for c in ("android/app/build.gradle.kts", "android/app/build.gradle"):
               if os.path.exists(c):
                   path = c
                   break
           assert path, "找不到 android/app/build.gradle(.kts)"
+          kotlin = path.endswith(".kts")
           src = open(path, encoding="utf-8").read()
+          original = src
+
+          # ---------- 1. jniLibs.useLegacyPackaging = true ----------
           if "useLegacyPackaging" in src:
               print("已存在 useLegacyPackaging，跳过注入")
           else:
@@ -104,25 +110,58 @@ jobs:
                   "        }\n"
                   "    }\n"
               )
-              new = src.replace("android {", inject, 1)
-              assert new != src, "未找到 android { 块，注入失败"
-              open(path, "w", encoding="utf-8").write(new)
-              print("已注入 useLegacyPackaging = true ->", path)
+              src = src.replace("android {", inject, 1)
+              assert src != original, "未找到 android { 块，注入失败"
+              print("已注入 useLegacyPackaging = true")
+
+          # ---------- 2. minSdk 至少 24 ----------
+          # 为什么必须抬到 24：
+          #   syncfusion_flutter_pdfviewer / webview_flutter_android /
+          #   url_launcher_android / audio_streamer / permission_handler_android /
+          #   flutter_device_apps_android 这几个原生插件都声明了 minSdkVersion 24。
+          #   如果 app 的 minSdk 比它们低，Gradle 的 manifest merger 会直接失败：
+          #   "uses-sdk:minSdkVersion X cannot be smaller than version 24 declared in library"。
+          # 用 maxOf / Math.max 是为了「只上不下」：万一 Flutter 模板默认值比 24 还高，
+          # 也不会被我们改小。
+          if "MIN_SDK_BUMP_24" in src:
+              print("minSdk 已注入过，跳过")
+          else:
+              m = re.search(r"minSdk\s*=\s*([^\n]+)", src)
+              if m:
+                  value = m.group(1).strip()
+                  # 去掉行内注释再判断
+                  bare = value.split("//")[0].strip()
+                  src = src[: m.start()] + "minSdk = %s(%s, 24) /* MIN_SDK_BUMP_24 */" % (
+                      "maxOf" if kotlin else "Math.max",
+                      bare,
+                  ) + src[m.end():]
+                  print("已把 minSdk 抬到至少 24（原值 %s）" % bare)
+              else:
+                  m2 = re.search(r"minSdkVersion\s+([^\n]+)", src)
+                  if not m2:
+                      raise SystemExit("找不到 minSdk，注入失败")
+                  value = m2.group(1).strip().split("//")[0].strip()
+                  src = src[: m2.start()] + "minSdkVersion Math.max(%s, 24) /* MIN_SDK_BUMP_24 */" % value + src[m2.end():]
+                  print("已把 minSdkVersion 抬到至少 24（原值 %s）" % value)
+
+          open(path, "w", encoding="utf-8").write(src)
+          print("写入完成 ->", path)
           PY
 
           echo "========== 自检 =========="
           echo "--- Android 构建脚本 ---"
           ls -1 android/app/build.gradle*
-          echo "--- 注入结果（必须能看到 useLegacyPackaging = true）---"
-          grep -n "useLegacyPackaging" android/app/build.gradle* || { echo "!!! 注入失败，终止"; exit 1; }
-          echo "--- 注入后的 android 块前 16 行 ---"
-          sed -n '/^android {/,/^}/p' android/app/build.gradle* | head -16
-          echo "--- namespace / applicationId ---"
-          grep -nE "namespace|applicationId" android/app/build.gradle* || true
-          echo "--- MainActivity（模板生成，包名需与 namespace 一致）---"
-          find android/app/src/main -name "MainActivity.*"
+          echo "--- 注入结果（必须能看到 useLegacyPackaging 与 MIN_SDK_BUMP_24）---"
+          grep -nE "useLegacyPackaging|MIN_SDK_BUMP_24" android/app/build.gradle* || { echo "!!! 注入失败，终止"; exit 1; }
+          echo "--- minSdk 实际表达式 ---"
+          grep -nE "minSdk" android/app/build.gradle* | head -5
+          echo "--- 中文字体资源（PDF 导出依赖它，缺了整个构建会失败）---"
+          ls -la assets/fonts/ || { echo "!!! assets/fonts 目录不存在"; exit 1; }
+          test -s assets/fonts/NotoSansSC-Regular.ttf || { echo "!!! 中文字体缺失或为空"; exit 1; }
+          echo "字体大小：$(stat -c%s assets/fonts/NotoSansSC-Regular.ttf) 字节"
           echo "--- 清单关键项（只应有 usesCleartextTraffic，绝不能有 extractNativeLibs）---"
           grep -nE "usesCleartextTraffic|extractNativeLibs" android/app/src/main/AndroidManifest.xml || true
+          grep -nE "RECORD_AUDIO|QUERY_ALL_PACKAGES|FLASHLIGHT" android/app/src/main/AndroidManifest.xml || echo "(提示：工具类权限没读到)"
           if grep -q "extractNativeLibs" android/app/src/main/AndroidManifest.xml; then
             echo "!!! 清单里出现了 extractNativeLibs，会导致 packageRelease 失败"
             exit 1
@@ -137,7 +176,9 @@ jobs:
       - name: 依赖版本速览
         run: |
           set +e
-          grep -A1 -E "^  (media_kit|media_kit_video|media_kit_libs_android_video|flutter_markdown|package_info_plus|wakelock_plus|image_picker|cached_network_image|sqflite|dio|flutter_riverpod):" pubspec.lock | grep -E "^  \w|version" || true
+          grep -A1 -E "^  (media_kit|media_kit_video|media_kit_libs_android_video|flutter_markdown|package_info_plus|wakelock_plus|image_picker|cached_network_image|sqflite|dio|flutter_riverpod|pdf|syncfusion_flutter_pdfviewer|share_plus|url_launcher|webview_flutter|sensors_plus|noise_meter|torch_light|flutter_device_apps|permission_handler|xml):" pubspec.lock | grep -E "^  \w|version" || true
+          echo "----- 中文字体资源 -----"
+          ls -la assets/fonts/ 2>/dev/null || echo "(fonts 目录不存在)"
 
       # ---------- 8. 静态检查 ----------
       # 结果写入 analyze.log，失败时会被推送到 ci-logs 分支便于排查。
@@ -180,24 +221,41 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: 学聚 APK v${{ github.run_number }}（1.1.0）
+          name: 学聚 APK v${{ github.run_number }}（1.2.0）
           body: |
             自动构建产出，可直接下载安装。
 
             - `app-arm64-v8a-release.apk` —— 64 位 ARM，**近几年的手机基本都是这个，优先装它**
             - `app-armeabi-v7a-release.apk` —— 32 位 ARM，老机型（约 2016 年前）才需要
 
-            **v1.1.0 更新**
+            **v1.2.0 更新**
 
-            - 笔记 / 视频 / 刷题：点菜单进去就自动加载，不用再手动刷新
-            - 三个模块都加了「返回上级目录」箭头，手机返回键也能逐级返回
-            - 笔记配图统一存到「当前目录 / image」，笔记列表里不再显示 image 目录
-            - 图片预览页的下载按钮真正可用；媒体目录长按可直接下载视频/图片
-            - 设置里可自定义下载目录，并可开关「保存浏览记录」
-            - 刷题支持多级目录浏览，能看到完整目录结构
-            - 首页：最近浏览旁加了清除按钮，目录规范上移，去掉重复的设置入口
-            - 返回键改成连按两次才退出；不在首页时先回到首页
-            - 退出登录后保留服务器地址，下次登录可直接选（用户名密码留空）
+            笔记
+            - 长按笔记进入多选，可以一次选多篇（也能选整个目录），导出成 **PDF / HTML / Markdown**
+            - 多选时可选「每篇一个文件」或「合并成一份」（带封面和目录），导出后可直接分享到微信 / QQ
+            - PDF 导出内置中文字体，中文不会变成方块；图片会一起打包进去
+            - 目录里的 **.pdf 现在可以直接预览**；.txt / .csv / .json 也能直接看
+
+            刷题
+            - **一个 .json = 一套题库**。进到目录里能看到所有章节 / 单元的题库列表
+            - 每套题库都有自己的进度条：共多少题、已刷多少、错题多少、完成百分比
+            - 点题库弹菜单：顺序练 / 随机练 / 智能复习 / 只刷没刷过的 / 只练错题 / 模拟考试
+            - 也能「合并整个目录一起刷」，合并刷的进度照样记回各自的题库
+            - 题库体检（检查 json 字段有没有写错）挪到了刷题页右上角
+
+            工具
+            - 顶部单独一行是「**服务器下载站**」：浏览 /download 目录，点一下下载到手机
+            - 工具全部重做，按用途分 6 类共 20 个：直尺、量角器、噪声测量、屏幕坏点检测、
+              番茄时钟、日期计算、时间戳转换、提词器、配色助手、颜色码转换、挂画助手、
+              摩斯电码（含对照表）、加密编码、二维码生成、应用管理（可提取安装包）、
+              LED 屏幕（滚动 / 静止文字）、SOS 手电筒、抛硬币、简易画板、快递查询
+            - 新增「服务器小工具」：自动识别 /tools 里的 html 小工具，一个子文件夹一个分类，
+              根目录下散放的 .html 归到「独立小工具」，点开直接在 App 里运行
+            - 删除原来的一批旧工具；题库体检功能保留（见上）
+
+            其他
+            - 服务器目录规范新增 download/，引导页也已同步更新
+            - 新增权限：录音（噪声测量）、查看已安装应用（应用管理）、闪光灯（SOS）
 
             安装前需在手机上允许「安装未知来源应用」。
           files: |

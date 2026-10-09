@@ -121,8 +121,8 @@ class Question {
 
   bool get isMulti => type == 'multi';
 
-  Question copyWith({String? bankDir, String? bankName}) => Question(
-        id: id,
+  Question copyWith({String? id, String? bankDir, String? bankName}) => Question(
+        id: id ?? this.id,
         type: type,
         stem: stem,
         options: options,

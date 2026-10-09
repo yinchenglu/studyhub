@@ -28,8 +28,8 @@ class ServerGuidePage extends StatelessWidget {
                 Text('照着建一次，以后只往里丢文件就行', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
                 const SizedBox(height: 8),
                 Text(
-                  '在你自己的 WebDAV 服务器根目录下建一个 StudyHub 文件夹，然后在里面建下面 5 个子文件夹。'
-                  'App 只认这 5 个目录，名称必须一模一样（区分大小写）。',
+                  '在你自己的 WebDAV 服务器根目录下建一个 StudyHub 文件夹，然后在里面建下面 6 个子文件夹。'
+                  'App 只认这 6 个目录，名称必须一模一样（区分大小写）。',
                   style: text.bodyMedium,
                 ),
               ],
@@ -57,7 +57,9 @@ class ServerGuidePage extends StatelessWidget {
                   ),
                   const SizedBox(height: 10),
                   const _Bullet('笔记配图跟 .md 文件放同一个目录，markdown 里直接写 ![](图片名.png) 即可。'),
-                  const _Bullet('每个题库单独一个子目录，目录名就是 App 里显示的题库名。'),
+                  const _Bullet('题库：一个 .json 就是一套题库。同一个目录里放多个 json（第一章、第二章…），进目录就能看到每套的进度。'),
+                  const _Bullet('下载站：想在手机上下载的文件扔进 download/，工具页最上面那个按钮直接进，点一下就能下。'),
+                  const _Bullet('html 小工具：tools/ 里一个子文件夹一个分类，根目录下散放的 .html 单独归到「独立小工具」。'),
                   const _Bullet('没有的目录不影响使用，App 会提示缺少哪些，你在服务器上补建即可。'),
                   const _Bullet('目录想改名、加子分类都随意，App 每次打开都会重新读服务器结构。'),
                   const _Bullet('群晖（WebDAV Server）读写与拖进度都完整；chfs 等工具的部分版本目录遍历不全，App 会自动降级处理。'),
@@ -114,11 +116,16 @@ class _TreeCard extends StatelessWidget {
             '   ├─ media/     视频与图片\n'
             '   │   ├─ 教学视频/\n'
             '   │   └─ 图片/\n'
-            '   ├─ quiz/      题库\n'
-            '   │   ├─ python基础/python基础.json\n'
-            '   │   ├─ 医学中级/医学中级.json\n'
-            '   │   └─ 单词/英语四级核心词.json\n'
-            '   ├─ tools/     词库、速查表\n'
+            '   ├─ quiz/      题库（一个 .json 一套）\n'
+            '   │   └─ python基础/\n'
+            '   │       ├─ 第一章.json\n'
+            '   │       └─ 第二章.json\n'
+            '   ├─ tools/     词库、速查表、html 小工具\n'
+            '   │   ├─ 单位换算/index.html    ← 一个子文件夹 = 一个分类\n'
+            '   │   └─ 公式表.html            ← 放根目录 = 「独立小工具」\n'
+            '   ├─ download/  下载站（放想在手机上下载的文件）\n'
+            '   │   ├─ 课件/讲义.pdf\n'
+            '   │   └─ 软件/xxx.apk\n'
             '   └─ backup/    错题本、笔记备份（App 自动写）',
             style: TextStyle(fontFamily: 'monospace', fontSize: 12.5, height: 1.65),
           ),

@@ -24,6 +24,21 @@
     <!-- 拍照插入笔记（可选） -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- SOS 手电筒：控制闪光灯走的是 CameraManager.setTorchMode，需要 CAMERA 权限 -->
+    <uses-permission android:name="android.permission.FLASHLIGHT" />
+    <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
+
+    <!-- 噪声测量工具：读麦克风 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!--
+      应用管理工具：列出手机上已安装的应用、并提取安装包。
+      Android 11+ 默认只能看到一部分应用，要完整列表必须声明 QUERY_ALL_PACKAGES。
+      不想用这个工具的话可以删掉这一行（工具页会提示权限不足）。
+    -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
 
     <!-- 下载完成提醒（可选） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -83,6 +98,15 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT" />
             <data android:mimeType="text/plain" />
+        </intent>
+        <!-- 快递查询等工具要用浏览器打开 https 页面（Android 11+ 需要声明可见性） -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
         </intent>
     </queries>
 </manifest>

@@ -18,17 +18,125 @@ Question questionFromWrong(WrongRecord r) => Question(
       bankName: r.bankName,
     );
 
+/// 一条题库引用（就是服务器上的一个 .json 文件）
+class QuizBankRef {
+  final String path; // quiz/xxx/第一章.json
+  final String name;
+  final int count;
+  final bool isWordBank;
+  final int size;
+  final DateTime? modified;
+
+  const QuizBankRef({
+    required this.path,
+    required this.name,
+    required this.count,
+    this.isWordBank = false,
+    this.size = 0,
+    this.modified,
+  });
+}
+
 /// 题库仓库：扫描 WebDAV 的 quiz 目录
+///
+/// v1.2.0 起的重要约定：**一个 .json 文件 = 一套题库**。
+/// 以前是把整个目录里的 json 合并成一套，结果「一个目录里放了好几个题库」
+/// 时既看不到题库列表，也没法只刷其中一套。
 class QuizRepo {
   final WebDavClient dav;
   QuizRepo(this.dav);
 
   String get _root => AppDirs.quiz;
 
-  /// 列出某个相对目录下的直接子项（子目录 + 文件），刷题页的目录浏览用
+  /// 列出某个相对目录下的直接子项（子目录 + 文件）
   Future<List<DavEntry>> listChildren(String sub) => dav.list(joinPath(_root, sub), depth: 1);
 
-  /// 题库概览：每个子目录 = 一套题库
+  /// 目录里所有 json = 这个目录下的所有题库
+  Future<List<QuizBankRef>> banksInDir(String dirPath) async {
+    final entries = await dav.list(dirPath, depth: 1);
+    final files = entries.where((e) => !e.isDir && FileTypes.isJson(e.name)).toList();
+    // 并发读，目录里几十个 json 也不会太慢
+    return Future.wait(files.map((f) async {
+      try {
+        final bank = await _parseOne(f.path);
+        return QuizBankRef(
+          path: f.path,
+          name: bank.name.trim().isEmpty ? titleFromFileName(f.name) : bank.name.trim(),
+          count: bank.count,
+          isWordBank: bank.isWordBank,
+          size: f.size,
+          modified: f.modified,
+        );
+      } catch (_) {
+        return QuizBankRef(
+          path: f.path,
+          name: titleFromFileName(f.name),
+          count: 0,
+          size: f.size,
+          modified: f.modified,
+        );
+      }
+    }));
+  }
+
+  /// 统计目录里有多少个 .json（子目录卡片显示「N 套题库」用）
+  Future<int> jsonCountInDir(String dirPath) async {
+    try {
+      final entries = await dav.list(dirPath, depth: 1);
+      return entries.where((e) => !e.isDir && FileTypes.isJson(e.name)).length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// 读取单独一套题库（按 json 文件路径）
+  Future<QuestionBank> loadBankFile(String filePath) async {
+    final bank = await _parseOne(filePath);
+    final name = bank.name.trim().isEmpty ? titleFromFileName(filePath) : bank.name.trim();
+    return QuestionBank(
+      name: name,
+      dir: filePath,
+      questions: bank.questions.map((q) => q.copyWith(bankDir: filePath, bankName: name)).toList(),
+      words: bank.words,
+      isWordBank: bank.isWordBank,
+    );
+  }
+
+  /// 把一个目录下所有 json 合并成一套题库（「合并刷题」用）
+  ///
+  /// 关键点：合并后每道题仍然带着它自己所属 json 的路径作为 bankDir，
+  /// 所以合并刷的时候，进度照样能落回原来的单套题库上。
+  Future<QuestionBank> mergeDir(String dirPath) async {
+    final entries = await dav.list(dirPath, depth: 1);
+    final files = entries.where((e) => !e.isDir && FileTypes.isJson(e.name)).toList();
+    final questions = <Question>[];
+    final words = <WordItem>[];
+    var isWordBank = false;
+    for (final f in files) {
+      try {
+        final bank = await _parseOne(f.path);
+        final name = bank.name.trim().isEmpty ? titleFromFileName(f.name) : bank.name.trim();
+        questions.addAll(bank.questions.map((q) => q.copyWith(bankDir: f.path, bankName: name)));
+        words.addAll(bank.words);
+        isWordBank = isWordBank || bank.isWordBank;
+      } catch (_) {
+        continue;
+      }
+    }
+    final name = dirPath == _root ? '根目录题库' : baseName(dirPath);
+    return QuestionBank(
+      name: files.isEmpty ? name : '$name（合并 ${files.length} 套）',
+      dir: dirPath,
+      questions: questions,
+      words: words,
+      isWordBank: isWordBank && questions.isEmpty,
+    );
+  }
+
+  /// 兼容旧调用（速查表里的「题库体检」等）：合并整个目录
+  Future<QuestionBank> loadBank(String dirPath) => mergeDir(dirPath);
+
+  /// 题库概览
   Future<List<QuestionBank>> listBanks() async {
     final List<DavEntry> dirs;
     try {
@@ -37,69 +145,27 @@ class QuizRepo {
       return [];
     }
     final banks = <QuestionBank>[];
-    for (final d in dirs.where((e) => e.isDir)) {
-      try {
-        final bank = await loadBank(d.path);
-        if (bank.count > 0) banks.add(bank);
-      } catch (_) {
-        // 单个题库格式坏了不影响其他题库
-        continue;
+    Future<void> addAllOf(String dir) async {
+      for (final ref in await banksInDir(dir)) {
+        try {
+          banks.add(await loadBankFile(ref.path));
+        } catch (_) {
+          continue;
+        }
       }
     }
-    // 如果用户直接把 json 丢在 quiz 根目录，也当成一套题库
-    final looseJson = dirs.where((e) => !e.isDir && FileTypes.isJson(e.name)).toList();
-    if (looseJson.isNotEmpty) {
-      final merged = <Question>[];
-      final words = <WordItem>[];
-      var isWord = false;
-      for (final f in looseJson) {
-        try {
-          final bank = await _parseOne(f.path);
-          merged.addAll(bank.questions);
-          words.addAll(bank.words);
-          isWord = isWord || bank.isWordBank;
-        } catch (_) {}
-      }
-      if (merged.isNotEmpty || words.isNotEmpty) {
-        banks.add(QuestionBank(name: '根目录题库', dir: _root, questions: merged, words: words, isWordBank: isWord));
-      }
+
+    await addAllOf(_root);
+    for (final d in dirs.where((e) => e.isDir)) {
+      await addAllOf(d.path);
     }
     return banks;
-  }
-
-  /// 载入一整套题库（合并该目录下所有 json）
-  Future<QuestionBank> loadBank(String dirPath) async {
-    final entries = await dav.list(dirPath, depth: 1);
-    final files = entries.where((e) => !e.isDir && FileTypes.isJson(e.name)).toList();
-    final questions = <Question>[];
-    final words = <WordItem>[];
-    var isWordBank = false;
-    var name = baseName(dirPath);
-
-    for (final f in files) {
-      try {
-        final bank = await _parseOne(f.path);
-        if (bank.name.isNotEmpty) name = bank.name;
-        questions.addAll(bank.questions);
-        words.addAll(bank.words);
-        isWordBank = isWordBank || bank.isWordBank;
-      } catch (_) {
-        continue;
-      }
-    }
-    return QuestionBank(
-      name: name,
-      dir: dirPath,
-      questions: questions.map((q) => q.copyWith(bankDir: dirPath, bankName: name)).toList(),
-      words: words,
-      isWordBank: isWordBank && questions.isEmpty,
-    );
   }
 
   Future<QuestionBank> _parseOne(String filePath) async {
     final text = await dav.readText(filePath);
     final dynamic data = jsonDecode(text);
-    final map = data is Map ? Map<String, dynamic>.from(data) : <String, dynamic>{};
+    final map = data is Map ? Map<String, dynamic>.from(data as Map) : <String, dynamic>{};
 
     final name = (map['bankName'] ?? titleFromFileName(filePath)).toString();
     final dir = parentOf(filePath);
@@ -110,17 +176,31 @@ class QuizRepo {
       return QuestionBank(name: name, dir: dir, words: list, isWordBank: true);
     }
 
-    final list = ((map['questions'] ?? const []) as List)
-        .map((e) => Question.fromJson(Map<String, dynamic>.from(e as Map)).copyWith(bankDir: dir, bankName: name))
+    final raw = ((map['questions'] ?? const []) as List)
+        .map((e) => Question.fromJson(Map<String, dynamic>.from(e as Map)))
         .toList();
-    return QuestionBank(name: name, dir: dir, questions: list);
+    // 题库里没写 id 的题按顺序补一个稳定 id —— 进度条和错题本都需要唯一键
+    final list = <Question>[];
+    for (var i = 0; i < raw.length; i++) {
+      final q = raw[i];
+      list.add(q.copyWith(
+        id: q.id.trim().isEmpty ? 'q${i + 1}' : q.id,
+        bankDir: filePath,
+        bankName: name,
+      ));
+    }
+    return QuestionBank(name: name, dir: filePath, questions: list);
   }
 
-  /// 题库数量（首页统计）
+  /// 题库数量（首页统计）：数一数 quiz 树里的 json 文件
   Future<int> bankCount() async {
     try {
-      final dirs = await dav.list(_root, depth: 1);
-      return dirs.where((e) => e.isDir).length;
+      final entries = await dav.list(_root, depth: 1);
+      var n = entries.where((e) => !e.isDir && FileTypes.isJson(e.name)).length;
+      for (final d in entries.where((e) => e.isDir)) {
+        n += await jsonCountInDir(d.path);
+      }
+      return n;
     } catch (_) {
       return 0;
     }
