@@ -169,8 +169,13 @@ jobs:
           echo "=========================="
 
       # ---------- 6. 装依赖 ----------
+      # 一定要 tee 到 pub-get.log：pub get 一旦冲突，报错是唯一有用的线索，
+      # 而失败时 8~12 步全被跳过，analyze.log / build.log 根本不会生成。
+      # 之前就是因为没存这个文件，白瞎了一轮构建，只能靠猜。
       - name: 下载依赖
-        run: flutter pub get
+        run: |
+          set -o pipefail
+          flutter pub get 2>&1 | tee pub-get.log
 
       # ---------- 7. 打印关键依赖版本（便于排查）----------
       - name: 依赖版本速览
@@ -272,7 +277,7 @@ jobs:
           mkdir -p /tmp/logdump
           cd "$GITHUB_WORKSPACE"
 
-          cp analyze.log build.log /tmp/logdump/ 2>/dev/null
+          cp analyze.log build.log pub-get.log /tmp/logdump/ 2>/dev/null
           cp pubspec.lock /tmp/logdump/ 2>/dev/null
 
           flutter doctor -v > /tmp/logdump/flutter-doctor.log 2>&1
@@ -314,5 +319,6 @@ jobs:
           path: |
             analyze.log
             build.log
+            pub-get.log
           retention-days: 30
           if-no-files-found: ignore
