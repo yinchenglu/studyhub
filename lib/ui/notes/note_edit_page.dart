@@ -52,12 +52,14 @@ class _NoteEditPageState extends ConsumerState<NoteEditPage> {
     }
     try {
       final c = await repo.readNote(widget.path);
+      if (!mounted) return;
       _ctrl.text = c;
       setState(() {
         _loading = false;
         _dirty = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;
@@ -120,6 +122,8 @@ class _NoteEditPageState extends ConsumerState<NoteEditPage> {
     if (x == null) return;
     final repo = ref.read(noteRepoProvider);
     if (repo == null) return;
+    // 挑图 / 拍照期间页面可能已经被销毁（返回键、切菜单）
+    if (!mounted) return;
 
     setState(() => _saving = true);
     try {
@@ -141,6 +145,7 @@ class _NoteEditPageState extends ConsumerState<NoteEditPage> {
     setState(() => _saving = true);
     try {
       await repo.saveNote(widget.path, _ctrl.text);
+      if (!mounted) return;
       setState(() {
         _saving = false;
         _dirty = false;
@@ -148,6 +153,7 @@ class _NoteEditPageState extends ConsumerState<NoteEditPage> {
       _toast('已保存到服务器');
       if (pop && mounted) Navigator.of(context).pop(true);
     } catch (e) {
+      if (!mounted) return;
       setState(() => _saving = false);
       _toast('保存失败：$e');
     }

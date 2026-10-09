@@ -325,6 +325,10 @@ class NoteExporter {
     doc.addPage(pw.MultiPage(
       pageFormat: PdfPageFormat.a4,
       margin: margin,
+      // 必须显式给 maxPages！MultiPage 的默认上限只有 20 页，
+      // 超了会直接抛「This widget created more than 20 pages」。
+      // 合并导出多篇笔记轻松就过 20 页，不写这一行等于「合并导出」必炸。
+      maxPages: 2000,
       footer: (c) => pw.Align(
         alignment: pw.Alignment.center,
         child: pw.Text('${c.pageNumber} / ${c.pagesCount}', style: small),

@@ -4,7 +4,9 @@ publish_to: 'none'
 version: 1.2.0+3
 
 environment:
-  sdk: ">=3.3.0 <4.0.0"
+  # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps
+  # 要 >=3.12，取最大值。
+  sdk: ">=3.12.0 <4.0.0"
 
 dependencies:
   flutter:
@@ -15,7 +17,10 @@ dependencies:
 
   # 网络 + WebDAV
   dio: ^5.7.0
-  xml: ^6.5.0
+  # 必须是 7.x：syncfusion_flutter_pdf 要求 xml >=7.0.1，而 pdf 3.13 也要 xml 7。
+  # 曾经为了迁就 pdf 3.12（它要求 xml <7）把这里压在 6.x，结果 pub get 直接冲突。
+  # 我们只用 XmlDocument.parse / descendants / name.local / innerText，7.x 完全兼容。
+  xml: ^7.0.1
 
   # 本地存储
   shared_preferences: ^2.3.2
@@ -47,16 +52,25 @@ dependencies:
   permission_handler: ^11.3.1
 
   # ---- 笔记导出：Markdown → PDF（纯 Dart，不引入任何原生代码）----
-  # 注意：pdf 3.13 起要求 xml 7.x，本项目 WebDAV 客户端用的是 xml 6.x，
-  # 所以这里刻意停在 3.12（xml >=6.3.0 <7.0.0）。
-  pdf: ^3.12.0
+  # 必须是 3.13+：3.12 要求 xml <7.0.0，而 syncfusion_flutter_pdf 要求 xml >=7.0.1，
+  # 两者不可能共存（第 8 轮构建就死在这里）。3.13 起同样用 xml 7，冲突消失。
+  pdf: ^3.13.0
 
-  # ---- PDF 预览：Syncfusion 的 PDF 查看器是纯 Dart 实现，
-  #      不像原生插件那样需要在 Gradle 里加依赖，构建风险最低 ----
+  # ---- PDF 预览：Syncfusion 查看器（带原生 Android 代码，minSdk 要求 24，
+  #      工作流里已把 minSdk 抬到 24）----
   syncfusion_flutter_pdfviewer: ^35.1.39
 
   # 导出后直接分享 / 打开外部查询页面
-  share_plus: ^13.3.1
+  # 必须停在 12.x，绝不能升 13：
+  #   13.x 要 mime ^2.0.0 且 win32 ^6.0.1；
+  #   而 image_picker 这条链要 mime ^1.0.4，
+  #   media_kit_video → wakelock_plus 要 win32 ">=5.6.1 <6.0.0"。
+  #   两个都是硬冲突，pub get 必然失败（第 8 轮云端构建就死在这条）。
+  #   12.0.2 要 mime ">=1.0.4 <3.0.0" + win32 ^5.5.3，两边都兼容。
+  #   已核对 12.0.2 源码：SharePlus.instance.share(ShareParams(...))、
+  #   ShareParams 的 text/title/subject/files/previewThumbnail/sharePositionOrigin/uri
+  #   全部存在，XFile 也照常导出 —— 所以代码一行都不用改。
+  share_plus: ^12.0.2
   url_launcher: ^6.3.3
 
   # 运行服务器 tools 目录里的 html 小工具

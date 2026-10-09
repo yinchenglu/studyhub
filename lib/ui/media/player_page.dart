@@ -296,6 +296,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     if (r != null) {
       await _player.setRate(r);
       await SettingsStore.instance.setPlaybackSpeed(r);
+      // 关闭倍速面板后播放器可能已经被销毁（比如直接返回了）
+      if (!mounted) return;
       setState(() => _rate = r);
     }
   }

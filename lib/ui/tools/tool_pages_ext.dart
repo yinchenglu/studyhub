@@ -294,6 +294,7 @@ class _SosTorchPageState extends State<SosTorchPage> {
       final st = await Permission.camera.status;
       if (st.isGranted) return true;
       final r = await Permission.camera.request();
+      if (!mounted) return false;
       if (!r.isGranted) {
         setState(() => _denied = true);
         return false;
@@ -1875,10 +1876,16 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
         ],
       ),
     );
+    if (!mounted) {
+      tmp.dispose();
+      return;
+    }
     if (ok == true) {
       setState(() => _script.text = tmp.text);
       if (_scroll.hasClients) _scroll.jumpTo(0);
     }
+    // 这个 controller 是临时造的，用完必须自己回收，不然会一直漏
+    tmp.dispose();
   }
 }
 

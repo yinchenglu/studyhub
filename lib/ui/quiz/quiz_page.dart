@@ -76,6 +76,9 @@ class QuizPageState extends ConsumerState<QuizPage> {
     final repo = ref.read(quizRepoProvider);
     final done = await AppDb.instance.doneCountByBank();
     final wrong = await AppDb.instance.wrongCountByBank();
+    // 这两个 await 之后页面可能已经被销毁（切走 / 退出登录触发了重建），
+    // 不挡一下的话下面的 setState 会直接抛 "setState() called after dispose()"
+    if (!mounted) return;
     if (repo == null) {
       setState(() {
         _dirs = const [];
@@ -109,6 +112,7 @@ class QuizPageState extends ConsumerState<QuizPage> {
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;

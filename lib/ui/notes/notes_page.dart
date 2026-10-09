@@ -704,6 +704,8 @@ class NotesPageState extends ConsumerState<NotesPage> {
     if (x == null) return;
     final repo = ref.read(noteRepoProvider);
     if (repo == null) return;
+    // 用户在相册里挑图可能花很久，回来时这个页面可能已经被销毁了
+    if (!mounted) return;
     setState(() => _loading = true);
     try {
       final rel = await repo.uploadImage(_sub, x.path, baseName(x.path));

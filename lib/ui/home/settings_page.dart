@@ -56,6 +56,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   Future<void> _clearCache() async {
     final ok = await _confirm('清理临时缓存？', '清掉后本地不占空间，已下载的离线文件会保留。下次看视频会重新在线缓冲。');
     if (!ok) return;
+    if (!mounted) return;
     setState(() => _busy = true);
     await CacheManager.instance.clearCache();
     await _load();
@@ -65,6 +66,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   Future<void> _clearDownloads() async {
     final ok = await _confirm('删除所有已下载文件？', '删除后需要重新下载才能离线观看。');
     if (!ok) return;
+    if (!mounted) return;
     setState(() => _busy = true);
     await CacheManager.instance.clearDownloads();
     await _load();

@@ -51,11 +51,13 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
     });
     try {
       final c = await repo.readNote(widget.path);
+      if (!mounted) return;
       setState(() {
         _content = c;
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;

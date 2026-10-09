@@ -76,6 +76,8 @@ class MediaPageState extends ConsumerState<MediaPage> {
       if (_flat) {
         setState(() => _scanning = true);
         final items = await repo.scanAll();
+        // scanAll 要遍历整个 media 目录，慢的时候用户可能已经切走了
+        if (!mounted) return;
         setState(() {
           _flatItems = items;
           _loading = false;
@@ -83,12 +85,14 @@ class MediaPageState extends ConsumerState<MediaPage> {
         });
       } else {
         final entries = await repo.listDir(_sub);
+        if (!mounted) return;
         setState(() {
           _dirEntries = entries;
           _loading = false;
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;

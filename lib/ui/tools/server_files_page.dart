@@ -39,11 +39,13 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
     });
     try {
       final entries = await client.list(joinPath(AppDirs.tools, _sub), depth: 1);
+      if (!mounted) return;
       setState(() {
         _entries = entries;
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;
@@ -218,11 +220,13 @@ class _TextFilePageState extends ConsumerState<TextFilePage> {
     if (client == null) return;
     try {
       final t = await client.readText(widget.path);
+      if (!mounted) return;
       setState(() {
         _text = t;
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;

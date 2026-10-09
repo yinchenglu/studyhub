@@ -1382,6 +1382,8 @@ class _NoiseMeterPageState extends State<NoiseMeterPage> {
       return;
     }
     final st = await Permission.microphone.request();
+    // 权限弹窗期间用户完全可能退出去
+    if (!mounted) return;
     if (!st.isGranted) {
       setState(() => _denied = true);
       toast(context, '没有麦克风权限，测不了噪声');
