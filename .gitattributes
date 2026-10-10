@@ -9,3 +9,8 @@
 *.webp binary
 *.jar  binary
 *.apk  binary
+# 番茄时钟的铃声。必须显式标 binary：上面 `* text=auto eol=lf` 是全局规则，
+# 虽然 git 会靠 NUL 字节把 wav 识别成二进制、不会真的去转行尾，
+# 但这是「猜」出来的结论；写死之后就不依赖它的猜测了。
+# 铃声一旦被转行尾，整段音频就废了，这种代价不值得赌。
+*.wav  binary
