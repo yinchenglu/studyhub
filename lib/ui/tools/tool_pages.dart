@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_device_apps/flutter_device_apps.dart';
@@ -11,14 +12,21 @@ import 'package:flutter_device_apps/flutter_device_apps.dart';
 // 它会把 Flutter 那个带 .ltr / .rtl 的 TextDirection 遮蔽掉，
 // 于是文件里所有 TextDirection.ltr 都变成「getter 'ltr' isn't defined」。
 import 'package:intl/intl.dart' hide TextDirection;
+// 番茄时钟的铃声走 media_kit 播放 assets/sounds 里的 wav。
+// 不另引音频包 —— 播放器内核本来就在树里，而每加一个包都可能
+// 触发依赖冲突（这个项目历次构建失败几乎全是这个原因）。
+import 'package:media_kit/media_kit.dart';
 import 'package:noise_meter/noise_meter.dart';
 import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:share_plus/share_plus.dart';
+// 番茄时钟用 SharedPreferences 记住铃声选择
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:torch_light/torch_light.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../../core/display_metrics.dart';
 import '../../core/downloader.dart';
 import '../../core/permissions.dart';
 import '../../core/utils.dart';
@@ -77,7 +85,20 @@ class ToolScaffold extends StatelessWidget {
         ),
         actions: actions,
       ),
-      body: child,
+      body: SafeArea(
+        // 只处理底部：顶部有 AppBar 自己管，左右本来就是正常内容区。
+        //
+        // 为什么必须加（用户报的「颜色码转换最下面的内容被返回键遮挡」就是它）：
+        //   Android 从 Flutter 3.27 起默认开 edge-to-edge 布局，
+        //   系统返回键 / 手势条会**浮在** body 上面而不是把 body 顶上去。
+        //   Scaffold 只会自动避开键盘，不会避开导航栏。
+        //   于是页面最底下那一段（比如「常用色」色块）就被压住点不到了。
+        //   加一层 SafeArea 之后，所有工具页一次性都修好。
+        top: false,
+        left: false,
+        right: false,
+        child: child,
+      ),
       bottomNavigationBar: bottom,
     );
   }
@@ -180,6 +201,17 @@ class ResultBox extends StatelessWidget {
 
 // ============================================================ 1. 直尺
 
+/// 只有竖尺。
+///
+/// v1.3.0 改动：
+///   1. **删掉了横尺**。原来横竖各一把，实际用起来横尺要先把手机转过去，
+///      转屏之后刻度定位又变了，反而添乱。用户要求只留竖尺。
+///   2. **删掉了手动校准**。原来要拿银行卡去对 85.6 mm 那条线、拖滑块，
+///      本质是让用户替 App 猜屏幕 DPI。现在改成进页面自动问系统要
+///      `DisplayMetrics.xdpi`（见 core/display_metrics.dart），
+///      拿不到才回退到 Flutter 的 160/in 近似。
+///      仍然留了一个折叠的「微调」入口 —— 万一某台机器报的 DPI 离谱，
+///      用户还有个后路，但默认不打扰。
 class RulerPage extends StatefulWidget {
   const RulerPage({super.key});
 
@@ -187,106 +219,200 @@ class RulerPage extends StatefulWidget {
   State<RulerPage> createState() => _RulerPageState();
 }
 
-class _RulerPageState extends State<RulerPage> {
-  /// 1 厘米 = 多少逻辑像素。Flutter 逻辑像素基准 160/英寸，
-  /// 所以 160 / 2.54 ≈ 62.99。不同手机有偏差，用银行卡校准一下最准。
-  double _lpcm = 160 / 2.54;
-  bool _showCalib = false;
+class _RulerPageState extends State<RulerPage> with WidgetsBindingObserver {
+  /// 1 厘米 = 多少逻辑像素。先用 Flutter 的近似值兜底，
+  /// 拿到真实物理 DPI 后立刻换成实测值。
+  double _lpcm = kFallbackLpcm;
+
+  /// 是否用上了真实 DPI。false 表示这台机器读不到，正在用近似值。
+  bool _auto = false;
+
+  /// 是否已经问过系统了（用来区分「还没测」和「测了但拿不到」）
+  bool _probed = false;
+
+  /// 微调面板是否展开
+  bool _showFine = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    keepScreenOn(true);
+    // 校准要读 MediaQuery（拿 devicePixelRatio），首帧才有，
+    // 所以挂到 postFrameCallback 上，不能在 initState 里直接调。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _calibrate());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    keepScreenOn(false);
+    super.dispose();
+  }
+
+  @override
+  void didChangeMetrics() {
+    // 转屏 / 分屏 / 改显示大小之后 dpr 可能变，重量一次。
+    // 注意不能在 metrics 回调里直接 setState，得排到下一帧。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _calibrate());
+  }
+
+  Future<void> _calibrate() async {
+    if (!mounted) return;
+    final dpr = MediaQuery.of(context).devicePixelRatio;
+    final dpi = await readPhysicalDpi();
+    if (!mounted) return;
+    setState(() {
+      _probed = true;
+      if (dpi != null) {
+        _lpcm = lpcmFromDpi(dpi, dpr);
+        _auto = true;
+      } else {
+        _lpcm = kFallbackLpcm;
+        _auto = false;
+      }
+      _showFine = false; // 重新自动测过之后就把微调面板收起来
+    });
+  }
+
+  /// 屏幕上能放下的刻度总长（厘米）。用来决定尺子画多长。
+  double get _totalCm {
+    // 减掉标题栏 / 状态条 / 底部留白占掉的高度
+    final h = MediaQuery.of(context).size.height - 250;
+    final cm = h / _lpcm;
+    return cm < 5 ? 5 : cm; // 极端小屏也别少于 5 cm
+  }
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return ToolScaffold(
       title: '直尺',
-      subtitle: '按实际尺寸显示，可校准',
+      subtitle: _probed
+          ? (_auto ? '已按屏幕实际尺寸自动校准' : '按标准比例显示（本机读不到屏幕参数）')
+          : '正在校准…',
       actions: [
         IconButton(
-          tooltip: '校准',
-          onPressed: () => setState(() => _showCalib = !_showCalib),
-          icon: Icon(_showCalib ? Icons.straighten : Icons.tune),
+          tooltip: _showFine ? '收起微调' : '微调（一般用不着）',
+          onPressed: () => setState(() => _showFine = !_showFine),
+          icon: Icon(_showFine ? Icons.close : Icons.tune),
         ),
       ],
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(0, 8, 0, 32),
+        padding: const EdgeInsets.fromLTRB(0, 8, 0, 24),
         children: [
-          if (_showCalib)
+          // ---------- 自动校准状态条 ----------
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: (_auto ? const Color(0xFF1D9E75) : scheme.surfaceContainerHighest)
+                    .withValues(alpha: _auto ? 0.12 : 0.5),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  Icon(_auto ? Icons.check_circle_outline : Icons.info_outline,
+                      size: 16,
+                      color: _auto ? const Color(0xFF1D9E75) : scheme.onSurfaceVariant),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _auto
+                          ? '刻度已对齐真实尺寸（每厘米 ${_lpcm.toStringAsFixed(1)} 像素）'
+                          : '本机拿不到屏幕物理参数，按 1 英寸 = 160 像素的通用值显示，'
+                              '可能有几个百分点的偏差，可用右上角微调。',
+                      style: TextStyle(
+                          fontSize: 11.5, height: 1.5, color: scheme.onSurfaceVariant),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // ---------- 折叠的微调面板 ----------
+          if (_showFine)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
               child: Card(
-                color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.4),
+                color: scheme.primaryContainer.withValues(alpha: 0.35),
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('校准屏幕比例',
-                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                      const Text('微调屏幕比例',
+                          style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
                       const SizedBox(height: 4),
                       const Text(
-                        '拿一张银行卡横着比在下面的刻度上。卡的宽边标准是 85.6 mm，'
-                        '拖动滑块让下方的校准条正好等于卡的宽度即可。',
-                        style: TextStyle(fontSize: 12, height: 1.55),
+                        '自动值通常够用。如果拿实体尺比着看还有肉眼可见的偏差，'
+                        '可以在这里小幅修正 —— 下面那条标尺会跟着变。',
+                        style: TextStyle(fontSize: 11.5, height: 1.5),
                       ),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 8),
                       Row(
                         children: [
-                          const Text('细', style: TextStyle(fontSize: 12)),
+                          const Text('短', style: TextStyle(fontSize: 12)),
                           Expanded(
                             child: Slider(
                               value: _lpcm,
-                              min: 40,
-                              max: 95,
-                              onChanged: (v) => setState(() => _lpcm = v),
+                              min: kFallbackLpcm * 0.7,
+                              max: kFallbackLpcm * 1.4,
+                              onChanged: (v) => setState(() {
+                                _lpcm = v;
+                                _auto = false; // 手动介入之后就不能再自称「自动」了
+                              }),
                             ),
                           ),
-                          const Text('粗', style: TextStyle(fontSize: 12)),
+                          const Text('长', style: TextStyle(fontSize: 12)),
                           const SizedBox(width: 6),
                           SizedBox(
-                            width: 62,
+                            width: 74,
                             child: Text('${(_lpcm * 2.54).round()} px/in',
                                 style: const TextStyle(fontSize: 11)),
                           ),
                         ],
                       ),
-                      // 85.6mm 校准条
+                      // 10 cm 实体标尺，拿来跟真尺对着看
                       CustomPaint(
-                        size: Size(8.56 * _lpcm, 26),
-                        painter: _CalibPainter(_lpcm),
+                        size: Size(10 * _lpcm, 34),
+                        painter: _RulerPainter(_lpcm),
                       ),
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          TextButton(
+                            onPressed: () => _calibrate(),
+                            child: const Text('恢复自动'),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
               ),
             ),
-          const SizedBox(height: 12),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Text('横尺（把手机横过来量更顺手）',
-                style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+
+          // ---------- 竖尺本体 ----------
+          const SizedBox(height: 14),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text('竖尺 · 0 ~ ${_totalCm.floor()} cm',
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.primary)),
           ),
           const SizedBox(height: 8),
-          SizedBox(
-            height: 108,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
               child: CustomPaint(
-                size: Size(30 * _lpcm, 108),
-                painter: _RulerPainter(_lpcm, horizontal: true),
-              ),
-            ),
-          ),
-          const SizedBox(height: 18),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Text('竖尺', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            height: 360,
-            child: SingleChildScrollView(
-              child: CustomPaint(
-                size: Size(108, 30 * _lpcm),
-                painter: _RulerPainter(_lpcm, horizontal: false),
+                size: Size(96, _totalCm * _lpcm),
+                painter: _RulerPainter(_lpcm),
               ),
             ),
           ),
@@ -296,13 +422,19 @@ class _RulerPageState extends State<RulerPage> {
   }
 }
 
+/// 竖尺的刻度绘制。0 点在上，往下递增。
+///
+/// 刻度线长度分三档：整厘米最长、半厘米中等、毫米最短 ——
+/// 这也是实体尺的通行画法，扫一眼就能定位。
 class _RulerPainter extends CustomPainter {
   final double lpcm;
-  final bool horizontal;
-  _RulerPainter(this.lpcm, {required this.horizontal});
+
+  _RulerPainter(this.lpcm);
 
   @override
   void paint(Canvas canvas, Size size) {
+    // 尺身底色。用暖米黄而不是纯白 —— 对着实物量的时候不刺眼，
+    // 也跟实体尺的观感接近。
     final bg = Paint()..color = const Color(0xFFF7E9A0);
     canvas.drawRect(Offset.zero & size, bg);
 
@@ -311,74 +443,55 @@ class _RulerPainter extends CustomPainter {
       ..strokeWidth = 1
       ..strokeCap = StrokeCap.square;
 
-    final totalCm = (horizontal ? size.width : size.height) / lpcm;
-    final cross = horizontal ? size.height : size.width;
+    final h = size.height;
+    final w = size.width;
 
-    for (var mm = 0; mm <= (totalCm * 10).floor(); mm++) {
+    // 毫米刻度
+    final totalMm = (h / lpcm * 10).floor();
+    for (var mm = 0; mm <= totalMm; mm++) {
       final pos = mm / 10 * lpcm;
+      if (pos > h) break;
       final isCm = mm % 10 == 0;
       final isHalf = mm % 5 == 0;
-      final len = isCm ? cross * 0.42 : (isHalf ? cross * 0.28 : cross * 0.15);
-      if (horizontal) {
-        canvas.drawLine(Offset(pos, 0), Offset(pos, len), line);
-      } else {
-        canvas.drawLine(Offset(0, pos), Offset(len, pos), line);
-      }
+      final len = isCm ? w * 0.52 : (isHalf ? w * 0.34 : w * 0.18);
+      canvas.drawLine(Offset(0, pos), Offset(len, pos), line);
     }
 
-    // 厘米数字
-    for (var cm = 0; cm <= totalCm.floor(); cm++) {
+    // 厘米数字，贴在刻度线右侧
+    final totalCm = (h / lpcm).floor();
+    for (var cm = 0; cm <= totalCm; cm++) {
       final pos = cm * lpcm;
+      if (pos > h - 8) break;
       final tp = TextPainter(
         text: TextSpan(
             text: '$cm',
-            style: const TextStyle(fontSize: 12, color: Color(0xFF3A3A3A), fontWeight: FontWeight.w600)),
+            style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFF3A3A3A),
+                fontWeight: FontWeight.w600)),
         textDirection: TextDirection.ltr,
       )..layout();
-      if (horizontal) {
-        tp.paint(canvas, Offset(pos + 3, cross * 0.46));
-      } else {
-        tp.paint(canvas, Offset(cross * 0.46, pos + 3));
-      }
+      tp.paint(canvas, Offset(w * 0.56, pos + 3));
     }
   }
 
   @override
-  bool shouldRepaint(_RulerPainter old) => old.lpcm != lpcm || old.horizontal != horizontal;
-}
-
-class _CalibPainter extends CustomPainter {
-  final double lpcm;
-  _CalibPainter(this.lpcm);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final fill = Paint()..color = const Color(0xFF1D9E75);
-    canvas.drawRRect(
-        RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(4)), fill);
-    final border = Paint()
-      ..color = const Color(0xFF0F6E56)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    canvas.drawRRect(
-        RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(4)), border);
-    final tp = TextPainter(
-      text: const TextSpan(
-          text: '85.6 mm',
-          style: TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.w600)),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(canvas, Offset((size.width - tp.width) / 2, (size.height - tp.height) / 2));
-  }
-
-  @override
-  bool shouldRepaint(_CalibPainter old) => old.lpcm != lpcm;
+  bool shouldRepaint(_RulerPainter old) => old.lpcm != lpcm;
 }
 
 // ============================================================ 2. 量角器
 
-/// 用重力传感器测倾斜角：屏幕贴合被测面，读数就是该面与水平面的夹角。
-/// 支持「归零」——以任意面为 0 基准，测出相对夹角。
+/// 摄像头量角器。
+///
+/// v1.3.0 重做。老版本是「重力传感器测倾角」—— 只能量手机自己的姿势，
+/// 必须把手机侧面贴到被测面上才行。可现实里要量的通常是**画面里的东西**：
+/// 墙上两幅画之间的夹角、切菜时刀口和砧板的角度、柜门开了多少度……
+/// 这些根本没法贴。所以改成：摄像头取景 + 在画面上叠两条可拖动的直线。
+///
+/// 用法：拖线头把手，让 A 线贴住一条边、B 线贴住另一条边，
+/// 屏幕下方直接读出夹角。底部的「对齐真实水平」会借重力传感器把 A 线
+/// 掰到真正的水平位置 —— 于是量到的是相对水平面的绝对角度，
+/// 而不只是相对画面的角度。
 class ProtractorPage extends StatefulWidget {
   const ProtractorPage({super.key});
 
@@ -387,134 +500,409 @@ class ProtractorPage extends StatefulWidget {
 }
 
 class _ProtractorPageState extends State<ProtractorPage> {
-  StreamSubscription<AccelerometerEvent>? _sub;
-  double _raw = 0; // 相对水平面的倾角（度）
-  double _zero = 0;
+  CameraController? _cam;
+  StreamSubscription<AccelerometerEvent>? _acc;
+
+  bool _busy = true;
+  String? _err;
+
+  /// 是否用前置摄像头。默认后置（量外部的东西顺手），
+  /// 量自己身上的东西时切前置。
+  bool _front = false;
+
+  // ---------- 几何状态：全部用归一化坐标（0~1），跟着屏幕尺寸走 ----------
+
+  /// 两条射线的共同起点
+  Offset _center = const Offset(0.5, 0.52);
+
+  /// A / B 两条线的方向角（度）。屏幕坐标系：0° 指向右，顺时针为正。
+  double _angA = -35;
+  double _angB = 35;
+
+  /// 正在拖谁：null 没在拖；0 拖交点；1 拖 A 端；2 拖 B 端
+  int? _drag;
+
+  /// 锁定后禁止拖动 —— 腾出手去对着实物比划时有用
   bool _locked = false;
-  double _lockedValue = 0;
+
+  /// 真实水平方向在屏幕坐标里的角度（度）。读不到重力时为 null。
+  double? _horizon;
 
   @override
   void initState() {
     super.initState();
-    _sub = accelerometerEventStream(samplingPeriod: const Duration(milliseconds: 60)).listen(
+    keepScreenOn(true);
+    _initCam();
+    _startSensor();
+  }
+
+  @override
+  void dispose() {
+    _acc?.cancel();
+    // dispose 返回 Future，但这里没法 await，也不该 await ——
+    // 相机控制器自己会收尾，等它反而会拖住页面退出。
+    final c = _cam;
+    _cam = null;
+    c?.dispose();
+    keepScreenOn(false);
+    super.dispose();
+  }
+
+  void _startSensor() {
+    _acc = accelerometerEventStream(samplingPeriod: const Duration(milliseconds: 80)).listen(
       (e) {
-        if (_locked) return;
-        // 手机竖着贴合被测面：绕屏幕法线的倾角 = atan2(x, y)
-        var deg = math.atan2(e.x, e.y) * 180 / math.pi;
-        if (deg < 0) deg += 360;
-        setState(() => _raw = deg);
+        // 手机平放（屏幕朝天）时 x、y 都接近 0，atan2 会乱跳；
+        // 而且这时候「哪边是水平」本身也没意义 —— 直接丢掉这帧。
+        if (e.x.abs() + e.y.abs() < 1.5) return;
+        if (!mounted) return;
+        // 屏幕坐标里「天」的方向：设备 +y 在屏幕上是**向上**的，
+        // 而屏幕 y 轴向下，所以分量取反 ⇒ u_up = (x, -y)。
+        // 水平线垂直于 u_up，转 90° 之后正好化简成 atan2(x, y)。
+        setState(() => _horizon = math.atan2(e.x, e.y) * 180 / math.pi);
       },
       onError: (_) {},
       cancelOnError: false,
     );
   }
 
-  @override
-  void dispose() {
-    _sub?.cancel();
-    super.dispose();
+  Future<void> _initCam() async {
+    setState(() {
+      _busy = true;
+      _err = null;
+    });
+    CameraController? c;
+    try {
+      final st = await Permission.camera.request();
+      if (!st.isGranted) {
+        if (!mounted) return;
+        setState(() {
+          _busy = false;
+          _err = '没有相机权限。\n\n到「系统设置 → 应用 → 学聚 → 权限」里'
+              '把相机打开，再回来点重试。';
+        });
+        return;
+      }
+
+      final cams = await availableCameras();
+      if (cams.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _busy = false;
+          _err = '这台设备上没找到可用的摄像头。';
+        });
+        return;
+      }
+
+      // 想用哪个方向就优先挑哪个；挑不到就退而求其次用第一个，
+      // 总比直接报错好 —— 有些机型上报的 lensDirection 不太准。
+      final want = _front ? CameraLensDirection.front : CameraLensDirection.back;
+      final hit = cams.where((d) => d.lensDirection == want);
+      final desc = hit.isNotEmpty ? hit.first : cams.first;
+
+      c = CameraController(
+        desc,
+        ResolutionPreset.high,
+        enableAudio: false,
+      );
+      await c.initialize();
+
+      if (!mounted) {
+        // 初始化期间用户已经退出页面了，别把控制器泄漏在这儿
+        await c.dispose();
+        return;
+      }
+      // 换镜头时可能上一个还没销毁，这里统一收掉
+      final old = _cam;
+      setState(() {
+        _cam = c;
+        _busy = false;
+      });
+      if (old != null && old != c) old.dispose();
+    } catch (e) {
+      // 初始化失败也要把半成品控制器关掉，不然相机资源会一直被占着
+      if (c != null) {
+        try {
+          await c.dispose();
+        } catch (_) {}
+      }
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _err = '相机启动失败：$e\n\n'
+            '如果这台手机上别的 App 正占着相机，先关掉再重试。';
+      });
+    }
   }
 
-  /// 显示值：水平时 0 / 90 / 180 都要归成 0 附近的偏差
-  double get _display {
-    var d = _raw - _zero;
-    while (d <= -180) {
-      d += 360;
-    }
+  // ---------------------------------------------------------------- 几何换算
+
+  /// 线头把手离交点的距离（像素）。
+  /// 取屏幕短边的 30%，并且不小于 84 —— 太小了手指点不准，
+  /// 太大了在小屏上会顶到边。
+  double _handleR(Size s) => math.max(84.0, math.min(s.width, s.height) * 0.30);
+
+  Offset _centerPx(Size s) => Offset(_center.dx * s.width, _center.dy * s.height);
+
+  Offset _handlePx(double ang, Size s) {
+    final r = _handleR(s);
+    final a = ang * math.pi / 180;
+    return _centerPx(s) + Offset(math.cos(a) * r, math.sin(a) * r);
+  }
+
+  /// 手指位置相对交点的方位角（度）
+  double _angleTo(Offset p, Size s) {
+    final d = p - _centerPx(s);
+    return math.atan2(d.dy, d.dx) * 180 / math.pi;
+  }
+
+  /// A 与 B 之间的夹角，归一化到 0~180。小于 180 的那个角才是「夹角」，
+  /// 所以超过 180 就取补角。
+  double get _included {
+    var d = _angB - _angA;
     while (d > 180) {
       d -= 360;
     }
-    return d;
+    while (d <= -180) {
+      d += 360;
+    }
+    return d.abs();
   }
+
+  // ---------------------------------------------------------------- 手势
+
+  void _onDown(Offset p, Size s) {
+    // 判定半径 46 逻辑像素 ≈ 成年人手指肚的半径。再小就不好点了。
+    const tol = 46.0;
+    final dA = (p - _handlePx(_angA, s)).distance;
+    final dB = (p - _handlePx(_angB, s)).distance;
+    final dC = (p - _centerPx(s)).distance;
+
+    // 线头优先于交点：它们本身就在交点附近，不先判的话
+    // 想把线头拽出来时会变成一直在拖交点。
+    if (dA <= tol && dA <= dB) {
+      setState(() => _drag = 1);
+    } else if (dB <= tol) {
+      setState(() => _drag = 2);
+    } else if (dC <= tol) {
+      setState(() => _drag = 0);
+    } else {
+      _drag = null;
+    }
+  }
+
+  void _onMove(Offset p, Size s) {
+    switch (_drag) {
+      case 0:
+        // 拖交点。限制在屏幕内留一点边距，免得两条线整个跑出可视区。
+        setState(() {
+          _center = Offset(
+            (p.dx / s.width).clamp(0.12, 0.88),
+            (p.dy / s.height).clamp(0.12, 0.88),
+          );
+        });
+        break;
+      case 1:
+        setState(() => _angA = _angleTo(p, s));
+        break;
+      case 2:
+        setState(() => _angB = _angleTo(p, s));
+        break;
+      default:
+        break;
+    }
+  }
+
+  void _alignHorizon() {
+    final h = _horizon;
+    if (h == null) {
+      // 手机平放时读不到水平方向，或者传感器还没出数据
+      toast(context, '请把手机竖起来对着被测物体，稍等一下再试');
+      return;
+    }
+    setState(() => _angA = h);
+  }
+
+  void _reset() {
+    setState(() {
+      _center = const Offset(0.5, 0.52);
+      _angA = -35;
+      _angB = 35;
+      _drag = null;
+    });
+  }
+
+  // ---------------------------------------------------------------- 界面
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final v = _locked ? _lockedValue : _display;
-    final abs = v.abs();
-    final near = abs < 1.0;
-
     return ToolScaffold(
       title: '量角器',
-      subtitle: '把手机贴在被测面上读数',
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 18),
-              child: Column(
-                children: [
-                  Text(
-                    '${v.toStringAsFixed(1)}°',
-                    style: TextStyle(
-                      fontSize: 46,
-                      fontWeight: FontWeight.w300,
-                      color: near ? const Color(0xFF1D9E75) : scheme.onSurface,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    near ? '已水平 / 垂直' : '${v >= 0 ? '向右' : '向左'}倾斜 $abs°',
-                    style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
-                  ),
-                  const SizedBox(height: 14),
-                  SizedBox(
-                    height: 170,
-                    width: 300,
-                    child: CustomPaint(painter: _DialPainter(v)),
-                  ),
-                ],
+      subtitle: _horizon == null ? '用摄像头对准要量的两条边' : '拖动 A / B 线头贴合被测的两条边',
+      actions: [
+        if (_cam != null && _err == null) ...[
+          IconButton(
+            tooltip: _front ? '换成后置摄像头' : '换成前置摄像头',
+            onPressed: () {
+              setState(() => _front = !_front);
+              _initCam();
+            },
+            icon: const Icon(Icons.cameraswitch_outlined, size: 21),
+          ),
+          IconButton(
+            tooltip: _locked ? '解锁拖动' : '锁定（腾出手来比划）',
+            onPressed: () => setState(() => _locked = !_locked),
+            icon: Icon(_locked ? Icons.lock : Icons.lock_open, size: 20),
+          ),
+        ],
+      ],
+      child: _body(scheme),
+    );
+  }
+
+  Widget _body(ColorScheme scheme) {
+    if (_err != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.no_photography_outlined, size: 46, color: scheme.onSurfaceVariant),
+              const SizedBox(height: 16),
+              Text(_err!,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontSize: 13.5, height: 1.75, color: scheme.onSurfaceVariant)),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: _initCam,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('重试'),
               ),
-            ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_busy || _cam == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return LayoutBuilder(
+      builder: (ctx, cons) {
+        final s = Size(cons.maxWidth, cons.maxHeight);
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onPanStart: _locked ? null : (d) => _onDown(d.localPosition, s),
+          onPanUpdate: _locked ? null : (d) => _onMove(d.localPosition, s),
+          onPanEnd: _locked ? null : (_) => setState(() => _drag = null),
+          onPanCancel: _locked ? null : () => setState(() => _drag = null),
+          child: Stack(
+            children: [
+              Positioned.fill(child: _preview()),
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: _AngleOverlay(
+                    center: _center,
+                    angA: _angA,
+                    angB: _angB,
+                    included: _included,
+                    horizon: _horizon,
+                    handleR: _handleR(s),
+                    hideHandles: _locked,
+                  ),
+                ),
+              ),
+              Positioned(left: 0, right: 0, bottom: 0, child: _bottomBar(scheme)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _preview() {
+    final c = _cam!;
+    final ps = c.value.previewSize;
+    if (ps == null) return CameraPreview(c);
+
+    // previewSize 是**传感器原始**尺寸（横向），竖屏时要交换宽高，
+    // 否则画出来的比例是躺着的。
+    final portrait = MediaQuery.of(context).orientation == Orientation.portrait;
+    final w = portrait ? ps.height : ps.width;
+    final h = portrait ? ps.width : ps.height;
+
+    // 用 FittedBox(cover) 让画面铺满并且不变形：
+    // 它会按比例放大到刚好盖住父容器，多出来的部分裁掉。
+    // 比自己算 scale 靠谱 —— 手算漏掉一个旋转就是拉伸变形。
+    return ClipRect(
+      child: FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(
+          width: w,
+          height: h,
+          child: CameraPreview(c),
+        ),
+      ),
+    );
+  }
+
+  Widget _bottomBar(ColorScheme scheme) {
+    final btnStyle = OutlinedButton.styleFrom(
+      foregroundColor: Colors.white,
+      side: BorderSide(color: Colors.white.withValues(alpha: 0.55)),
+      padding: const EdgeInsets.symmetric(vertical: 11),
+    );
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 26, 16, 18),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Colors.black.withValues(alpha: 0.0),
+            Colors.black.withValues(alpha: 0.55),
+            Colors.black.withValues(alpha: 0.72),
+          ],
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${_included.toStringAsFixed(1)}°',
+            style: const TextStyle(
+                fontSize: 42, fontWeight: FontWeight.w300, color: Colors.white, height: 1.1),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            _locked ? '已锁定 · 点右上角解锁' : '拖动 A / B 线头贴合两条边，按住交点可以整体移动',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 11.5, color: Colors.white.withValues(alpha: 0.85)),
           ),
           const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () => setState(() => _zero = _raw),
-                  icon: const Icon(Icons.adjust, size: 18),
-                  label: const Text('归零（设为基准）'),
+                  onPressed: _locked ? null : _alignHorizon,
+                  style: btnStyle,
+                  icon: const Icon(Icons.horizontal_rule, size: 18),
+                  label: const Text('对齐真实水平'),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: FilledButton.icon(
-                  onPressed: () => setState(() {
-                    if (_locked) {
-                      _locked = false;
-                      _zero = _raw - _lockedValue; // 保住读数
-                    } else {
-                      _lockedValue = _display;
-                      _locked = true;
-                    }
-                  }),
-                  icon: Icon(_locked ? Icons.lock_open : Icons.lock_outline, size: 18),
-                  label: Text(_locked ? '解锁' : '锁定读数'),
+                child: OutlinedButton.icon(
+                  onPressed: _reset,
+                  style: btnStyle,
+                  icon: const Icon(Icons.restart_alt, size: 18),
+                  label: const Text('重置'),
                 ),
               ),
             ],
-          ),
-          const SizedBox(height: 18),
-          Card(
-            color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
-            child: const Padding(
-              padding: EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('怎么用', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-                  SizedBox(height: 6),
-                  Text(
-                    '1. 把手机侧面贴在被测的斜面 / 桌面上，读数就是它与水平面的夹角。\n'
-                    '2. 想比较两个面之间的夹角：先贴第一个面点「归零」，再贴第二个面，读数就是两者夹角。\n'
-                    '3. 挂电视、装支架时，「锁定读数」可以腾出手来照着装。',
-                    style: TextStyle(fontSize: 12.5, height: 1.75),
-                  ),
-                ],
-              ),
-            ),
           ),
         ],
       ),
@@ -522,59 +910,173 @@ class _ProtractorPageState extends State<ProtractorPage> {
   }
 }
 
-class _DialPainter extends CustomPainter {
-  final double value;
-  _DialPainter(this.value);
+/// 盖在相机画面上的量角线：两条射线 + 夹角扇形 + 线头把手 + 真实水平虚线。
+class _AngleOverlay extends CustomPainter {
+  final Offset center;
+  final double angA;
+  final double angB;
+  final double included;
+  final double? horizon;
+  final double handleR;
+  final bool hideHandles;
+
+  const _AngleOverlay({
+    required this.center,
+    required this.angA,
+    required this.angB,
+    required this.included,
+    required this.horizon,
+    required this.handleR,
+    required this.hideHandles,
+  });
+
+  static const _colA = Color(0xFF2EC4B6);
+  static const _colB = Color(0xFFFF9F1C);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final c = Offset(size.width / 2, size.height * 0.9);
-    final r = math.min(size.width / 2, size.height * 0.9) - 12;
+    final c = Offset(center.dx * size.width, center.dy * size.height);
+    // 射线要伸出屏幕，长度随便取个大值就行，超出的部分自然被裁掉
+    final far = size.width + size.height;
 
-    final arc = Paint()
-      ..color = const Color(0xFF7F77DD)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
-    canvas.drawArc(Rect.fromCircle(center: c, radius: r), math.pi, math.pi, false, arc);
-
-    final tick = Paint()
-      ..color = const Color(0xFF9AA0A6)
-      ..strokeWidth = 1;
-    for (var deg = -90; deg <= 90; deg += 5) {
-      final a = (deg - 90) * math.pi / 180;
-      final long = deg % 30 == 0;
-      final p1 = Offset(c.dx + r * math.cos(a), c.dy + r * math.sin(a));
-      final p2 = Offset(
-        c.dx + (r - (long ? 12 : 6)) * math.cos(a),
-        c.dy + (r - (long ? 12 : 6)) * math.sin(a),
-      );
-      canvas.drawLine(p1, p2, tick);
+    // ---------- 真实水平参考虚线 ----------
+    final h = horizon;
+    if (h != null) {
+      final a = h * math.pi / 180;
+      final u = Offset(math.cos(a), math.sin(a));
+      final dash = Paint()
+        ..color = const Color(0xFF8ED8FF).withValues(alpha: 0.6)
+        ..strokeWidth = 1.2
+        ..strokeCap = StrokeCap.round;
+      _dashedLine(canvas, c - u * far, c + u * far, dash, 12, 9);
     }
 
-    // 指针（value 为相对倾角，映射到 ±90 显示）
-    final clamped = value.clamp(-90.0, 90.0);
-    final a = (clamped - 90) * math.pi / 180;
-    final needle = Paint()
-      ..color = clamped.abs() < 1 ? const Color(0xFF1D9E75) : const Color(0xFFD85A30)
-      ..strokeWidth = 3
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(c, Offset(c.dx + r * math.cos(a), c.dy + r * math.sin(a)), needle);
-    canvas.drawCircle(c, 6, Paint()..color = needle.color);
+    // ---------- 夹角扇形 ----------
+    var sweep = angB - angA;
+    while (sweep > 180) {
+      sweep -= 360;
+    }
+    while (sweep <= -180) {
+      sweep += 360;
+    }
+    final rSector = math.min(size.width, size.height) * 0.26;
+    canvas.drawArc(
+      Rect.fromCircle(center: c, radius: rSector),
+      angA * math.pi / 180,
+      sweep * math.pi / 180,
+      true,
+      Paint()..color = const Color(0xFF7F77DD).withValues(alpha: 0.24),
+    );
 
+    // ---------- 两条射线 ----------
+    void ray(double deg, Color col) {
+      final a = deg * math.pi / 180;
+      final u = Offset(math.cos(a), math.sin(a));
+      canvas.drawLine(
+        c - u * far,
+        c + u * far,
+        Paint()
+          ..color = col
+          ..strokeWidth = 2.4
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+
+    ray(angA, _colA);
+    ray(angB, _colB);
+
+    // ---------- 夹角数值（放在扇形里） ----------
+    final mid = (angA + sweep / 2) * math.pi / 180;
     final tp = TextPainter(
       text: TextSpan(
-          text: '0°', style: const TextStyle(fontSize: 11, color: Color(0xFF9AA0A6))),
+        text: '${included.toStringAsFixed(1)}°',
+        style: const TextStyle(
+          fontSize: 19,
+          fontWeight: FontWeight.w700,
+          color: Colors.white,
+          shadows: [Shadow(color: Color(0xCC000000), blurRadius: 6)],
+        ),
+      ),
       textDirection: TextDirection.ltr,
     )..layout();
-    tp.paint(canvas, Offset(c.dx - tp.width / 2, c.dy - r - 18));
+    final lp = c + Offset(math.cos(mid), math.sin(mid)) * (rSector * 0.62);
+    tp.paint(canvas, lp - Offset(tp.width / 2, tp.height / 2));
+
+    // ---------- 交点 ----------
+    canvas.drawCircle(c, 15, Paint()..color = Colors.white.withValues(alpha: 0.88));
+    canvas.drawCircle(
+      c,
+      15,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = const Color(0xFF3A3A3A),
+    );
+    canvas.drawCircle(c, 4, Paint()..color = const Color(0xFF3A3A3A));
+
+    if (hideHandles) return;
+
+    // ---------- 两个线头把手 ----------
+    void handle(double deg, Color col, String label) {
+      final a = deg * math.pi / 180;
+      final p = c + Offset(math.cos(a), math.sin(a)) * handleR;
+      canvas.drawCircle(p, 19, Paint()..color = Colors.white.withValues(alpha: 0.92));
+      canvas.drawCircle(
+        p,
+        19,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.6
+          ..color = col,
+      );
+      final t = TextPainter(
+        text: TextSpan(
+            text: label,
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: col)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      t.paint(canvas, p - Offset(t.width / 2, t.height / 2));
+    }
+
+    handle(angA, _colA, 'A');
+    handle(angB, _colB, 'B');
+  }
+
+  /// 画虚线。Canvas 没有原生虚线，只能自己按 dash / gap 一段段画。
+  void _dashedLine(Canvas canvas, Offset a, Offset b, Paint paint, double dash, double gap) {
+    final total = (b - a).distance;
+    if (total <= 0) return;
+    final dir = (b - a) / total;
+    var t = 0.0;
+    while (t < total) {
+      final e = math.min(t + dash, total);
+      canvas.drawLine(a + dir * t, a + dir * e, paint);
+      t = e + gap;
+    }
   }
 
   @override
-  bool shouldRepaint(_DialPainter old) => old.value != value;
+  bool shouldRepaint(_AngleOverlay old) =>
+      old.center != center ||
+      old.angA != angA ||
+      old.angB != angB ||
+      old.included != included ||
+      old.horizon != horizon ||
+      old.handleR != handleR ||
+      old.hideHandles != hideHandles;
 }
 
 // ============================================================ 3. 配色助手
 
+/// 配色助手。
+///
+/// v1.3.0 新增 RGB 的输入与输出：
+///   * **输出** —— 主色下面多了一行 `RGB 59, 130, 246`，点一下直接复制。
+///     以前只有 HEX，但设计师给的颜色经常是 RGB 三元组。
+///   * **输入** —— 顶部加了一个框，可以把 RGB 直接粘进来，
+///     滑块和整套色板会立刻跳到那个颜色。
+///     除了标准写法，额外认「59,130,246」这种最朴素的三个数字
+///     （从设计稿 / 取色器里抄出来就是这形态，逗号、空格、斜杠都吃）。
 class ColorSchemeHelperPage extends StatefulWidget {
   const ColorSchemeHelperPage({super.key});
 
@@ -585,10 +1087,23 @@ class ColorSchemeHelperPage extends StatefulWidget {
 class _ColorSchemeHelperPageState extends State<ColorSchemeHelperPage> {
   double _h = 210, _s = 0.65, _l = 0.5;
 
+  final _input = TextEditingController();
+  String? _inputErr;
+
   Color get _base => HSLColor.fromAHSL(1, _h, _s, _l).toColor();
 
   String _hex(Color c) =>
       '#${(c.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
+
+  /// 0~255 的 RGB 三元组文本，例如「59, 130, 246」
+  String _rgb(Color c) =>
+      '${(c.r * 255).round()}, ${(c.g * 255).round()}, ${(c.b * 255).round()}';
+
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
 
   /// 同色系明暗阶梯
   List<Color> _tints(int n) {
@@ -606,6 +1121,49 @@ class _ColorSchemeHelperPageState extends State<ColorSchemeHelperPage> {
         (i) => HSLColor.fromAHSL(1, (_h + offset + (i - (n - 1) / 2) * spread) % 360, _s, _l)
             .toColor(),
       );
+
+  /// 解析用户输入的颜色。
+  ///
+  /// 先试「三个 0~255 的数字」这种朴素写法，再交给
+  /// ColorConvertPage.parseColor 处理 HEX / rgb() / hsl()。
+  Color? _parseInput(String s) {
+    final t = s.trim();
+    if (t.isEmpty) return null;
+
+    final lower = t.toLowerCase();
+    final plain = !t.startsWith('#') && !lower.startsWith('rgb') && !lower.startsWith('hsl');
+    if (plain) {
+      final nums = RegExp(r'\d+').allMatches(t).map((m) => int.parse(m.group(0)!)).toList();
+      if (nums.length == 3 && nums.every((n) => n >= 0 && n <= 255)) {
+        return Color.fromARGB(255, nums[0], nums[1], nums[2]);
+      }
+    }
+
+    // 复用颜色码转换那边的解析器 —— 两个页面对「什么算合法颜色」
+    // 的判断必须一致，不然用户会觉得其中一个坏了。
+    return ColorConvertPage.parseColor(t);
+  }
+
+  void _applyInput(String s) {
+    if (s.trim().isEmpty) {
+      setState(() => _inputErr = null);
+      return;
+    }
+    final c = _parseInput(s);
+    if (c == null) {
+      setState(() => _inputErr = '认不出来，试试 59,130,246 或 #3B82F6');
+      return;
+    }
+    final hsl = HSLColor.fromColor(c);
+    setState(() {
+      _h = hsl.hue;
+      _s = hsl.saturation;
+      // 明度滑块的下限是 0.05，纯黑/纯白进来时会超出范围，
+      // 不夹一下 Slider 会直接抛 assert。
+      _l = hsl.lightness.clamp(0.05, 0.95);
+      _inputErr = null;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -632,7 +1190,55 @@ class _ColorSchemeHelperPageState extends State<ColorSchemeHelperPage> {
               ),
             ),
           ),
-          const SizedBox(height: 12),
+
+          // ---------- RGB 输出 ----------
+          const SizedBox(height: 8),
+          InkWell(
+            onTap: () => copyText(context, _rgb(_base)),
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+              child: Row(
+                children: [
+                  Text('RGB',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: scheme.onSurfaceVariant)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(_rgb(_base),
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w600, letterSpacing: 0.4)),
+                  ),
+                  Icon(Icons.copy, size: 16, color: scheme.onSurfaceVariant),
+                ],
+              ),
+            ),
+          ),
+
+          // ---------- RGB 输入 ----------
+          const SizedBox(height: 4),
+          TextField(
+            controller: _input,
+            decoration: InputDecoration(
+              isDense: true,
+              labelText: '输入颜色直接跳过去',
+              hintText: '59,130,246 或 #3B82F6 或 rgb(59,130,246)',
+              errorText: _inputErr,
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.clear, size: 18),
+                onPressed: () {
+                  _input.clear();
+                  _applyInput('');
+                },
+              ),
+            ),
+            onChanged: _applyInput,
+          ),
+
+          const SizedBox(height: 10),
           _slider('色相', _h, 0, 360, (v) => setState(() => _h = v)),
           _slider('饱和度', _s, 0, 1, (v) => setState(() => _s = v)),
           _slider('明度', _l, 0.05, 0.95, (v) => setState(() => _l = v)),
@@ -670,11 +1276,23 @@ class _ColorSchemeHelperPageState extends State<ColorSchemeHelperPage> {
                 copyText(context, tints);
               },
               icon: const Icon(Icons.copy_all_outlined, size: 18),
-              label: const Text('复制明暗阶梯的 8 个色值'),
+              label: const Text('复制明暗阶梯的 8 个色值（HEX）'),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () {
+                final rgbs = _tints(8).map((c) => 'rgb(${_rgb(c)})').join('\n');
+                copyText(context, rgbs);
+              },
+              icon: const Icon(Icons.copy_all_outlined, size: 18),
+              label: const Text('复制明暗阶梯的 8 个色值（RGB）'),
             ),
           ),
           const SizedBox(height: 6),
-          Text('点任意色块也能单独复制它的色值。',
+          Text('点任意色块也能单独复制它的 HEX；主色那行的 RGB 点一下也能复制。',
               style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
         ],
       ),
@@ -732,6 +1350,18 @@ class _ColorSchemeHelperPageState extends State<ColorSchemeHelperPage> {
 
 // ============================================================ 4. 番茄时钟
 
+/// 番茄时钟。
+///
+/// v1.3.0 新增铃声：一个阶段结束时响铃，可以从 7 种里挑。
+///   * 音频走 media_kit 的 asset:// scheme 播放 —— 项目里本来就有它，
+///     不必为了几个提示音再引一个音频包（这个 App 历次构建翻车
+///     全是因为依赖冲突，能不加包就不加）。
+///   * 铃声文件是 .workbuddy/gen_sounds.py 合成出来的正弦波，
+///     无版权风险，7 个一共 340 KB。
+///   * 选择记在 SharedPreferences 里，下次进来还在。
+///
+/// 铃声只负责「响一声」，不负责把 App 从后台叫起来 ——
+/// 前台计时器被系统挂起时它也响不了。这点在页面底部写了说明。
 class PomodoroPage extends StatefulWidget {
   const PomodoroPage({super.key});
 
@@ -747,18 +1377,94 @@ class _PomodoroPageState extends State<PomodoroPage> {
   int _done = 0; // 已完成番茄数
   Timer? _t;
 
+  /// 铃声播放器。懒建 —— 大部分人不开铃声，没必要一进页面就占一份
+  /// 播放器资源。dispose 里会收掉。
+  Player? _player;
+
+  /// 当前铃声的 assets 路径。空串 = 静音。
+  String _bell = 'assets/sounds/bell_dingdong.wav';
+
+  /// 音量（0~1）。做得比系统铃声轻一点，默认 0.75。
+  double _bellVol = 0.75;
+
+  static const _kBellKey = 'pomodoro_bell';
+  static const _kBellVolKey = 'pomodoro_bell_vol';
+
+  /// 可选铃声。顺序按「最常用」排，静音放第一个方便一键关掉。
+  static const _bells = <(String, String)>[
+    ('静音', ''),
+    ('叮咚', 'assets/sounds/bell_dingdong.wav'),
+    ('清脆提示', 'assets/sounds/bell_tip.wav'),
+    ('上课铃', 'assets/sounds/bell_class.wav'),
+    ('下课铃', 'assets/sounds/bell_break.wav'),
+    ('轻柔三音', 'assets/sounds/bell_soft.wav'),
+    ('深钟', 'assets/sounds/bell_deep.wav'),
+    ('闹钟', 'assets/sounds/bell_alarm.wav'),
+  ];
+
   @override
   void initState() {
     super.initState();
     _left = _work * 60;
+    _restoreBell();
   }
 
   @override
   void dispose() {
     _t?.cancel();
+    _player?.dispose();
     keepScreenOn(false);
     super.dispose();
   }
+
+  // ------------------------------------------------------------ 铃声
+
+  Future<void> _restoreBell() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final b = sp.getString(_kBellKey);
+      final v = sp.getDouble(_kBellVolKey);
+      if (!mounted) return;
+      setState(() {
+        if (b != null && _bells.any((e) => e.$2 == b)) _bell = b;
+        if (v != null) _bellVol = v.clamp(0.0, 1.0);
+      });
+    } catch (_) {
+      // 读不到配置就用默认的，不该因此影响计时功能
+    }
+  }
+
+  Future<void> _saveBell() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_kBellKey, _bell);
+      await sp.setDouble(_kBellVolKey, _bellVol);
+    } catch (_) {}
+  }
+
+  /// 放某个铃声。空路径直接忽略。
+  ///
+  /// 这个函数**不碰 _bell** —— 试听按钮不该顺手把选中项也改掉。
+  /// （一开始写成「试听即选中」，结果点第二个的试听按钮时
+  ///   选中标记还停在第一个上，看着像坏了。）
+  Future<void> _play(String path) async {
+    if (path.isEmpty) return;
+    try {
+      _player ??= Player();
+      // media_kit 的 setVolume 取值 0~100，不是 0~1
+      await _player!.setVolume(_bellVol * 100);
+      // media_kit 约定：asset:/// 后面跟 pubspec 里写的相对路径。
+      // 三个斜杠不是笔误 —— 前两个是 scheme 的分隔符，第三个开始才是路径。
+      await _player!.open(Media('asset:///$path'));
+    } catch (_) {
+      // 放不出来就算了。铃声是锦上添花，绝不能因此把计时器搞崩。
+    }
+  }
+
+  /// 阶段结束时响铃
+  Future<void> _ring() => _play(_bell);
+
+  // ------------------------------------------------------------ 计时
 
   void _start() {
     setState(() => _running = true);
@@ -793,6 +1499,9 @@ class _PomodoroPageState extends State<PomodoroPage> {
 
   void _finishPhase() {
     HapticFeedback.heavyImpact();
+    // 铃声和震动同时来，隔着口袋也能察觉
+    _ring();
+
     final wasWork = _isWork;
     setState(() {
       if (wasWork) {
@@ -812,6 +1521,8 @@ class _PomodoroPageState extends State<PomodoroPage> {
         : '休息结束，开始下一个番茄';
     toast(context, msg);
   }
+
+  // ------------------------------------------------------------ 界面
 
   @override
   Widget build(BuildContext context) {
@@ -877,7 +1588,8 @@ class _PomodoroPageState extends State<PomodoroPage> {
                             height: 12,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
-                              color: i < _done % _rounds || (_done > 0 && _done % _rounds == 0 && i < _rounds)
+                              color: i < _done % _rounds ||
+                                      (_done > 0 && _done % _rounds == 0 && i < _rounds)
                                   ? accent
                                   : accent.withValues(alpha: 0.2),
                             ),
@@ -917,6 +1629,74 @@ class _PomodoroPageState extends State<PomodoroPage> {
               ),
             ],
           ),
+
+          // -------------------- 铃声 --------------------
+          const ToolSection('铃声（一个阶段结束时响）'),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
+              child: Column(
+                children: [
+                  for (final b in _bells)
+                    // 没用 RadioListTile：它的 groupValue / onChanged 在新版
+                    // Flutter 里被标记弃用、转向 RadioGroup 那套新 API，
+                    // 而这里是锁 3.47.6 编译的，跨版本行为不好保证。
+                    // 一个选中圆点而已，自己画最稳。
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      onTap: () {
+                        setState(() => _bell = b.$2);
+                        _saveBell();
+                        // 选中即试听 —— 光看「深钟」「叮咚」这些名字
+                        // 根本猜不出区别，不试听就得一个个点过去听。
+                        _play(b.$2);
+                      },
+                      leading: Icon(
+                        _bell == b.$2
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                        size: 20,
+                        color: _bell == b.$2 ? scheme.primary : scheme.onSurfaceVariant,
+                      ),
+                      title: Text(b.$1, style: const TextStyle(fontSize: 13.5)),
+                      trailing: b.$2.isEmpty
+                          ? Icon(Icons.volume_off_outlined,
+                              size: 19, color: scheme.onSurfaceVariant)
+                          : IconButton(
+                              tooltip: '试听',
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(Icons.play_circle_outline, size: 21),
+                              onPressed: () => _play(b.$2),
+                            ),
+                    ),
+                  const Divider(height: 6),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(0, 4, 8, 6),
+                    child: Row(
+                      children: [
+                        Text('音量', style: TextStyle(fontSize: 13, color: scheme.onSurface)),
+                        Expanded(
+                          child: Slider(
+                            value: _bellVol,
+                            min: 0,
+                            max: 1,
+                            onChanged: _bell.isEmpty
+                                ? null
+                                : (v) => setState(() => _bellVol = v),
+                            onChangeEnd: (_) => _saveBell(),
+                          ),
+                        ),
+                        Text('${(_bellVol * 100).round()}%',
+                            style: const TextStyle(fontSize: 11.5)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
           const ToolSection('时长设置（分钟）'),
           _num('专注', _work, 5, 120, (v) {
             setState(() {
@@ -928,8 +1708,13 @@ class _PomodoroPageState extends State<PomodoroPage> {
           _num('长休', _long, 5, 60, (v) => setState(() => _long = v)),
           _num('每几个番茄长休', _rounds, 2, 8, (v) => setState(() => _rounds = v)),
           const SizedBox(height: 10),
-          Text('提示：计时期间会保持屏幕常亮。锁屏或切到后台，计时可能被系统暂停。',
-              style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+          Text(
+            '提示：计时期间会保持屏幕常亮。\n'
+            '铃声只在 App 停在前台时有效 —— 锁屏或切后台后系统会挂起计时，'
+            '到点也响不了，这不是 App 能控制的。真要长时间离开，'
+            '建议用系统自带的闹钟兜底。',
+            style: TextStyle(fontSize: 11.5, height: 1.7, color: scheme.onSurfaceVariant),
+          ),
         ],
       ),
     );
@@ -955,6 +1740,21 @@ class _PomodoroPageState extends State<PomodoroPage> {
 
 // ============================================================ 5. 日期计算
 
+/// 日期计算。
+///
+/// v1.3.0 改动：
+///   * 删掉「常用倒计时」整块 —— 春节 / 暑假 / 元旦那几条是硬编码的，
+///     每年都得手改，而且跟「日期计算」这个定位本来就不搭。
+///   * 「今天」里删掉「距元旦 N 天」。它跟紧挨着的「本年第 N 天」是同一件事，
+///     两个数并排放着只会让人犹豫该看哪个。
+///   * 差值结果只留**天数**和**日期**，去掉「= x 周 = y 个月」「工作日 z 天」。
+///     用户明确说了这些不要 —— 周和月是估出来的（/7、/30.44），
+///     看着精确其实不准；工作日还要考虑法定节假日才算得对。
+///   * 新增「把开始那天也算进去」开关。1 月 1 日到 1 月 3 日，
+///     不含首日是 2 天、含首日是 3 天 —— 两种口径日常都会用到
+///     （数请假天数要含首日，数间隔天数不含），所以做成可切换。
+///   * 日期选择器现在是中文的 —— 由 MaterialApp 的
+///     GlobalMaterialLocalizations 统一处理，这里不用再管。
 class DateCalcPage extends StatefulWidget {
   const DateCalcPage({super.key});
 
@@ -969,6 +1769,9 @@ class _DateCalcPageState extends State<DateCalcPage> {
   int _offset = 30;
   String _unit = '天';
 
+  /// 区间天数是否把开始那天也算进去。默认不含（这是「相差多少天」的通行口径）。
+  bool _includeStart = false;
+
   static final _fmt = DateFormat('yyyy-MM-dd');
   static final _fmtLong = DateFormat('yyyy年M月d日 EEEE', 'zh_CN');
 
@@ -979,17 +1782,26 @@ class _DateCalcPageState extends State<DateCalcPage> {
         lastDate: DateTime(2200),
       );
 
+  /// 把时间部分抹掉，只留年月日。
+  /// 不抹的话 DateTime.now() 带时分秒，两个日期相减的 inDays 会因为
+  /// 几小时之差少算一天 —— 这是日期计算里最经典的坑。
+  static DateTime _d0(DateTime d) => DateTime(d.year, d.month, d.day);
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final today = DateTime.now();
-    final days = _to.difference(_from).inDays;
-    final workDays = _countWorkDays(_from, _to);
+
+    final rawDays = _d0(_to).difference(_d0(_from)).inDays;
+    // 只有顺着数（结束 >= 开始）时，「含首日」才是 +1。
+    // 反着数的时候加 1 反而更难解释，所以不动。
+    final days = rawDays + (_includeStart && rawDays >= 0 ? 1 : 0);
+
     final basePlus = _shift(_base, _offset, _unit);
 
     return ToolScaffold(
       title: '日期计算',
-      subtitle: DateFormat('yyyy年M月d日 EEEE', 'zh_CN').format(today),
+      subtitle: _fmtLong.format(today),
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
@@ -997,7 +1809,7 @@ class _DateCalcPageState extends State<DateCalcPage> {
           ResultBox(
             text: '${_fmtLong.format(today)}\n'
                 '本年第 ${_dayOfYear(today)} 天 · 剩 ${_daysInYear(today.year) - _dayOfYear(today)} 天\n'
-                '第 ${_isoWeek(today)} 周 · ${_daysAgoText(today)}',
+                '第 ${_isoWeek(today)} 周',
             hint: '点一下复制日期',
           ),
 
@@ -1010,12 +1822,24 @@ class _DateCalcPageState extends State<DateCalcPage> {
                   _dateRow('开始', _from, (d) => setState(() => _from = d)),
                   _dateRow('结束', _to, (d) => setState(() => _to = d)),
                   const Divider(height: 18),
-                  if (days >= 0)
+                  SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    value: _includeStart,
+                    onChanged: (v) => setState(() => _includeStart = v),
+                    title: const Text('把开始那天也算进去', style: TextStyle(fontSize: 13)),
+                    subtitle: Text(
+                      _includeStart
+                          ? '例：1 月 1 日 → 1 月 3 日，算 3 天（含首尾）'
+                          : '例：1 月 1 日 → 1 月 3 日，算 2 天（不含首日）',
+                      style: TextStyle(fontSize: 11.5, height: 1.4, color: scheme.onSurfaceVariant),
+                    ),
+                  ),
+                  const Divider(height: 18),
+                  if (rawDays >= 0)
                     ResultBox(
                       text: '相差 $days 天\n'
-                          '= ${(days / 7).toStringAsFixed(2)} 周'
-                          '${days >= 30 ? ' = ${(days / 30.44).toStringAsFixed(2)} 个月' : ''}\n'
-                          '工作日 $workDays 天（不含周六日）',
+                          '${_fmt.format(_d0(_from))}  →  ${_fmt.format(_d0(_to))}',
                     )
                   else
                     const ResultBox(text: '结束日期比开始日期早，把两个日期换一下顺序'),
@@ -1059,31 +1883,11 @@ class _DateCalcPageState extends State<DateCalcPage> {
                   ),
                   const SizedBox(height: 8),
                   ResultBox(
-                    text: '$_base 的 $_offset $_unit 后是\n${_fmt.format(basePlus)}（${DateFormat('EEEE', 'zh_CN').format(basePlus)}）',
+                    text: '$_base 的 $_offset $_unit 后是\n'
+                        '${_fmt.format(_d0(basePlus))}（${DateFormat('EEEE', 'zh_CN').format(basePlus)}）',
                   ),
                 ],
               ),
-            ),
-          ),
-
-          const ToolSection('常用倒计时'),
-          Card(
-            child: Column(
-              children: [
-                for (final item in _commonCountdowns(today))
-                  ListTile(
-                    dense: true,
-                    title: Text(item.$1, style: const TextStyle(fontSize: 13.5)),
-                    trailing: Text(
-                      item.$2,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: scheme.primary,
-                      ),
-                    ),
-                  ),
-              ],
             ),
           ),
         ],
@@ -1109,30 +1913,12 @@ class _DateCalcPageState extends State<DateCalcPage> {
 
   static int _daysInYear(int y) => DateTime(y, 12, 31).difference(DateTime(y, 1, 1)).inDays + 1;
 
+  /// ISO 8601 周号：第 1 周是含当年第一个星期四的那一周。
   static int _isoWeek(DateTime d) {
     final thursday = d.add(Duration(days: 4 - (d.weekday == 7 ? 7 : d.weekday)));
     final firstThursday = DateTime(thursday.year, 1, 1)
         .add(Duration(days: (11 - DateTime(thursday.year, 1, 1).weekday) % 7));
     return ((thursday.difference(firstThursday).inDays) / 7).floor() + 1;
-  }
-
-  static int _countWorkDays(DateTime a, DateTime b) {
-    var s = DateTime(a.year, a.month, a.day);
-    var e = DateTime(b.year, b.month, b.day);
-    var sign = 1;
-    if (s.isAfter(e)) {
-      final t = s;
-      s = e;
-      e = t;
-      sign = -1;
-    }
-    var n = 0;
-    var cur = s;
-    while (cur.isBefore(e)) {
-      if (cur.weekday != DateTime.saturday && cur.weekday != DateTime.sunday) n++;
-      cur = cur.add(const Duration(days: 1));
-    }
-    return n * sign;
   }
 
   static DateTime _shift(DateTime d, int n, String unit) {
@@ -1146,27 +1932,6 @@ class _DateCalcPageState extends State<DateCalcPage> {
       default:
         return d.add(Duration(days: n));
     }
-  }
-
-  static String _daysAgoText(DateTime today) {
-    final d = DateTime(today.year, 1, 1);
-    return '距元旦 ${today.difference(d).inDays} 天';
-  }
-
-  static List<(String, String)> _commonCountdowns(DateTime today) {
-    final y = today.year;
-    final items = <(String, DateTime)>[
-      ('今年还剩', DateTime(y + 1, 1, 1)),
-      ('下一个春节（约）', DateTime(y, 2, 10).isAfter(today) ? DateTime(y, 2, 10) : DateTime(y + 1, 2, 10)),
-      ('暑假开始（7 月 1 日）', DateTime(y, 7, 1).isAfter(today) ? DateTime(y, 7, 1) : DateTime(y + 1, 7, 1)),
-      ('元旦', DateTime(y + 1, 1, 1)),
-    ];
-    return items
-        .map((e) => (
-              e.$1,
-              '${DateTime(e.$2.year, e.$2.month, e.$2.day).difference(DateTime(today.year, today.month, today.day)).inDays} 天'
-            ))
-        .toList();
   }
 }
 
@@ -1854,6 +2619,25 @@ class _AppManagerPageState extends State<AppManagerPage> {
 
 // ============================================================ 9. LED 手机屏幕
 
+/// LED 滚动屏（v1.3.0 修了两处用户报的问题）。
+///
+/// **1. 「横屏 / 竖屏」等按钮看不见字**
+///   原来用的是 ActionChip。Material 3 的 Chip 自带一套 labelStyle 和
+///   背景色（white24），配上写死的白色文字 —— 在「白底黑字」模式下
+///   就变成白底上的白字，彻底看不见。而且 fontSize 只有 11.5，
+///   即使看得见也费劲。
+///   现在改成自己画的按钮，前景 / 背景色跟着当前主题走（见 _chip）。
+///
+/// **2. 竖屏时控制按钮被设置按钮压住**
+///   原来设置开关是右下角的 FloatingActionButton。竖屏时控制面板很高，
+///   最后一行按钮正好落在 FAB 底下，点不到。
+///   现在把开关挪到**右上角**悬浮 —— 控制面板永远在底部，
+///   两者再也不可能重叠。
+///
+/// 附带把退出时的屏幕方向恢复改成「锁回竖屏」（跟媒体播放器页一致）：
+/// 原来写的是 DeviceOrientation.values（全方向），
+/// 结果在这页点过「横屏」再退出去，整个 App 就变成可以横屏了，
+/// 而其他页面全是按竖屏设计的，一转就乱。
 class LedMarqueePage extends StatefulWidget {
   const LedMarqueePage({super.key});
 
@@ -1885,6 +2669,10 @@ class _LedMarqueePageState extends State<LedMarqueePage> with SingleTickerProvid
     Colors.white,
   ];
 
+  /// 控制面板上的前景色。跟着底/字反色一起翻，否则白底上写白字。
+  Color get _fg => _invert ? Colors.black87 : Colors.white;
+  Color get _fgDim => _invert ? Colors.black54 : const Color(0xFFB0B0B0);
+
   @override
   void initState() {
     super.initState();
@@ -1900,7 +2688,8 @@ class _LedMarqueePageState extends State<LedMarqueePage> with SingleTickerProvid
     _text.dispose();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     keepScreenOn(false);
-    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    // 锁回竖屏，不是「全方向」—— 整个 App 只设计了竖屏布局。
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     super.dispose();
   }
 
@@ -1915,167 +2704,210 @@ class _LedMarqueePageState extends State<LedMarqueePage> with SingleTickerProvid
     _textWidth = tp.width;
   }
 
+  void _toggleScroll() {
+    setState(() {
+      _scroll = !_scroll;
+      if (_scroll) {
+        _anim.repeat();
+      } else {
+        _anim.stop();
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final color = _colors[_colorIndex % _colors.length];
     return Scaffold(
       backgroundColor: _invert ? Colors.white : Colors.black,
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            // 显示区
-            Expanded(
-              child: GestureDetector(
-                onTap: () => setState(() {
-                  _scroll = !_scroll;
-                  if (_scroll) {
-                    _anim.repeat();
-                  } else {
-                    _anim.stop();
-                  }
-                }),
-                child: LayoutBuilder(
-                  builder: (ctx, c) {
-                    _measure(c.maxWidth);
-                    return ClipRect(
-                      child: _scroll
-                          ? _marquee(color)
-                          : Center(
-                              child: Transform.scale(
-                                scaleX: _mirror ? -1 : 1,
-                                child: _static(color),
+            Column(
+              children: [
+                // ---------- 显示区 ----------
+                Expanded(
+                  child: GestureDetector(
+                    onTap: _toggleScroll,
+                    child: LayoutBuilder(
+                      builder: (ctx, c) {
+                        _measure(c.maxWidth);
+                        return ClipRect(
+                          child: _scroll
+                              ? _marquee(color)
+                              : Center(
+                                  child: Transform.scale(
+                                    scaleX: _mirror ? -1 : 1,
+                                    child: _static(color),
+                                  ),
+                                ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+
+                // ---------- 控制区（收起全屏后可调）----------
+                if (!_full)
+                  Container(
+                    color: _invert ? Colors.white : const Color(0xFF141414),
+                    padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
+                    child: Column(
+                      children: [
+                        TextField(
+                          controller: _text,
+                          style: TextStyle(color: _fg),
+                          maxLines: 2,
+                          minLines: 1,
+                          decoration: InputDecoration(
+                            isDense: true,
+                            hintText: '要显示的文字',
+                            hintStyle: TextStyle(color: _fgDim),
+                            border: const OutlineInputBorder(),
+                          ),
+                          onChanged: (_) => setState(() {}),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Text('速度', style: TextStyle(fontSize: 12, color: _fgDim)),
+                            Expanded(
+                              child: Slider(
+                                value: _speed,
+                                min: 3,
+                                max: 40,
+                                onChanged: (v) {
+                                  setState(() => _speed = v);
+                                  _anim.duration = Duration(milliseconds: (v * 1000).round());
+                                  if (_scroll) _anim.repeat();
+                                },
                               ),
                             ),
-                    );
-                  },
-                ),
-              ),
-            ),
-
-            // 控制区（收起全屏后可调）
-            if (!_full)
-              Container(
-                color: _invert ? Colors.white : const Color(0xFF141414),
-                padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
-                child: Column(
-                  children: [
-                    TextField(
-                      controller: _text,
-                      style: TextStyle(color: _invert ? Colors.black : Colors.white),
-                      maxLines: 2,
-                      minLines: 1,
-                      decoration: InputDecoration(
-                        isDense: true,
-                        hintText: '要显示的文字',
-                        hintStyle: TextStyle(color: Colors.grey.shade500),
-                        border: const OutlineInputBorder(),
-                      ),
-                      onChanged: (_) => setState(() {}),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Text('速度', style: TextStyle(fontSize: 12, color: Colors.grey.shade400)),
-                        Expanded(
-                          child: Slider(
-                            value: _speed,
-                            min: 3,
-                            max: 40,
-                            onChanged: (v) {
-                              setState(() => _speed = v);
-                              _anim.duration = Duration(milliseconds: (v * 1000).round());
-                              if (_scroll) _anim.repeat();
-                            },
-                          ),
+                            Text('${_speed.round()}s',
+                                style: TextStyle(fontSize: 11, color: _fgDim)),
+                          ],
                         ),
-                        Text('${_speed.round()}s',
-                            style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
-                      ],
-                    ),
-                    Row(
-                      children: [
-                        Text('字号', style: TextStyle(fontSize: 12, color: Colors.grey.shade400)),
-                        Expanded(
-                          child: Slider(
-                            value: _fontSize,
-                            min: 24,
-                            max: 200,
-                            onChanged: (v) => setState(() => _fontSize = v),
-                          ),
+                        Row(
+                          children: [
+                            Text('字号', style: TextStyle(fontSize: 12, color: _fgDim)),
+                            Expanded(
+                              child: Slider(
+                                value: _fontSize,
+                                min: 24,
+                                max: 200,
+                                onChanged: (v) => setState(() => _fontSize = v),
+                              ),
+                            ),
+                            Text('${_fontSize.round()}',
+                                style: TextStyle(fontSize: 11, color: _fgDim)),
+                          ],
                         ),
-                        Text('${_fontSize.round()}',
-                            style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
-                      ],
-                    ),
-                    Row(
-                      children: [
-                        for (var i = 0; i < _colors.length; i++)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 7),
-                            child: InkWell(
-                              onTap: () => setState(() => _colorIndex = i),
-                              child: Container(
-                                width: 26,
-                                height: 26,
-                                decoration: BoxDecoration(
-                                  color: _colors[i],
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: _colorIndex == i ? Colors.white : Colors.transparent,
-                                    width: 2.5,
+                        Row(
+                          children: [
+                            for (var i = 0; i < _colors.length; i++)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 7),
+                                child: InkWell(
+                                  onTap: () => setState(() => _colorIndex = i),
+                                  child: Container(
+                                    width: 26,
+                                    height: 26,
+                                    decoration: BoxDecoration(
+                                      color: _colors[i],
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        // 选中圈跟背景反着来 —— 白底模式下调成深色，
+                                        // 否则「白」那个色块选中后看不出来。
+                                        color: _colorIndex == i
+                                            ? (_invert ? Colors.black87 : Colors.white)
+                                            : (_invert ? Colors.black26 : Colors.transparent),
+                                        width: 2.5,
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                          ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            _chip(_scroll ? '滚动中' : '静止', _toggleScroll),
+                            _chip(_mirror ? '镜像开' : '镜像关',
+                                () => setState(() => _mirror = !_mirror)),
+                            _chip(_invert ? '白底黑字' : '黑底彩字',
+                                () => setState(() => _invert = !_invert)),
+                            _chip('横屏', () async {
+                              await SystemChrome.setPreferredOrientations([
+                                DeviceOrientation.landscapeLeft,
+                                DeviceOrientation.landscapeRight,
+                              ]);
+                            }),
+                            _chip('竖屏', () async {
+                              await SystemChrome.setPreferredOrientations(
+                                  [DeviceOrientation.portraitUp]);
+                            }),
+                          ],
+                        ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 6,
-                      children: [
-                        _chip(_scroll ? '滚动中' : '静止', () => setState(() {
-                              _scroll = !_scroll;
-                              if (_scroll) {
-                                _anim.repeat();
-                              } else {
-                                _anim.stop();
-                              }
-                            })),
-                        _chip(_mirror ? '镜像开' : '镜像关', () => setState(() => _mirror = !_mirror)),
-                        _chip(_invert ? '白底黑字' : '黑底彩字',
-                            () => setState(() => _invert = !_invert)),
-                        _chip('横屏', () async {
-                          await SystemChrome.setPreferredOrientations([
-                            DeviceOrientation.landscapeLeft,
-                            DeviceOrientation.landscapeRight,
-                          ]);
-                        }),
-                        _chip('竖屏', () async {
-                          await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-                        }),
-                      ],
+                  ),
+              ],
+            ),
+
+            // ---------- 右上角的设置开关 ----------
+            // 放右上而不是右下角：控制面板在底部，竖屏时面板很高，
+            // 右下角的悬浮按钮必然压到最后一行按钮上。
+            Positioned(
+              top: 6,
+              right: 6,
+              child: Material(
+                color: _invert ? Colors.black12 : Colors.white24,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => setState(() => _full = !_full),
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Icon(
+                      _full ? Icons.tune : Icons.fullscreen,
+                      size: 22,
+                      color: _fg,
                     ),
-                  ],
+                  ),
                 ),
               ),
+            ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton.small(
-        backgroundColor: Colors.white24,
-        onPressed: () => setState(() => _full = !_full),
-        child: Icon(_full ? Icons.tune : Icons.fullscreen, color: Colors.white),
       ),
     );
   }
 
-  Widget _chip(String label, VoidCallback onTap) => ActionChip(
-        label: Text(label, style: const TextStyle(fontSize: 11.5, color: Colors.white)),
-        backgroundColor: Colors.white24,
-        onPressed: onTap,
-        visualDensity: VisualDensity.compact,
-      );
+  /// 控制按钮。
+  ///
+  /// 为什么不用 ActionChip：M3 的 Chip 自带 labelStyle / 背景，
+  /// 在「白底黑字」模式下会把白字压在白底上，等于隐形。
+  /// 自己画一个 Container，颜色对比完全可控，成本还更低。
+  Widget _chip(String label, VoidCallback onTap) {
+    return Material(
+      color: _invert ? Colors.black12 : Colors.white24,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 9),
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _fg),
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _static(Color color) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16),

@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../core/constants.dart';
 import '../../core/utils.dart';
 import '../../data/dav/webdav_client.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
+import '../common/html_view_page.dart';
 
 /// 服务器上的一个 html 小工具
 class ServerToolEntry {
@@ -259,142 +259,15 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
               final client = ref.read(davClientProvider);
               if (client == null) return;
               await Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => HtmlToolPage(
+                builder: (_) => HtmlViewPage(
                   title: t.name,
                   url: client.urlFor(t.path),
                   headers: client.headers,
+                  errorHint: '如果是 http 明文站点，确认清单里已允许明文流量',
                 ),
               ));
             },
           ),
         ),
       );
-}
-
-/// 在 App 内运行一个 html 小工具（带 WebDAV 鉴权头）
-class HtmlToolPage extends StatefulWidget {
-  final String title;
-  final String url;
-  final Map<String, String> headers;
-
-  const HtmlToolPage({
-    super.key,
-    required this.title,
-    required this.url,
-    this.headers = const {},
-  });
-
-  @override
-  State<HtmlToolPage> createState() => _HtmlToolPageState();
-}
-
-class _HtmlToolPageState extends State<HtmlToolPage> {
-  late final WebViewController _controller;
-  int _progress = 0;
-  bool _loading = true;
-  String? _error;
-  bool _canBack = false;
-
-  /// 主文档是否已经渲染完成。
-  /// html 小工具里常常引用外链图片 / 字体，这些子资源加载失败时
-  /// onWebResourceError 一样会回调；页面本身已经能看，不该再把整页顶掉。
-  bool _finished = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFFFFFFFF))
-      ..setNavigationDelegate(NavigationDelegate(
-        onProgress: (p) {
-          if (mounted) setState(() => _progress = p);
-        },
-        onPageStarted: (_) {
-          if (mounted) {
-            setState(() {
-              _loading = true;
-              _error = null;
-              _finished = false;
-            });
-          }
-        },
-        onPageFinished: (_) async {
-          final back = await _controller.canGoBack();
-          if (!mounted) return;
-          setState(() {
-            _loading = false;
-            _finished = true;
-            _canBack = back;
-          });
-        },
-        onWebResourceError: (e) {
-          if (!mounted) return;
-          // 页面已经出来了，就不因为某个子资源（图片、字体、外链）失败而盖掉它
-          if (_finished) return;
-          setState(() {
-            _loading = false;
-            _error = '页面加载失败：${e.description}\n'
-                '（如果是 http 明文站点，确认清单里已允许明文流量）';
-          });
-        },
-      ))
-      ..loadRequest(Uri.parse(widget.url), headers: widget.headers);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Scaffold(
-      appBar: AppBar(
-        leading: _canBack
-            ? IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () async {
-                  await _controller.goBack();
-                  final back = await _controller.canGoBack();
-                  if (mounted) setState(() => _canBack = back);
-                },
-              )
-            : null,
-        title: Text(widget.title, overflow: TextOverflow.ellipsis),
-        actions: [
-          IconButton(
-            tooltip: '刷新',
-            onPressed: () => _controller.reload(),
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
-        bottom: _loading
-            ? PreferredSize(
-                preferredSize: const Size.fromHeight(2),
-                child: LinearProgressIndicator(
-                  value: _progress <= 0 ? null : _progress / 100,
-                  minHeight: 2,
-                ),
-              )
-            : null,
-      ),
-      body: _error != null
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.language_outlined, size: 44, color: scheme.error),
-                    const SizedBox(height: 14),
-                    Text(_error!, textAlign: TextAlign.center, style: const TextStyle(height: 1.7)),
-                    const SizedBox(height: 16),
-                    OutlinedButton(
-                      onPressed: () => _controller.reload(),
-                      child: const Text('重试'),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : WebViewWidget(controller: _controller),
-    );
-  }
 }

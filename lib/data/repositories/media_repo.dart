@@ -1,3 +1,7 @@
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
+
 import '../dav/webdav_client.dart';
 import '../local/db.dart';
 import '../models/models.dart';
@@ -18,6 +22,99 @@ class MediaRepo {
       if (e.isDir) return true;
       return FileTypes.isVideo(e.name) || FileTypes.isImage(e.name) || FileTypes.isAudio(e.name);
     }).toList();
+  }
+
+  // ------------------------------------------------------------ 写操作
+
+  /// 在某个相对目录下新建目录
+  Future<void> createDir(String sub, String name) async {
+    await dav.ensureDir(joinPath(joinPath(_root, sub), name));
+  }
+
+  /// 重命名（目录和文件都走这一条，WebDAV 的 MOVE 是同一个语义）
+  Future<void> renameEntry(String from, String to) async {
+    await dav.move(from, to);
+    // 本地扫描索引里存的是旧路径，留着就是脏数据。
+    // replaceMediaIndex 会先清空整张表，传空列表正好等于「清空」。
+    try {
+      await AppDb.instance.replaceMediaIndex(const []);
+    } catch (_) {}
+  }
+
+  /// 上传本地文件到某个相对目录，返回新建的相对路径。
+  /// 视频走流式上传，不会把整个文件读进内存。
+  Future<String> uploadFile(
+    String sub,
+    String localPath, {
+    String? nameHint,
+    void Function(int sent, int total)? onProgress,
+    CancelToken? cancelToken,
+  }) async {
+    final f = File(localPath);
+    final ext = p.extension(localPath).replaceFirst('.', '');
+    var name = (nameHint ?? '').trim();
+    if (name.isEmpty) name = baseName(localPath);
+    if (!name.contains('.') && ext.isNotEmpty) name = '$name.$ext';
+    final rel = joinPath(joinPath(_root, sub), name);
+    await dav.writeFileStream(
+      rel,
+      f,
+      contentType: mimeOf(ext),
+      onProgress: onProgress,
+      cancelToken: cancelToken,
+    );
+    return rel;
+  }
+
+  /// 扩展名 → Content-Type。视频的 MIME 影响服务器能不能正确识别，
+  /// 认不出就交给服务器自己嗅探（返回 null）。
+  static String? mimeOf(String ext) {
+    switch (ext.toLowerCase()) {
+      case 'mp4':
+        return 'video/mp4';
+      case 'mkv':
+        return 'video/x-matroska';
+      case 'webm':
+        return 'video/webm';
+      case 'mov':
+        return 'video/quicktime';
+      case 'avi':
+        return 'video/x-msvideo';
+      case 'flv':
+        return 'video/x-flv';
+      case 'ts':
+        return 'video/mp2t';
+      case 'rmvb':
+      case 'rm':
+        return 'application/vnd.rn-realmedia';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'webp':
+        return 'image/webp';
+      case 'bmp':
+        return 'image/bmp';
+      case 'heic':
+        return 'image/heic';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'flac':
+        return 'audio/flac';
+      case 'wav':
+        return 'audio/wav';
+      case 'm4a':
+        return 'audio/mp4';
+      case 'aac':
+        return 'audio/aac';
+      case 'ogg':
+        return 'audio/ogg';
+      default:
+        return null;
+    }
   }
 
   /// 全库扫描（「全部文件」平铺视图用），结果写入本地索引，避免每次重新扫

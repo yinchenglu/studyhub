@@ -3,11 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/constants.dart';
+import '../../core/sort_utils.dart';
 import '../../core/utils.dart';
 import '../../data/dav/webdav_client.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
+import '../common/html_view_page.dart';
 import '../common/pdf_view_page.dart';
+import '../common/sort_menu.dart';
 import '../home/login_page.dart';
 import 'note_edit_page.dart';
 import 'note_export.dart';
@@ -19,6 +22,11 @@ import 'note_read_page.dart';
 ///   * 长按可以进入「多选模式」，一次选一篇或多篇（也可以选整个目录），
 ///     然后导出成 PDF / HTML / Markdown（可以每篇一个文件，也可以合并成一份）
 ///   * 目录里的 .pdf 文件也能直接预览
+///
+/// v1.3.0 起：
+///   * .html / .htm 也能在 App 内直接预览（WebView）
+///   * 去掉「全部笔记（平铺）」—— 平铺列表把目录层级拍平了，找东西反而更乱，
+///     换成右上角的排序按钮（名称 / 修改时间 / 大小，可切升降序）
 class NotesPage extends ConsumerStatefulWidget {
   const NotesPage({super.key});
 
@@ -32,7 +40,9 @@ class NotesPageState extends ConsumerState<NotesPage> {
   bool _loading = false;
   String? _error;
   List<DavEntry> _entries = const [];
-  bool _flatAll = false; // 平铺显示全部笔记
+
+  /// 排序方式（降序/升序、按什么排）
+  SortPref _sort = const SortPref();
 
   /// 多选模式
   bool _selecting = false;
@@ -46,10 +56,9 @@ class NotesPageState extends ConsumerState<NotesPage> {
 
   /// 从别的菜单切进来 / 再次点「笔记」时调用：回到根目录并刷新
   Future<void> reload() async {
-    if (_sub.isNotEmpty || _flatAll || _selecting) {
+    if (_sub.isNotEmpty || _selecting) {
       setState(() {
         _sub = '';
-        _flatAll = false;
         _selecting = false;
         _selected.clear();
       });
@@ -61,11 +70,6 @@ class NotesPageState extends ConsumerState<NotesPage> {
   bool handleBack() {
     if (_selecting) {
       _exitSelect();
-      return true;
-    }
-    if (_flatAll) {
-      setState(() => _flatAll = false);
-      _load();
       return true;
     }
     if (_sub.isNotEmpty) {
@@ -94,15 +98,7 @@ class NotesPageState extends ConsumerState<NotesPage> {
       _error = null;
     });
     try {
-      late final List<DavEntry> list;
-      if (_flatAll) {
-        final notes = await repo.allNotes();
-        list = notes
-            .map((n) => DavEntry(path: n.path, isDir: false, size: n.size, modified: n.modified))
-            .toList();
-      } else {
-        list = await repo.listDir(_sub);
-      }
+      final list = await repo.listDir(_sub);
       if (!mounted) return;
       setState(() {
         _entries = list;
@@ -120,6 +116,9 @@ class NotesPageState extends ConsumerState<NotesPage> {
       });
     }
   }
+
+  /// 屏幕上真正展示的顺序（排过序的）
+  List<DavEntry> get _shown => sortEntries(_entries, _sort);
 
   // ------------------------------------------------------------- 多选
 
@@ -160,7 +159,7 @@ class NotesPageState extends ConsumerState<NotesPage> {
   }
 
   List<DavEntry> get _pickedEntries =>
-      _entries.where((e) => _selected.contains(e.path)).toList();
+      _shown.where((e) => _selected.contains(e.path)).toList();
 
   /// 选中的可导出笔记数（目录算 1 项，导出时递归展开）
   int get _pickedExportable =>
@@ -204,20 +203,18 @@ class NotesPageState extends ConsumerState<NotesPage> {
             const Text('笔记'),
             if (logged)
               Text(
-                _flatAll ? '全部笔记（平铺）' : '/${AppDirs.notes}${_sub.isEmpty ? '' : '/$_sub'}',
+                '/${AppDirs.notes}${_sub.isEmpty ? '' : '/$_sub'}'
+                '${_entries.isEmpty ? '' : ' · ${_entries.length} 项'}',
                 style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
               ),
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: _flatAll ? '按目录浏览' : '平铺全部',
-            onPressed: () {
-              setState(() => _flatAll = !_flatAll);
-              _load();
-            },
-            icon: Icon(_flatAll ? Icons.folder_outlined : Icons.view_list_outlined),
-          ),
+          if (logged && _entries.length > 1)
+            SortButton(
+              value: _sort,
+              onChanged: (v) => setState(() => _sort = v),
+            ),
           if (logged && _entries.isNotEmpty)
             IconButton(
               tooltip: '批量选择',
@@ -375,7 +372,7 @@ class NotesPageState extends ConsumerState<NotesPage> {
           const SizedBox(height: 12),
           Center(
             child: Text(
-              _flatAll ? '还没有任何笔记' : '这个目录是空的',
+              '这个目录是空的',
               style: TextStyle(color: scheme.onSurfaceVariant),
             ),
           ),
@@ -388,16 +385,18 @@ class NotesPageState extends ConsumerState<NotesPage> {
       );
     }
 
+    final shown = _shown;
     return ListView.separated(
       padding: EdgeInsets.only(bottom: _selecting ? 16 : 24),
-      itemCount: _entries.length,
+      itemCount: shown.length,
       separatorBuilder: (_, __) => const Divider(height: 1, indent: 60),
       itemBuilder: (context, i) {
-        final e = _entries[i];
+        final e = shown[i];
         final isMd = FileTypes.isMarkdown(e.name);
         final isPdf = FileTypes.isPdf(e.name);
         final isImg = FileTypes.isImage(e.name);
-        final isTxt = !e.isDir && FileTypes.isReadableText(e.name);
+        final isHtml = FileTypes.isHtml(e.name);
+        final isTxt = !e.isDir && !isHtml && FileTypes.isReadableText(e.name);
         final checked = _selected.contains(e.path);
 
         final iconColor = e.isDir
@@ -406,7 +405,9 @@ class NotesPageState extends ConsumerState<NotesPage> {
                 ? const Color(0xFF1D9E75)
                 : isPdf
                     ? const Color(0xFFD4537E)
-                    : const Color(0xFF7F77DD);
+                    : isHtml
+                        ? const Color(0xFFD85A30)
+                        : const Color(0xFF7F77DD);
 
         return ListTile(
           leading: SizedBox(
@@ -430,7 +431,9 @@ class NotesPageState extends ConsumerState<NotesPage> {
                               ? Icons.image_outlined
                               : isPdf
                                   ? Icons.picture_as_pdf_outlined
-                                  : Icons.article_outlined,
+                                  : isHtml
+                                      ? Icons.language_outlined
+                                      : Icons.article_outlined,
                       size: 20,
                       color: iconColor,
                     ),
@@ -446,15 +449,13 @@ class NotesPageState extends ConsumerState<NotesPage> {
               if (e.isDir) '文件夹',
               if (!e.isDir) formatBytes(e.size),
               if (e.modified != null) formatTime(e.modified),
-              if (isPdf) '可预览',
-              if (_flatAll && e.path.contains('/'))
-                parentOf(e.path).replaceFirst('${AppDirs.notes}/', ''),
+              if (isPdf || isHtml) '可预览',
             ].join(' · '),
             style: const TextStyle(fontSize: 12),
           ),
           trailing: _selecting
               ? null
-              : (isTxt || isPdf || isImg || e.isDir
+              : (isTxt || isPdf || isImg || isHtml || e.isDir
                   ? const Icon(Icons.chevron_right, size: 18)
                   : null),
           onTap: () async {
@@ -465,7 +466,6 @@ class NotesPageState extends ConsumerState<NotesPage> {
             if (e.isDir) {
               setState(() {
                 _sub = e.path.substring(AppDirs.notes.length + 1);
-                _flatAll = false;
               });
               await _load();
             } else if (isMd) {
@@ -473,6 +473,8 @@ class NotesPageState extends ConsumerState<NotesPage> {
               await _load();
             } else if (isPdf) {
               await _openPdf(e);
+            } else if (isHtml) {
+              await _openHtml(e);
             } else if (isImg) {
               Navigator.of(context)
                   .push(MaterialPageRoute(builder: (_) => NoteReadPage(path: e.path, imageOnly: true)));
@@ -508,6 +510,25 @@ class NotesPageState extends ConsumerState<NotesPage> {
         title: e.name,
         url: repo.resolveUrl(e.path, baseName(e.path)),
         headers: repo.authHeaders,
+      ),
+    ));
+  }
+
+  /// 预览目录里的 HTML（在 App 内的 WebView 里打开）
+  ///
+  /// 这里传的是**服务器上的真实地址**而不是把 html 内容读进来塞给 WebView：
+  /// 网页里的相对路径（`<img src="a.png">`、`<link href="x.css">`）
+  /// 按 URL 加载时能自动相对服务器解析，图片和样式才显示得出来。
+  Future<void> _openHtml(DavEntry e) async {
+    final repo = ref.read(noteRepoProvider);
+    if (repo == null) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => HtmlViewPage(
+        title: e.name,
+        url: repo.resolveUrl(e.path, baseName(e.path)),
+        headers: repo.authHeaders,
+        errorHint: '如果这个页面引用了别的图片 / 样式，'
+            '它们需要服务器允许免鉴权访问才能显示。',
       ),
     ));
   }

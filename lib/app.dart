@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/theme.dart';
@@ -22,6 +23,29 @@ class StudyHubApp extends ConsumerWidget {
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
       themeMode: mode,
+
+      // ---------- 中文本地化 ----------
+      // 挂上这三个 delegate 之后，系统自带的日期 / 时间选择器、
+      // 文本选择菜单（复制 / 粘贴 / 全选）才会显示中文。
+      // 不挂的话走 DefaultMaterialLocalizations，全是英文。
+      //
+      // 顺序要求：GlobalMaterialLocalizations 必须排在
+      // DefaultMaterialLocalizations 之前 —— 虽然这里没显式列默认的，
+      // 但 MaterialApp 会自动把默认的补在最后，所以放前面就对了。
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('zh', 'CN'),
+        Locale('en', 'US'),
+      ],
+      // 明确把应用语言钉成简体中文。
+      // 不用「跟随系统」是因为这个 App 的界面文案全是中文写死的，
+      // 系统语言是英文时就会出现「中文界面 + 英文选择器」的混搭。
+      locale: const Locale('zh', 'CN'),
+
       home: const RootShell(),
     );
   }

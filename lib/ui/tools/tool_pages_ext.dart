@@ -11,7 +11,12 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 // 时间戳转换要用 DateFormat。注意 Dart 的 import 不传递 ——
 // tool_pages.dart 里引了 intl，这个文件也照样得自己引一份。
-import 'package:intl/intl.dart';
+//
+// 必须 hide TextDirection！intl 也导出一个 TextDirection（用 LTR / RTL 大写），
+// 不 hide 的话它会和 Flutter 那个带 .ltr / .rtl 的撞名字 ——
+// 而挂画助手的绘制代码里要用 TextDirection.ltr，一撞就直接编译不过。
+// 这个坑在 tool_pages.dart 里已经踩过一次，这里同样处理。
+import 'package:intl/intl.dart' hide TextDirection;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:sensors_plus/sensors_plus.dart';
@@ -23,6 +28,7 @@ import 'tool_pages.dart';
 
 // ============================================================ 11. 简易画板
 
+/// 一笔画。
 class _Stroke {
   final List<Offset> pts;
   final Color color;
@@ -31,6 +37,15 @@ class _Stroke {
   _Stroke({required this.pts, required this.color, required this.width, this.erase = false});
 }
 
+/// 简易画板。
+///
+/// v1.3.0 新增「另存为图片到本地」。
+///   原来右上角只有一个「保存 / 分享」，它其实是「存到下载目录 + 顺手拉起分享面板」。
+///   只想把图画存下来的人，每次都得再按一次返回键把分享面板关掉，很烦。
+///   现在拆成两个动作：
+///     * 「另存为图片」—— 安静地存进下载目录，只弹一句「已保存到 xxx」；
+///     * 「保存并分享」—— 存完再拉分享面板，发微信 / QQ 用这个。
+///   分类也从「生活与娱乐」挪到了「颜色与设计」。
 class SketchPadPage extends StatefulWidget {
   const SketchPadPage({super.key});
 
@@ -45,6 +60,9 @@ class _SketchPadPageState extends State<SketchPadPage> {
   Color _color = Colors.black;
   double _width = 4;
   bool _erase = false;
+
+  /// 导出中：避免连点两次产生两个文件
+  bool _exporting = false;
 
   static const _palette = <Color>[
     Colors.black,
@@ -63,7 +81,7 @@ class _SketchPadPageState extends State<SketchPadPage> {
     final scheme = Theme.of(context).colorScheme;
     return ToolScaffold(
       title: '简易画板',
-      subtitle: '指头画，可撤销、可保存成图片',
+      subtitle: '指头画，可撤销、可另存为图片',
       actions: [
         IconButton(
           tooltip: '撤销',
@@ -74,13 +92,31 @@ class _SketchPadPageState extends State<SketchPadPage> {
         ),
         IconButton(
           tooltip: '清空',
-          onPressed: _strokes.isEmpty ? null : () => setState(() => _strokes.clear()),
+          onPressed: _strokes.isEmpty ? null : _confirmClear,
           icon: const Icon(Icons.delete_sweep_outlined),
         ),
         IconButton(
-          tooltip: '保存 / 分享',
-          onPressed: _save,
-          icon: const Icon(Icons.ios_share),
+          tooltip: '另存为图片',
+          onPressed: _strokes.isEmpty || _exporting ? null : _saveLocal,
+          icon: const Icon(Icons.save_alt),
+        ),
+        PopupMenuButton<String>(
+          tooltip: '导出',
+          enabled: _strokes.isNotEmpty && !_exporting,
+          onSelected: (v) {
+            if (v == 'share') _saveAndShare();
+          },
+          itemBuilder: (ctx) => <PopupMenuEntry<String>>[
+            const PopupMenuItem(
+              value: 'share',
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.ios_share, size: 20),
+                title: Text('保存并分享', style: TextStyle(fontSize: 14)),
+              ),
+            ),
+          ],
         ),
       ],
       child: Column(
@@ -155,7 +191,11 @@ class _SketchPadPageState extends State<SketchPadPage> {
                   children: [
                     Text('粗细', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
                     Expanded(
-                      child: Slider(value: _width, min: 1, max: 40, onChanged: (v) => setState(() => _width = v)),
+                      child: Slider(
+                          value: _width,
+                          min: 1,
+                          max: 40,
+                          onChanged: (v) => setState(() => _width = v)),
                     ),
                     SizedBox(
                       width: 30,
@@ -177,27 +217,90 @@ class _SketchPadPageState extends State<SketchPadPage> {
     );
   }
 
-  Future<void> _save() async {
+  Future<void> _confirmClear() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('清空画板？'),
+        content: const Text('这一笔一笔画的东西没法恢复。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('算了')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('清空')),
+        ],
+      ),
+    );
+    if (ok == true && mounted) setState(() => _strokes.clear());
+  }
+
+  /// 把画布渲染成 PNG 字节。失败返回 null。
+  ///
+  /// pixelRatio 3：按屏幕密度的 3 倍导出。手指画的线是矢量描出来的，
+  /// 放大到 3 倍仍然锐利；用 1 倍导出在电脑上看会糊。
+  Future<List<int>?> _renderPng() async {
     try {
       final boundary = _boundary.currentContext?.findRenderObject() as RenderRepaintBoundary?;
-      if (boundary == null) return;
-      final img = await boundary.toImage(pixelRatio: 2.5);
+      if (boundary == null) return null;
+      final img = await boundary.toImage(pixelRatio: 3);
       final data = await img.toByteData(format: ui.ImageByteFormat.png);
-      if (data == null) return;
-      final bytes = data.buffer.asUint8List();
-      final f = await saveToDownload('画板_${DateTime.now().millisecondsSinceEpoch}.png', bytes);
+      return data?.buffer.asUint8List();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 文件名带时间戳，避免连存多次互相覆盖。
+  static String _stamp() {
+    final n = DateTime.now();
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${n.year}${two(n.month)}${two(n.day)}_${two(n.hour)}${two(n.minute)}${two(n.second)}';
+  }
+
+  /// 另存为图片到本地。不弹分享面板。
+  Future<void> _saveLocal() async {
+    setState(() => _exporting = true);
+    try {
+      final bytes = await _renderPng();
+      if (!mounted) return;
+      if (bytes == null) {
+        toast(context, '生成图片失败，再试一次看看');
+        return;
+      }
+      final f = await saveToDownload('画板_${_stamp()}.png', bytes);
+      if (!mounted) return;
+      if (f == null) {
+        toast(context, '保存失败。到「设置 → 下载目录」看一眼，'
+            '或者给 App 开一下存储权限。');
+        return;
+      }
+      // 把完整路径报出来 —— 用户下一步就是要去找这个文件
+      toast(context, '已保存到 ${f.path}');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  /// 保存后再拉起分享面板。
+  Future<void> _saveAndShare() async {
+    setState(() => _exporting = true);
+    try {
+      final bytes = await _renderPng();
+      if (!mounted) return;
+      if (bytes == null) {
+        toast(context, '生成图片失败，再试一次看看');
+        return;
+      }
+      final f = await saveToDownload('画板_${_stamp()}.png', bytes);
       if (!mounted) return;
       if (f == null) {
         toast(context, '保存失败，检查存储权限');
         return;
       }
       await shareFiles(context, [f], text: '画板作品');
-    } catch (e) {
-      if (mounted) toast(context, '导出失败：$e');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
     }
   }
 }
-
 class _SketchPainter extends CustomPainter {
   final List<_Stroke> strokes;
   _SketchPainter(this.strokes);
@@ -575,7 +678,23 @@ class _SosTorchPageState extends State<SosTorchPage> {
 
 // ============================================================ 13. 挂画助手
 
-/// 挂画 / 挂电视助手：一个水平仪 + 一个等间距计算器
+/// 挂画助手（水平仪）。
+///
+/// v1.3.0 重新写成「摄像头 + 重力参考线」。
+///
+/// 老版本是一个纯色背景上的气泡水平仪 —— 得把手机侧面贴到画框上量，
+/// 量完再挂、挂完再量，来回折腾；而且手机一离开就不知道准不准了。
+///
+/// 现在：摄像头画面铺满屏幕，上面叠一组**跟着重力实时转动的水平 / 垂直参考线**。
+/// 把手机举起来对着墙，绿线永远代表真实水平 —— 于是看画的上下边跟绿线
+/// 平不平行，就知道画挂正没有。
+///
+/// 屏幕上还额外画了一组**固定的灰色虚线**，代表「屏幕自己的水平 / 垂直」。
+/// 两组线的夹角就是手机当前的倾角 —— 一眼就能看出手机歪了多少，
+/// 而不只是看一个数字。底部读数会提示「先把自己摆正」。
+///
+/// 摆正之后可以点「锁定」，参考线就固定住，单手举着手机随意移动去看画，
+/// 手抖也不会让线跟着晃。
 class LevelHelperPage extends StatefulWidget {
   const LevelHelperPage({super.key});
 
@@ -584,219 +703,465 @@ class LevelHelperPage extends StatefulWidget {
 }
 
 class _LevelHelperPageState extends State<LevelHelperPage> {
-  StreamSubscription<AccelerometerEvent>? _sub;
-  double _x = 0, _y = 0, _z = 0;
-  bool _frozen = false;
-  double _wallWidth = 300;
-  int _count = 3;
-  double _picWidth = 40;
-  double _eyeHeight = 145;
+  CameraController? _cam;
+  StreamSubscription<AccelerometerEvent>? _acc;
+
+  bool _busy = true;
+  String? _err;
+
+  /// 是否用前置摄像头。默认后置 —— 对着墙拍的时候手机背面朝墙，
+  /// 人看的是屏幕，用后置更自然。
+  bool _front = false;
+
+  /// 绕屏幕法线的倾角（度）。读不到重力时为 null。
+  ///
+  /// 推导见 core/display_metrics.dart 里的注释：传感器静止时读数
+  /// 指向「天」的方向，所以屏幕坐标下「天」= (x, -y)，
+  /// 真实水平线垂直于它，化简后角度正好是 atan2(x, y)。
+  double? _roll;
+
+  /// 参考线锁定
+  bool _locked = false;
+  double _lockedRoll = 0;
+
+  /// 是否同时画垂直线。有些人只想量水平，多一条线反而碍眼。
+  bool _cross = true;
+
+  /// 摆正在这个角度以内就算「正了」。1.2° 是手机上比较舒服的阈值 ——
+  /// 再紧就很难靠手稳住，再松肉眼就能看出画是歪的。
+  static const _tolerance = 1.2;
 
   @override
   void initState() {
     super.initState();
-    _sub = accelerometerEventStream(samplingPeriod: const Duration(milliseconds: 60)).listen(
+    keepScreenOn(true);
+    _initCam();
+    _startSensor();
+  }
+
+  @override
+  void dispose() {
+    _acc?.cancel();
+    final c = _cam;
+    _cam = null;
+    c?.dispose();
+    keepScreenOn(false);
+    super.dispose();
+  }
+
+  void _startSensor() {
+    _acc = accelerometerEventStream(samplingPeriod: const Duration(milliseconds: 60)).listen(
       (e) {
-        if (_frozen || !mounted) return;
-        setState(() {
-          _x = e.x;
-          _y = e.y;
-          _z = e.z;
-        });
+        // 手机平放（屏幕朝天）时 x、y 都接近 0，atan2 会乱跳，
+        // 而且这时候「水平线」在画面上也没有意义 —— 丢掉这帧。
+        if (e.x.abs() + e.y.abs() < 1.5) return;
+        if (!mounted) return;
+        setState(() => _roll = math.atan2(e.x, e.y) * 180 / math.pi);
       },
       onError: (_) {},
       cancelOnError: false,
     );
   }
 
-  @override
-  void dispose() {
-    _sub?.cancel();
-    super.dispose();
+  Future<void> _initCam() async {
+    setState(() {
+      _busy = true;
+      _err = null;
+    });
+    CameraController? c;
+    try {
+      final st = await Permission.camera.request();
+      if (!st.isGranted) {
+        if (!mounted) return;
+        setState(() {
+          _busy = false;
+          _err = '没有相机权限。\n\n到「系统设置 → 应用 → 学聚 → 权限」里'
+              '把相机打开，再回来点重试。';
+        });
+        return;
+      }
+
+      final cams = await availableCameras();
+      if (cams.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _busy = false;
+          _err = '这台设备上没找到可用的摄像头。';
+        });
+        return;
+      }
+
+      final want = _front ? CameraLensDirection.front : CameraLensDirection.back;
+      final hit = cams.where((d) => d.lensDirection == want);
+      final desc = hit.isNotEmpty ? hit.first : cams.first;
+
+      c = CameraController(desc, ResolutionPreset.high, enableAudio: false);
+      await c.initialize();
+
+      if (!mounted) {
+        await c.dispose();
+        return;
+      }
+      final old = _cam;
+      setState(() {
+        _cam = c;
+        _busy = false;
+      });
+      if (old != null && old != c) old.dispose();
+    } catch (e) {
+      if (c != null) {
+        try {
+          await c.dispose();
+        } catch (_) {}
+      }
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _err = '相机启动失败：$e\n\n'
+            '如果别的 App 正占着相机，先关掉再重试。';
+      });
+    }
   }
 
-  /// 横向倾斜角（手机竖着拿，左右倾斜）
-  double get _roll => math.atan2(_x, _y) * 180 / math.pi;
+  /// 当前实际用于画线的角度（锁定后取冻结值）
+  double get _useRoll => _locked ? _lockedRoll : (_roll ?? 0);
 
-  /// 前后俯仰角（手机平放时的前后倾）
-  double get _pitch => math.atan2(_z, _y) * 180 / math.pi;
+  /// 显示给用户的倾角：归一化到 -90~90。
+  /// 直接显示 atan2 的原始值会在 180° 附近跳，很难看。
+  double get _display {
+    var d = _useRoll;
+    while (d > 90) {
+      d -= 180;
+    }
+    while (d <= -90) {
+      d += 180;
+    }
+    return d;
+  }
+
+  bool get _level => _display.abs() <= _tolerance;
+
+  void _toggleLock() {
+    setState(() {
+      if (_locked) {
+        _locked = false;
+      } else {
+        _lockedRoll = _roll ?? 0;
+        _locked = true;
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final roll = _roll;
-    final pitch = _pitch;
-    final levelH = roll.abs() < 1.2;
-    final levelV = (roll.abs() - 90).abs() < 1.2;
-
-    final gap = (_wallWidth - _count * _picWidth) / (_count + 1);
-    final firstCenter = gap + _picWidth / 2;
-
     return ToolScaffold(
       title: '挂画助手',
-      subtitle: '水平仪 + 等间距计算',
+      subtitle: '举起来对准画框，看边缘跟绿线平不平',
       actions: [
-        IconButton(
-          tooltip: _frozen ? '恢复实时' : '冻结读数',
-          onPressed: () => setState(() => _frozen = !_frozen),
-          icon: Icon(_frozen ? Icons.play_arrow : Icons.pause),
-        ),
+        if (_cam != null && _err == null) ...[
+          IconButton(
+            tooltip: _cross ? '只留水平线' : '显示水平 + 垂直线',
+            onPressed: () => setState(() => _cross = !_cross),
+            icon: Icon(_cross ? Icons.add : Icons.horizontal_rule, size: 20),
+          ),
+          IconButton(
+            tooltip: _front ? '换成后置摄像头' : '换成前置摄像头',
+            onPressed: () {
+              setState(() => _front = !_front);
+              _initCam();
+            },
+            icon: const Icon(Icons.cameraswitch_outlined, size: 21),
+          ),
+          IconButton(
+            tooltip: _locked ? '解锁参考线' : '锁定参考线',
+            onPressed: _toggleLock,
+            icon: Icon(_locked ? Icons.lock : Icons.lock_open, size: 20),
+          ),
+        ],
       ],
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+      child: _body(scheme),
+    );
+  }
+
+  Widget _body(ColorScheme scheme) {
+    if (_err != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.no_photography_outlined, size: 46, color: scheme.onSurfaceVariant),
+              const SizedBox(height: 16),
+              Text(_err!,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontSize: 13.5, height: 1.75, color: scheme.onSurfaceVariant)),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: _initCam,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('重试'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_busy || _cam == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return Stack(
+      children: [
+        Positioned.fill(child: _preview()),
+        Positioned.fill(
+          child: CustomPaint(
+            painter: _LevelOverlay(
+              roll: _useRoll,
+              level: _level,
+              cross: _cross,
+              locked: _locked,
+            ),
+          ),
+        ),
+        Positioned(left: 0, right: 0, bottom: 0, child: _bottomBar()),
+      ],
+    );
+  }
+
+  Widget _preview() {
+    final c = _cam!;
+    final ps = c.value.previewSize;
+    if (ps == null) return CameraPreview(c);
+
+    // previewSize 是传感器原始尺寸（横向），竖屏时要交换宽高。
+    final portrait = MediaQuery.of(context).orientation == Orientation.portrait;
+    final w = portrait ? ps.height : ps.width;
+    final h = portrait ? ps.width : ps.height;
+
+    // FittedBox(cover) 铺满且不变形，比手算 scale 靠谱
+    return ClipRect(
+      child: FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(width: w, height: h, child: CameraPreview(c)),
+      ),
+    );
+  }
+
+  Widget _bottomBar() {
+    final d = _display;
+    final abs = d.abs();
+    // 到位了用绿，否则用橙 —— 颜色比数字更快读懂
+    final col = _level ? const Color(0xFF35D07F) : const Color(0xFFFFB020);
+
+    final String hint;
+    if (_locked) {
+      hint = '参考线已锁定，可以随意移动手机去比对了';
+    } else if (_roll == null) {
+      hint = '把手机竖起来（屏幕朝自己）才能读到水平';
+    } else if (_level) {
+      hint = '手机已摆正 —— 看画的上下边有没有跟绿线平行';
+    } else {
+      hint = '手机歪了 ${abs.toStringAsFixed(1)}°，先把手机摆正（绿线会跟着转正）';
+    }
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 30, 18, 20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Colors.black.withValues(alpha: 0.0),
+            Colors.black.withValues(alpha: 0.55),
+            Colors.black.withValues(alpha: 0.75),
+          ],
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _bubble('横向水平', roll, levelH, '把手机横过来贴墙'),
-                      ),
-                      Container(width: 1, height: 96, color: scheme.outlineVariant),
-                      Expanded(
-                        child: _bubble('竖向垂直', roll - 90, levelV, '把手机竖着贴墙'),
-                      ),
-                    ],
+          Text(
+            '${d >= 0 ? '' : '-'}${abs.toStringAsFixed(1)}°',
+            style: TextStyle(
+                fontSize: 40, fontWeight: FontWeight.w300, color: col, height: 1.1),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            hint,
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, height: 1.5, color: Colors.white.withValues(alpha: 0.88)),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _toggleLock,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: BorderSide(color: Colors.white.withValues(alpha: 0.55)),
+                    padding: const EdgeInsets.symmetric(vertical: 11),
                   ),
-                  const SizedBox(height: 12),
-                  Text(
-                    levelH
-                        ? '✓ 横向已水平'
-                        : levelV
-                            ? '✓ 竖向已垂直'
-                            : '倾斜 ${roll.abs() < 90 ? roll.abs() : (roll.abs() - 90).abs()}°',
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: (levelH || levelV) ? const Color(0xFF1D9E75) : scheme.onSurface,
-                    ),
+                  icon: Icon(_locked ? Icons.lock_open : Icons.lock_outline, size: 18),
+                  label: Text(_locked ? '解锁' : '锁定参考线'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => setState(() {
+                    _locked = false;
+                    _roll = null;
+                    // 先把旧的订阅收掉再重开 —— 不 cancel 的话
+                    // 每点一次就多一条常驻的传感器订阅，越点越卡。
+                    _acc?.cancel();
+                    _acc = null;
+                    _startSensor();
+                  }),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: BorderSide(color: Colors.white.withValues(alpha: 0.55)),
+                    padding: const EdgeInsets.symmetric(vertical: 11),
                   ),
-                  const SizedBox(height: 4),
-                  Text('前后俯仰 ${pitch.toStringAsFixed(1)}°（贴墙时越接近 0 越准）',
-                      style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
-                ],
+                  icon: const Icon(Icons.restart_alt, size: 18),
+                  label: const Text('重新读取'),
+                ),
               ),
-            ),
+            ],
           ),
-
-          const ToolSection('多幅画等间距（单位：厘米）'),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-              child: Column(
-                children: [
-                  _num('墙面宽度', _wallWidth, 50, 1000, (v) => setState(() => _wallWidth = v)),
-                  _intNum('画的数量', _count, 1, 12, (v) => setState(() => _count = v)),
-                  _num('每幅画宽度', _picWidth, 5, 300, (v) => setState(() => _picWidth = v)),
-                  _num('挂画中心离地高度', _eyeHeight, 60, 220, (v) => setState(() => _eyeHeight = v)),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          ResultBox(
-            text: gap < 0
-                ? '画太宽了，墙放不下 $_count 幅'
-                : '画与画之间留空：${gap.toStringAsFixed(1)} cm\n'
-                    '左右两边各留：${gap.toStringAsFixed(1)} cm\n'
-                    '第 1 幅画的中心离墙左边缘：${firstCenter.toStringAsFixed(1)} cm\n'
-                    '每隔 ${(_picWidth + gap).toStringAsFixed(1)} cm 挂一幅（这是中心点间距）\n'
-                    '每幅画中心建议离地 ${_eyeHeight.toStringAsFixed(0)} cm',
-            hint: '点一下复制尺寸',
-          ),
-
-          const ToolSection('怎么量'),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Text(
-                '1. 先用卷尺量出墙面可用总宽度（扣除两边障碍物）。\n'
-                '2. 按上面算出的「中心离墙左边缘」定第一个点，之后每隔「中心点间距」定一个点。\n'
-                '3. 挂之前把手机贴墙，用上面的水平仪确认挂钉在同一高度。\n'
-                '4. 一般画作中心离地 145cm 左右最舒服（大致平视高度），沙发上方可以再高 10~20cm。',
-                style: TextStyle(fontSize: 12.5, height: 1.85, color: scheme.onSurfaceVariant),
-              ),
-            ),
+          const SizedBox(height: 8),
+          Text(
+            '灰虚线 = 屏幕自己的水平 / 垂直；彩色实线 = 真实水平。\n'
+            '两者的夹角就是手机歪掉的角度。',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                fontSize: 11, height: 1.6, color: Colors.white.withValues(alpha: 0.62)),
           ),
         ],
       ),
     );
   }
+}
 
-  Widget _bubble(String label, double angle, bool ok, String hint) {
-    final scheme = Theme.of(context).colorScheme;
-    // 把 ±10° 映射到气泡位置
-    final t = (angle / 12).clamp(-1.0, 1.0);
-    return Column(
-      children: [
-        Text(label, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        Container(
-          height: 34,
-          margin: const EdgeInsets.symmetric(horizontal: 8),
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHighest.withValues(alpha: 0.7),
-            borderRadius: BorderRadius.circular(17),
-            border: Border.all(color: scheme.outlineVariant),
-          ),
-          child: Align(
-            alignment: Alignment(t, 0),
-            child: Container(
-              width: 28,
-              height: 28,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: ok ? const Color(0xFF1D9E75) : const Color(0xFFEF9F27),
-              ),
-            ),
+/// 水平仪叠加层：屏幕固定虚线 + 跟随重力的彩色实线。
+class _LevelOverlay extends CustomPainter {
+  final double roll;
+  final bool level;
+  final bool cross;
+  final bool locked;
+
+  const _LevelOverlay({
+    required this.roll,
+    required this.level,
+    required this.cross,
+    required this.locked,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = Offset(size.width / 2, size.height / 2);
+    final far = size.width + size.height;
+    final rad = roll * math.pi / 180;
+
+    // ---------- 屏幕自己的水平 / 垂直（灰色虚线，固定不动）----------
+    final dashPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.30)
+      ..strokeWidth = 1.1
+      ..strokeCap = StrokeCap.round;
+    _dashed(canvas, Offset(0, c.dy), Offset(size.width, c.dy), dashPaint, 9, 7);
+    if (cross) {
+      _dashed(canvas, Offset(c.dx, 0), Offset(c.dx, size.height), dashPaint, 9, 7);
+    }
+
+    // ---------- 真实水平 / 垂直（彩色实线，跟着重力转）----------
+    final col = level ? const Color(0xFF35D07F) : const Color(0xFFFFB020);
+
+    // 先画一层宽的半透明描边当「发光」，再画细的实线 ——
+    // 不然在花花的摄像头画面里线会看不清。
+    void glowLine(double ang) {
+      final u = Offset(math.cos(ang), math.sin(ang));
+      final a = c - u * far;
+      final b = c + u * far;
+      canvas.drawLine(
+        a,
+        b,
+        Paint()
+          ..color = col.withValues(alpha: 0.35)
+          ..strokeWidth = 7
+          ..strokeCap = StrokeCap.round,
+      );
+      canvas.drawLine(
+        a,
+        b,
+        Paint()
+          ..color = col
+          ..strokeWidth = 2.2
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+
+    glowLine(rad);
+    if (cross) glowLine(rad + math.pi / 2);
+
+    // ---------- 中心标记 ----------
+    canvas.drawCircle(c, 16, Paint()..color = Colors.white.withValues(alpha: 0.9));
+    canvas.drawCircle(
+      c,
+      16,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..color = col,
+    );
+    canvas.drawCircle(c, 4, Paint()..color = const Color(0xFF222222));
+
+    // ---------- 锁定时给个角标 ----------
+    if (locked) {
+      final tp = TextPainter(
+        text: const TextSpan(
+          text: '已锁定',
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w700,
+            color: Colors.white,
+            shadows: [Shadow(color: Color(0xCC000000), blurRadius: 5)],
           ),
         ),
-        const SizedBox(height: 4),
-        Text(ok ? '已水平' : angle.abs() < 90 ? '${angle.abs().toStringAsFixed(1)}°' : '${(angle.abs() - 90).abs().toStringAsFixed(1)}°',
-            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
-      ],
-    );
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final pos = Offset(c.dx - tp.width / 2, c.dy + 24);
+      // 底下垫一块深色，免得压在亮画面上读不出来
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(pos.dx - 8, pos.dy - 3, tp.width + 16, tp.height + 6),
+          const Radius.circular(9),
+        ),
+        Paint()..color = Colors.black.withValues(alpha: 0.45),
+      );
+      tp.paint(canvas, pos);
+    }
   }
 
-  Widget _num(String label, double v, double min, double max, ValueChanged<double> onChanged) => Row(
-        children: [
-          Expanded(child: Text(label, style: const TextStyle(fontSize: 13))),
-          SizedBox(
-            width: 62,
-            child: Text('${v.toStringAsFixed(0)}',
-                textAlign: TextAlign.center, style: const TextStyle(fontSize: 13.5)),
-          ),
-          Expanded(
-            child: Slider(
-              value: v.clamp(min, max),
-              min: min,
-              max: max,
-              onChanged: onChanged,
-            ),
-          ),
-        ],
-      );
+  /// Canvas 没有原生虚线，只能按 dash / gap 一段段画
+  void _dashed(Canvas canvas, Offset a, Offset b, Paint p, double dash, double gap) {
+    final total = (b - a).distance;
+    if (total <= 0) return;
+    final dir = (b - a) / total;
+    var t = 0.0;
+    while (t < total) {
+      final e = math.min(t + dash, total);
+      canvas.drawLine(a + dir * t, a + dir * e, p);
+      t = e + gap;
+    }
+  }
 
-  Widget _intNum(String label, int v, int min, int max, ValueChanged<int> onChanged) => Row(
-        children: [
-          Expanded(child: Text(label, style: const TextStyle(fontSize: 13))),
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            onPressed: v > min ? () => onChanged(v - 1) : null,
-            icon: const Icon(Icons.remove_circle_outline, size: 20),
-          ),
-          SizedBox(width: 24, child: Text('$v', textAlign: TextAlign.center)),
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            onPressed: v < max ? () => onChanged(v + 1) : null,
-            icon: const Icon(Icons.add_circle_outline, size: 20),
-          ),
-          const Expanded(child: SizedBox()),
-        ],
-      );
+  @override
+  bool shouldRepaint(_LevelOverlay old) =>
+      old.roll != roll || old.level != level || old.cross != cross || old.locked != locked;
 }
 
 // ============================================================ 14. 二维码生成
@@ -1672,6 +2037,17 @@ class _CipherPageState extends State<CipherPage> {
 
 // ============================================================ 18. 提词器
 
+/// 提词器。
+///
+/// v1.3.0 新增四样东西（都是用户提的）：
+///   * **横屏显示** —— 手机横过来稿子一行能放更多字，是提词器的标准用法。
+///     入口在右上角「⋮」菜单里。退出页面时会自动锁回竖屏（整个 App
+///     其他页面都是竖屏布局，不解锁回去会一转就乱）。
+///   * **全屏显示** —— 把标题栏和底部控制区一起收起来，只留正文。
+///     全屏时右上角浮一个小按钮用来退出，点屏幕仍然是暂停 / 继续。
+///   * **文字颜色** —— 6 个预设色。原来是写死的琥珀黄。
+///   * **背景颜色** —— 6 个预设。原来写死纯黑。
+///     默认还是「琥珀黄 + 纯黑」，那是长时间盯着最不累的组合。
 class TeleprompterPage extends StatefulWidget {
   const TeleprompterPage({super.key});
 
@@ -1683,7 +2059,8 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
   final _script = TextEditingController(
       text: '大家好，今天我给大家讲一个知识点。\n\n把讲稿粘贴到这里，点「开始提词」就会自动往上滚。\n\n'
           '读稿的时候可以随时点屏幕暂停，再点一下继续。暂停的时候还能上下拖动。\n\n'
-          '右上角可以调速度和字号，也可以开镜像 —— 用提词器玻璃的时候需要镜像。');
+          '右上角可以调速度和字号、换文字和背景颜色、开镜像（用提词器玻璃时需要），'
+          '还有横屏和全屏。');
   final _scroll = ScrollController();
   Timer? _timer;
   bool _playing = false;
@@ -1693,6 +2070,35 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
   bool _mirror = false;
   bool _verticalMirror = false;
 
+  /// 全屏：标题栏和底部控制区都收起来，只留正文
+  bool _full = false;
+
+  /// 是否已经切到横屏
+  bool _landscape = false;
+
+  /// 文字 / 背景颜色。默认沿用原来的「琥珀黄 on 纯黑」——
+  /// 深色底 + 暖黄字是长时间盯稿最不容易累的组合。
+  Color _fg = const Color(0xFFFFE08A);
+  Color _bg = Colors.black;
+
+  static const _fgPresets = <(String, Color)>[
+    ('琥珀', Color(0xFFFFE08A)),
+    ('纯白', Color(0xFFFFFFFF)),
+    ('浅绿', Color(0xFFA8E6A0)),
+    ('天青', Color(0xFF8ED8FF)),
+    ('淡粉', Color(0xFFFFB3C7)),
+    ('墨黑', Color(0xFF111111)),
+  ];
+
+  static const _bgPresets = <(String, Color)>[
+    ('纯黑', Color(0xFF000000)),
+    ('深灰', Color(0xFF1E1E1E)),
+    ('墨绿', Color(0xFF0B2B22)),
+    ('藏蓝', Color(0xFF0A1A33)),
+    ('米白', Color(0xFFF5F0E1)),
+    ('纯白', Color(0xFFFFFFFF)),
+  ];
+
   @override
   void dispose() {
     _timer?.cancel();
@@ -1700,6 +2106,10 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
     _scroll.dispose();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     keepScreenOn(false);
+    // 锁回竖屏。别写成 DeviceOrientation.values ——
+    // 那样在这页转过横屏再退出去，整个 App 都变成能自动横屏，
+    // 而其他页面全按竖屏设计的，一转就乱。
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     super.dispose();
   }
 
@@ -1708,6 +2118,11 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
       _timer?.cancel();
       setState(() => _playing = false);
       keepScreenOn(false);
+      // 恢复系统栏。注意用的是 _full 而不是「一定恢复」——
+      // 用户按的是「暂停」，不是「退出全屏」。
+      SystemChrome.setEnabledSystemUIMode(
+        _full ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+      );
       return;
     }
     setState(() => _playing = true);
@@ -1727,133 +2142,317 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
     });
   }
 
+  void _toggleFull() {
+    setState(() => _full = !_full);
+    SystemChrome.setEnabledSystemUIMode(
+      _full ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+    );
+  }
+
+  Future<void> _toggleLandscape() async {
+    final next = !_landscape;
+    setState(() => _landscape = next);
+    await SystemChrome.setPreferredOrientations(
+      next
+          ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
+          : [DeviceOrientation.portraitUp],
+    );
+  }
+
+  Future<void> _pickColors() async {
+    // 弹窗开着的时候稿子还在跑会很别扭，先停一下。
+    // 用户关掉弹窗后自己再点「开始」—— 不自动续播，
+    // 免得他还在挑颜色稿子就跑了。
+    if (_playing) _toggle();
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 0, 18, 30),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('文字颜色',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    for (final p in _fgPresets)
+                      _swatch(p.$1, p.$2, _fg == p.$2, (c) {
+                        setState(() => _fg = c);
+                        setSheet(() {});
+                      }),
+                  ],
+                ),
+                const SizedBox(height: 22),
+                const Text('背景颜色',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    for (final p in _bgPresets)
+                      _swatch(p.$1, p.$2, _bg == p.$2, (c) {
+                        setState(() => _bg = c);
+                        setSheet(() {});
+                      }),
+                  ],
+                ),
+                const SizedBox(height: 22),
+                // 预览：直接看效果，比看色块准
+                const Text('效果预览',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: _bg,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '大家好，今天我给大家讲一个知识点。',
+                    style: TextStyle(color: _fg, fontSize: 17, height: 1.6),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _swatch(String name, Color c, bool on, ValueChanged<Color> onTap) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: () => onTap(c),
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        width: 66,
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        decoration: BoxDecoration(
+          color: c,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: on ? scheme.primary : scheme.outlineVariant,
+            width: on ? 3 : 1,
+          ),
+        ),
+        child: Text(
+          name,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 10.5,
+            fontWeight: FontWeight.w600,
+            // 文字颜色跟着色块亮度走，否则白色块上写白字
+            color: c.computeLuminance() > 0.55 ? Colors.black87 : Colors.white,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('提词器'),
-        actions: [
-          IconButton(
-            tooltip: '回到开头',
-            onPressed: () {
-              if (_scroll.hasClients) _scroll.jumpTo(0);
-            },
-            icon: const Icon(Icons.vertical_align_top),
-          ),
-          IconButton(
-            tooltip: '镜像',
-            onPressed: () => setState(() => _mirror = !_mirror),
-            icon: Icon(_mirror ? Icons.flip : Icons.flip_outlined),
-          ),
-          IconButton(
-            tooltip: '上下翻转',
-            onPressed: () => setState(() => _verticalMirror = !_verticalMirror),
-            icon: const Icon(Icons.swap_vert),
-          ),
-        ],
-      ),
-      body: Column(
+      // 全屏时整个标题栏都不出现
+      appBar: _full
+          ? null
+          : AppBar(
+              title: const Text('提词器'),
+              actions: [
+                IconButton(
+                  tooltip: '回到开头',
+                  onPressed: () {
+                    if (_scroll.hasClients) _scroll.jumpTo(0);
+                  },
+                  icon: const Icon(Icons.vertical_align_top),
+                ),
+                IconButton(
+                  tooltip: '文字 / 背景颜色',
+                  onPressed: () => _pickColors(),
+                  icon: const Icon(Icons.palette_outlined),
+                ),
+                IconButton(
+                  tooltip: _full ? '退出全屏' : '全屏',
+                  onPressed: _toggleFull,
+                  icon: Icon(_full ? Icons.fullscreen_exit : Icons.fullscreen),
+                ),
+                PopupMenuButton<String>(
+                  tooltip: '更多',
+                  onSelected: (v) {
+                    switch (v) {
+                      case 'mirror':
+                        setState(() => _mirror = !_mirror);
+                        break;
+                      case 'vmirror':
+                        setState(() => _verticalMirror = !_verticalMirror);
+                        break;
+                      case 'landscape':
+                        _toggleLandscape();
+                        break;
+                    }
+                  },
+                  itemBuilder: (ctx) => <PopupMenuEntry<String>>[
+                    CheckedPopupMenuItem(
+                      value: 'mirror',
+                      checked: _mirror,
+                      child: const Text('左右镜像（用玻璃时开）'),
+                    ),
+                    CheckedPopupMenuItem(
+                      value: 'vmirror',
+                      checked: _verticalMirror,
+                      child: const Text('上下翻转'),
+                    ),
+                    const PopupMenuDivider(),
+                    CheckedPopupMenuItem(
+                      value: 'landscape',
+                      checked: _landscape,
+                      child: const Text('横屏显示'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+      body: Stack(
         children: [
-          Expanded(
-            child: GestureDetector(
-              onTap: _toggle,
-              child: Transform.scale(
-                scaleX: _mirror ? -1.0 : 1.0,
-                scaleY: _verticalMirror ? -1.0 : 1.0,
-                child: Container(
-                  color: Colors.black,
-                  child: SingleChildScrollView(
-                    controller: _scroll,
-                    padding: const EdgeInsets.fromLTRB(22, 120, 22, 260),
-                    child: Text(
-                      _script.text,
-                      style: TextStyle(
-                        color: const Color(0xFFFFE08A),
-                        fontSize: _fontSize,
-                        height: _lineHeight,
-                        fontWeight: FontWeight.w500,
+          Column(
+            children: [
+              Expanded(
+                child: GestureDetector(
+                  onTap: _toggle,
+                  child: Transform.scale(
+                    scaleX: _mirror ? -1.0 : 1.0,
+                    scaleY: _verticalMirror ? -1.0 : 1.0,
+                    child: Container(
+                      color: _bg,
+                      child: SingleChildScrollView(
+                        controller: _scroll,
+                        // 上下留大边距：上面留出「读到哪里」的空白，
+                        // 下面留出后面几行，视线不用正好卡在屏幕边缘。
+                        padding: EdgeInsets.fromLTRB(22, _full ? 90 : 120, 22, 260),
+                        child: Text(
+                          _script.text,
+                          style: TextStyle(
+                            color: _fg,
+                            fontSize: _fontSize,
+                            height: _lineHeight,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
+              if (!_full)
+                Container(
+                  color: scheme.surface,
+                  padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: _toggle,
+                              icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
+                              label: Text(_playing ? '暂停（也可点屏幕）' : '开始提词'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          OutlinedButton.icon(
+                            onPressed: () => _editScript(),
+                            icon: const Icon(Icons.edit_outlined, size: 18),
+                            label: const Text('改稿'),
+                          ),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          const Icon(Icons.speed, size: 17),
+                          Expanded(
+                            child: Slider(
+                              value: _speed,
+                              min: 8,
+                              max: 200,
+                              onChanged: (v) => setState(() => _speed = v),
+                            ),
+                          ),
+                          SizedBox(
+                              width: 46,
+                              child: Text('${_speed.round()}',
+                                  style: const TextStyle(fontSize: 11.5))),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          const Icon(Icons.format_size, size: 17),
+                          Expanded(
+                            child: Slider(
+                              value: _fontSize,
+                              min: 16,
+                              max: 90,
+                              onChanged: (v) => setState(() => _fontSize = v),
+                            ),
+                          ),
+                          SizedBox(
+                              width: 46,
+                              child: Text('${_fontSize.round()}',
+                                  style: const TextStyle(fontSize: 11.5))),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          const Icon(Icons.format_line_spacing, size: 17),
+                          Expanded(
+                            child: Slider(
+                              value: _lineHeight,
+                              min: 1.2,
+                              max: 3.0,
+                              onChanged: (v) => setState(() => _lineHeight = v),
+                            ),
+                          ),
+                          SizedBox(
+                              width: 46,
+                              child: Text(_lineHeight.toStringAsFixed(1),
+                                  style: const TextStyle(fontSize: 11.5))),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+            ],
           ),
-          Container(
-            color: scheme.surface,
-            padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _toggle,
-                        icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
-                        label: Text(_playing ? '暂停（也可点屏幕）' : '开始提词'),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    OutlinedButton.icon(
-                      onPressed: () => _editScript(),
-                      icon: const Icon(Icons.edit_outlined, size: 18),
-                      label: const Text('改稿'),
-                    ),
-                  ],
+
+          // 全屏时的退出按钮。放右上角而不是右下角 ——
+          // 右下角是握手机时手指最常放的地方，容易误触。
+          if (_full)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: Material(
+                color: Colors.black45,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: _toggleFull,
+                  child: const Padding(
+                    padding: EdgeInsets.all(9),
+                    child: Icon(Icons.fullscreen_exit, color: Colors.white70, size: 22),
+                  ),
                 ),
-                Row(
-                  children: [
-                    const Icon(Icons.speed, size: 17),
-                    Expanded(
-                      child: Slider(
-                        value: _speed,
-                        min: 8,
-                        max: 200,
-                        onChanged: (v) => setState(() => _speed = v),
-                      ),
-                    ),
-                    SizedBox(
-                        width: 46,
-                        child: Text('${_speed.round()}', style: const TextStyle(fontSize: 11.5))),
-                  ],
-                ),
-                Row(
-                  children: [
-                    const Icon(Icons.format_size, size: 17),
-                    Expanded(
-                      child: Slider(
-                        value: _fontSize,
-                        min: 16,
-                        max: 90,
-                        onChanged: (v) => setState(() => _fontSize = v),
-                      ),
-                    ),
-                    SizedBox(
-                        width: 46,
-                        child: Text('${_fontSize.round()}', style: const TextStyle(fontSize: 11.5))),
-                  ],
-                ),
-                Row(
-                  children: [
-                    const Icon(Icons.format_line_spacing, size: 17),
-                    Expanded(
-                      child: Slider(
-                        value: _lineHeight,
-                        min: 1.2,
-                        max: 3.0,
-                        onChanged: (v) => setState(() => _lineHeight = v),
-                      ),
-                    ),
-                    SizedBox(
-                        width: 46,
-                        child: Text(_lineHeight.toStringAsFixed(1),
-                            style: const TextStyle(fontSize: 11.5))),
-                  ],
-                ),
-              ],
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -2091,6 +2690,17 @@ class _ExpressQueryPageState extends State<ExpressQueryPage> {
 
 // ============================================================ 20. 屏幕坏点检测
 
+/// 屏幕坏点检测。
+///
+/// v1.3.0 改动（都是用户直接反馈的体验问题）：
+///   1. **去掉屏幕正中的颜色汉字**（原来正中央写着一个「红」/「蓝」…）。
+///      坏点检测是拿眼睛找异常亮点，屏幕中间杵着一个字最碍事。
+///   2. **颜色挪到底部、用色圈表示**。原来底部那排小点是「当前色亮、
+///      其余灰」，看不出有哪些颜色、更没法直接点。现在每个点就是它
+///      本身的那个颜色（白圈黑边、黑圈白边……），点一下直接跳过去。
+///   3. **加了「开始检测」按钮，一点下去提示自动收起**。以前要手动点
+///      「隐藏提示」，而且收起后就没法再叫回来，很别扭。现在进入检测态
+///      之后屏幕干净得只剩纯色和底部色圈，按返回键退出即可。
 class DeadPixelPage extends StatefulWidget {
   const DeadPixelPage({super.key});
 
@@ -2101,7 +2711,11 @@ class DeadPixelPage extends StatefulWidget {
 class _DeadPixelPageState extends State<DeadPixelPage> {
   int _i = 0;
   bool _auto = false;
-  bool _showHint = true;
+
+  /// 是否已经点过「开始检测」。开始之后提示文字与按钮全部收起 ——
+  /// 这时候屏幕上任何多余的东西都会干扰「找亮点」这件事。
+  bool _started = false;
+
   Timer? _t;
 
   static const _colors = <(String, Color)>[
@@ -2119,6 +2733,8 @@ class _DeadPixelPageState extends State<DeadPixelPage> {
   @override
   void initState() {
     super.initState();
+    // 全屏沉浸：坏点检测要把整个屏幕用起来，状态栏和导航栏都得让位。
+    // immersiveSticky 比 immersive 好在用户一划它也会自己再收回去。
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     keepScreenOn(true);
   }
@@ -2140,74 +2756,89 @@ class _DeadPixelPageState extends State<DeadPixelPage> {
     });
   }
 
+  /// 底部色圈。每个圈画成它代表的那个颜色本身，
+  /// 当前选中的那个加粗描边 + 稍微放大。
+  Widget _dot(int i, Color fg, bool compact) {
+    final on = i == _i;
+    final size = compact ? (on ? 16.0 : 12.0) : (on ? 20.0 : 15.0);
+    return GestureDetector(
+      onTap: () => setState(() => _i = i),
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        width: size,
+        height: size,
+        margin: EdgeInsets.symmetric(horizontal: compact ? 4 : 5),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: _colors[i].$2,
+          // 描边是必需的：白圈放在白底上、黑圈放在黑底上，
+          // 不描边就彻底看不见了。
+          border: Border.all(
+            color: on ? fg : fg.withValues(alpha: 0.45),
+            width: on ? 2.5 : 1,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final c = _colors[_i];
-    final lightBg = c.$2.computeLuminance() > 0.5;
+    final col = _colors[_i].$2;
+    final lightBg = col.computeLuminance() > 0.5;
+    // 前景色跟着背景走，保证在纯白和纯黑上都看得清
+    final fg = lightBg ? Colors.black : Colors.white;
+
     return Scaffold(
-      backgroundColor: c.$2,
+      backgroundColor: col,
       body: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: () => setState(() {
-          _i = (_i + 1) % _colors.length;
-          _showHint = true;
-        }),
+        // 点屏幕换下一个颜色。开始检测之后这是最主要的操作，
+        // 所以不做任何额外的判定 —— 点哪儿都算。
+        onTap: () => setState(() => _i = (_i + 1) % _colors.length),
         onLongPress: _toggleAuto,
         child: Stack(
           children: [
-            Positioned.fill(
-              child: Center(
-                child: Text(
-                  c.$1,
-                  style: TextStyle(
-                    fontSize: 22,
-                    color: lightBg ? Colors.black.withValues(alpha: 0.25) : Colors.white.withValues(alpha: 0.35),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 26,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      for (var i = 0; i < _colors.length; i++) _dot(i, fg, _started),
+                    ],
                   ),
-                ),
-              ),
-            ),
-            if (_showHint)
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 40,
-                child: Column(
-                  children: [
-                    Text(
-                      _auto ? '自动轮播中 · 长按停止' : '点屏幕换颜色 · 长按自动轮播 · 返回键退出',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        color: lightBg ? Colors.black54 : Colors.white70,
+                  if (!_started) ...[
+                    const SizedBox(height: 16),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 28),
+                      child: Text(
+                        '把屏幕调到最亮，盯着整块颜色找不对劲的亮点 / 暗点。\n'
+                        '点屏幕换颜色，长按自动轮播。',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 12.5, height: 1.7, color: fg.withValues(alpha: 0.6)),
                       ),
                     ),
                     const SizedBox(height: 14),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        for (var i = 0; i < _colors.length; i++)
-                          Container(
-                            width: 9,
-                            height: 9,
-                            margin: const EdgeInsets.symmetric(horizontal: 3),
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: i == _i
-                                  ? (lightBg ? Colors.black54 : Colors.white)
-                                  : (lightBg ? Colors.black26 : Colors.white38),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    TextButton(
-                      onPressed: () => setState(() => _showHint = false),
-                      child: Text('隐藏提示',
-                          style: TextStyle(color: lightBg ? Colors.black54 : Colors.white70)),
+                    FilledButton.icon(
+                      onPressed: () => setState(() => _started = true),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: fg,
+                        foregroundColor: lightBg ? Colors.white : Colors.black,
+                        padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 12),
+                      ),
+                      icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                      label: const Text('开始检测'),
                     ),
                   ],
-                ),
+                ],
               ),
+            ),
           ],
         ),
       ),

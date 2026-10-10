@@ -21,6 +21,11 @@ class SettingsStore {
   static const _kCacheLimit = 'cache_limit_mb';
   static const _kAutoNext = 'quiz_auto_next';
   static const _kShowAnswer = 'quiz_show_answer_now';
+  // v1.3.0 新增：
+  //   _kAutoNextSec —— 「显示答案」模式下，答完停留几秒自动跳下一题（0 = 不自动跳）
+  //   _kWrongStaySec —— 「不带答案」模式下，答错后停留几秒再自动跳下一题
+  static const _kAutoNextSec = 'quiz_auto_next_sec';
+  static const _kWrongStaySec = 'quiz_wrong_stay_sec';
   static const _kLastServerCheck = 'last_server_check';
   static const _kSaveHistory = 'save_view_history';
   static const _kDownloadDir = 'download_dir';
@@ -200,6 +205,28 @@ class SettingsStore {
   Future<void> setShowAnswerNow(bool v) async {
     final p = await _prefs;
     await p.setBool(_kShowAnswer, v);
+  }
+
+  /// 「显示答案」模式下自动跳下一题的秒数。0 表示不自动跳。
+  Future<int> autoNextSec() async {
+    final p = await _prefs;
+    return p.getInt(_kAutoNextSec) ?? Defaults.autoNextSec;
+  }
+
+  Future<void> setAutoNextSec(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kAutoNextSec, v);
+  }
+
+  /// 「不带答案」模式下答错后停留的秒数（答对是立刻跳）
+  Future<int> wrongStaySec() async {
+    final p = await _prefs;
+    return p.getInt(_kWrongStaySec) ?? Defaults.wrongStaySec;
+  }
+
+  Future<void> setWrongStaySec(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kWrongStaySec, v);
   }
 
   Future<void> setLastServerCheck(String text) async {

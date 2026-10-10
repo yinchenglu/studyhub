@@ -308,10 +308,56 @@ class WebDavClient {
     }
   }
 
-  /// 逐级建目录，已存在会静默跳过
-  Future<void> ensureDir(String rel) => ensureDirAbsolute(_absolute(rel));
+  /// 流式上传本地文件。
+  ///
+  /// 为什么不复用 writeBytes：writeBytes 要把整个文件读成一个 Uint8List，
+  /// 手机上传教学视频动辄几百兆，那样会直接把内存吃爆。
+  /// 这里用 file.openRead() 边读边发，内存占用与文件大小无关。
+  ///
+  /// 注意两点：
+  ///   * PUT 必须带 Content-Length，所以要先 file.length()
+  ///   * BaseOptions 里的 sendTimeout 只有 60 秒，大文件必然超时，
+  ///     这里针对本请求单独放大到 30 分钟
+  Future<void> writeFileStream(
+    String rel,
+    File file, {
+    String? contentType,
+    void Function(int sent, int total)? onProgress,
+    CancelToken? cancelToken,
+  }) async {
+    try {
+      final abs = _absolute(rel);
+      // 目标目录不存在时先建（chfs / 部分服务器 PUT 不会自动建目录）
+      final parent = abs.substring(0, abs.lastIndexOf('/'));
+      await ensureDirAbsolute(parent);
+      final len = await file.length();
+      final resp = await _dio.put<void>(
+        urlFor(rel),
+        data: file.openRead(),
+        cancelToken: cancelToken,
+        onSendProgress: onProgress,
+        options: Options(
+          sendTimeout: const Duration(minutes: 30),
+          headers: {
+            Headers.contentLengthHeader: len,
+            if (contentType != null) Headers.contentTypeHeader: contentType,
+            'Overwrite': 'T',
+          },
+          validateStatus: (s) => s != null && s < 500,
+        ),
+      );
+      final code = resp.statusCode ?? 0;
+      if (code != 200 && code != 201 && code != 204) {
+        if (code == 403) throw DavException('服务器不允许写入（HTTP 403）：该账号是只读的');
+        throw DavException('上传失败：HTTP $code', statusCode: code);
+      }
+    } on DioException catch (e) {
+      throw _friendly(e);
+    }
+  }
 
-  Future<void> ensureDirAbsolute(String absPath) async {
+  /// 逐级建目录，已存在会静默跳过
+  Future<void> ensureDir(String rel) => ensureDirAbsolute(_absolute(rel));  Future<void> ensureDirAbsolute(String absPath) async {
     final segs = absPath.split('/').where((e) => e.isNotEmpty).toList();
     var cur = '';
     for (final s in segs) {

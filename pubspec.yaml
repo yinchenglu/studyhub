@@ -1,7 +1,17 @@
 name: studyhub
 description: 学聚 —— 自用学习 App，资料全部存放在自己的 WebDAV 服务器
 publish_to: 'none'
-version: 1.2.0+3
+
+# 版本号规则（改这里就够了，APK 的 versionCode 由它算出来）：
+#   +N 会成为基础 versionCode，Flutter 的 --split-per-abi 再按 ABI 加偏移：
+#     armeabi-v7a → N + 1000
+#     arm64-v8a   → N + 2000
+#   所以 v1.3.0+4 出来的两个包是 versionCode 1004 / 2004。
+# 历史：
+#   v1.1.0+2 → 1002 / 2002
+#   v1.2.0+3 → 1003 / 2003
+#   v1.3.0+4 → 1004 / 2004   ← 递增即可直接覆盖安装
+version: 1.3.0+4
 
 environment:
   # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps
@@ -10,6 +20,23 @@ environment:
 
 dependencies:
   flutter:
+    sdk: flutter
+
+  # ---------- 中文本地化（v1.3.0 新增）----------
+  # 为什么必须加：
+  #   系统的日期 / 时间选择器（showDatePicker / showTimePicker）文案
+  #   ——「Select date」「Cancel」「OK」「January」这些 —— 全来自
+  #   MaterialLocalizations，默认实现是英文的 DefaultMaterialLocalizations。
+  #   只有挂上 GlobalMaterialLocalizations 才会变中文。
+  #   日期计算和时间戳转换两个工具都要用中文的日期选择器。
+  #
+  # 连带的强制升级：flutter_localizations 在 Flutter 3.47.6 里要求
+  #   intl ^0.20.3，所以下面 intl 必须从 ^0.19.0 一起提到 ^0.20.3，
+  #   否则 pub get 直接 version solving failed。
+  #   已核对过我们的用法：只用 DateFormat 和 initializeDateFormatting，
+  #   这两个在 0.20 里都没变（0.20 主要是砍掉 Dart 2 支持和一批
+  #   deprecated 的旧 API，跟我们无关）。
+  flutter_localizations:
     sdk: flutter
 
   # 状态管理
@@ -42,7 +69,9 @@ dependencies:
   cached_network_image: ^3.4.1
 
   # 工具
-  intl: ^0.19.0
+  # 版本必须 >=0.20.3：Flutter 3.47.6 的 flutter_localizations 硬性要求 ^0.20.3。
+  # 用法只涉及 DateFormat / initializeDateFormatting，0.20 完全兼容。
+  intl: ^0.20.3
   qr_flutter: ^4.1.0
   crypto: ^3.0.5
   flutter_colorpicker: ^1.1.0
@@ -85,6 +114,24 @@ dependencies:
 
   # 量角器、挂画助手（水平仪）用重力/磁力传感器
   sensors_plus: ^7.1.1
+
+  # ---- v1.3.0 新增：量角器 / 挂画助手改成实时摄像头取景 ----
+  #
+  # 为什么敢直接加（拷问过依赖树了）：
+  #   camera 0.12.1 的传递依赖只有 async / meta / stream_transform /
+  #   cross_file / plugin_platform_interface / camera_platform_interface，
+  #   全是 Flutter 生态里最基础的那几个，且 cross_file 与 stream_transform
+  #   本来就在树里（image_picker / media_kit 拉的）。
+  #   没有任何 win32 / mime / xml 之类的老地雷 —— 这正是这个项目历次构建
+  #   翻车的地方，所以每次加包前都要单独确认一遍。
+  #
+  # 版本下限 0.12.1：它要求 flutter >= 3.44，我们锁的是 3.47.6，正好够。
+  #   0.11.x 那一串虽然也能用，但 0.12 起弃用了 `CameraController.takePicture`
+  #   之外的一批旧 API，直接用新版省得以后再迁。
+  #
+  # 注意：camera 走 CameraX，会让 Gradle 多拉一批 androidx.camera 依赖，
+  #   构建时间与 APK 体积都会涨一点（约 3~5 MB），这是必要成本。
+  camera: ^0.12.1
 
   # 噪声测量（麦克风）
   noise_meter: ^6.0.0
@@ -130,3 +177,9 @@ flutter:
   # 故意不写进 fonts:，否则会被注册成界面字体（没必要，还容易和系统字体冲突）。
   assets:
     - assets/fonts/NotoSansSC-Regular.ttf
+
+    # 番茄时钟的铃声（v1.3.0 新增）。
+    # 用 .workbuddy/gen_sounds.py 合成，16-bit PCM WAV / 22050 Hz / 单声道，
+    # 7 个文件加起来 340 KB。播放走已有的 media_kit（asset:// scheme），
+    # 不额外引入音频包。整个目录一起打包，加铃声直接丢文件进来即可。
+    - assets/sounds/

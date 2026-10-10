@@ -231,6 +231,7 @@ class _WrongDetailPage extends ConsumerWidget {
             spacing: 6,
             children: [
               _chip(record.bankName.isEmpty ? record.bankDir : record.bankName, scheme.primary),
+              _chip(Question.typeLabelOf(record.qtype), scheme.tertiary),
               _chip('错误 ${record.wrongCount} 次', scheme.error),
               for (final t in record.tags) _chip(t, scheme.onSurfaceVariant),
             ],
@@ -238,6 +239,10 @@ class _WrongDetailPage extends ConsumerWidget {
           const SizedBox(height: 14),
           SelectableText(record.stem, style: const TextStyle(fontSize: 16.5, height: 1.65, fontWeight: FontWeight.w500)),
           const SizedBox(height: 16),
+          // 填空题 / 问答题没有选项，走「我的答案 ↔ 正确答案」对照块。
+          // v1.3.0 加的：以前这类题进错题本后只剩题干 + 空白，看不出自己错在哪。
+          // 选项为空时下面的 for 自然不执行，两者互斥，不会重复渲染。
+          if (record.options.isEmpty) _textBlock(record, scheme),
           for (var j = 0; j < record.options.length; j++)
             Container(
               margin: const EdgeInsets.only(bottom: 8),
@@ -330,4 +335,54 @@ class _WrongDetailPage extends ConsumerWidget {
         decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
         child: Text(text, style: TextStyle(fontSize: 11.5, color: color)),
       );
+
+  /// 填空题 / 问答题的「我的答案 ↔ 正确答案」对照块。v1.3.0 新增。
+  Widget _textBlock(WrongRecord r, ColorScheme scheme) {
+    final mine = r.lastText.trim();
+    // 优先用 textAccept（题库里写的可接受答案列表）；
+    // 老数据没有这个字段，就退回 answer 里存的文本答案。
+    final correct = r.textAccept.isNotEmpty
+        ? r.textAccept
+        : (r.answer.isNotEmpty ? <String>[r.answer.join(' ')] : const <String>[]);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest.withValues(alpha: 0.3),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(mine.isEmpty ? '我当时没有作答' : '我的答案',
+                  style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant)),
+              const SizedBox(height: 6),
+              SelectableText(mine.isEmpty ? '（空）' : mine, style: const TextStyle(fontSize: 15, height: 1.6)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1D9E75).withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('正确答案', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              SelectableText(correct.isEmpty ? '（题库未提供答案）' : correct.join('   /   '),
+                  style: const TextStyle(fontSize: 15, height: 1.6)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 }

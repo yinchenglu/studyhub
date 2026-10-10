@@ -17,6 +17,12 @@ import 'tool_pages_ext.dart';
 ///   * 最上面单独一行是「服务器下载站」—— 直接进，不折叠、不藏在菜单里
 ///   * 下面按用途分成 6 类，一共 20 个离线小工具
 ///   * 最后再挂一个「服务器小工具」，识别服务器 tools 目录里的 html 小工具
+///
+/// v1.3.0 按用户要求重排了分类归属与顺序：
+///   测量与感官 ← 挂画助手（要对着实物比水平线，本质是测量）
+///   时间与效率 ← LED 屏幕（滚动字幕就是打鸡血/报时用的）
+///   生活与娱乐 提到第 3 位，SOS 手电筒放它第一个
+///   颜色与设计 ← 简易画板（画画就是配色调色的事）
 class ToolsPage extends ConsumerWidget {
   const ToolsPage({super.key});
 
@@ -27,17 +33,25 @@ class ToolsPage extends ConsumerWidget {
       _ToolDef('量角器', Icons.architecture, Color(0xFF7F77DD)),
       _ToolDef('噪声测量', Icons.graphic_eq, Color(0xFF1D9E75)),
       _ToolDef('屏幕坏点检测', Icons.grid_on, Color(0xFFD4537E)),
+      _ToolDef('挂画助手', Icons.straighten_outlined, Color(0xFF72243E)),
     ]),
     _Category('时间与效率', Icons.schedule, [
       _ToolDef('番茄时钟', Icons.timer_outlined, Color(0xFFD85A30)),
       _ToolDef('日期计算', Icons.calendar_month_outlined, Color(0xFFEF9F27)),
       _ToolDef('时间戳转换', Icons.access_time, Color(0xFF534AB7)),
       _ToolDef('提词器', Icons.vertical_align_bottom, Color(0xFF27500A)),
+      _ToolDef('LED 屏幕', Icons.brightness_high, Color(0xFFEF9F27)),
+    ]),
+    // 用户要求：生活与娱乐排第 3。它原来在最后一位。
+    _Category('生活与娱乐', Icons.sports_esports_outlined, [
+      _ToolDef('SOS 手电筒', Icons.flashlight_on, Color(0xFFB8860B)),
+      _ToolDef('抛硬币', Icons.casino_outlined, Color(0xFFE0A020)),
+      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5)),
     ]),
     _Category('颜色与设计', Icons.palette_outlined, [
       _ToolDef('配色助手', Icons.auto_awesome, Color(0xFFD4537E)),
       _ToolDef('颜色码转换', Icons.colorize_outlined, Color(0xFF0C447C)),
-      _ToolDef('挂画助手', Icons.straighten_outlined, Color(0xFF72243E)),
+      _ToolDef('简易画板', Icons.brush_outlined, Color(0xFF7F77DD)),
     ]),
     _Category('文字与编码', Icons.text_fields, [
       _ToolDef('摩斯电码', Icons.wifi_tethering, Color(0xFF0F6E56)),
@@ -46,13 +60,6 @@ class ToolsPage extends ConsumerWidget {
     ]),
     _Category('设备与应用', Icons.phone_android, [
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
-      _ToolDef('LED 屏幕', Icons.brightness_high, Color(0xFFEF9F27)),
-      _ToolDef('SOS 手电筒', Icons.flashlight_on, Color(0xFFB8860B)),
-    ]),
-    _Category('生活与娱乐', Icons.sports_esports_outlined, [
-      _ToolDef('抛硬币', Icons.casino_outlined, Color(0xFFE0A020)),
-      _ToolDef('简易画板', Icons.brush_outlined, Color(0xFF7F77DD)),
-      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5)),
     ]),
   ];
 

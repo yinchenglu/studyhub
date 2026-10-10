@@ -96,7 +96,7 @@ class MediaItem {
 /// ---------------- 题目 ----------------
 class Question {
   final String id;
-  final String type; // single / multi / judge
+  final String type; // single / multi / judge / fill / essay
   final String stem;
   final List<String> options;
   final List<int> answer;
@@ -105,6 +105,13 @@ class Question {
   final int difficulty;
   final String bankDir; // 所属题库目录，例如 quiz/python基础
   final String bankName;
+
+  /// 填空题的可接受答案 / 问答题的参考答案。
+  ///
+  /// 填空题：任意一项匹配即算答对；一项里可以用 `|` `/` `；` 分隔多个等价写法
+  /// （例如「叶绿体|叶绿素」表示两个都算对）。
+  /// 问答题：第一项作为参考答案展示，由用户自己判定对错。
+  final List<String> textAccept;
 
   const Question({
     required this.id,
@@ -117,9 +124,18 @@ class Question {
     this.difficulty = 2,
     this.bankDir = '',
     this.bankName = '',
+    this.textAccept = const [],
   });
 
   bool get isMulti => type == 'multi';
+  bool get isFill => type == 'fill';
+  bool get isEssay => type == 'essay';
+
+  /// 需要手打文字作答的题型（填空 / 问答）
+  bool get isTextInput => isFill || isEssay;
+
+  /// 选选项作答的题型
+  bool get isChoice => !isTextInput;
 
   Question copyWith({String? id, String? bankDir, String? bankName}) => Question(
         id: id ?? this.id,
@@ -132,6 +148,7 @@ class Question {
         difficulty: difficulty,
         bankDir: bankDir ?? this.bankDir,
         bankName: bankName ?? this.bankName,
+        textAccept: textAccept,
       );
 
   Map<String, dynamic> toJson() => {
@@ -140,21 +157,123 @@ class Question {
         'stem': stem,
         'options': options,
         'answer': answer,
+        if (textAccept.isNotEmpty) 'answerText': textAccept,
         'analysis': analysis,
         'tags': tags,
         'difficulty': difficulty,
       };
 
-  factory Question.fromJson(Map<String, dynamic> j) => Question(
-        id: j['id']?.toString() ?? '',
-        type: (j['type'] ?? 'single').toString(),
-        stem: (j['stem'] ?? '').toString(),
-        options: ((j['options'] ?? const []) as List).map((e) => e.toString()).toList(),
-        answer: ((j['answer'] ?? const []) as List).map((e) => int.tryParse(e.toString()) ?? 0).toList(),
-        analysis: (j['analysis'] ?? '').toString(),
-        tags: ((j['tags'] ?? const []) as List).map((e) => e.toString()).toList(),
-        difficulty: int.tryParse('${j['difficulty'] ?? 2}') ?? 2,
-      );
+  /// 把题库里五花八门的 type 写法归一化。
+  /// 手写题库时「填空 / 填空题 / blank」都该认，不然用户会以为程序坏了。
+  static String normalizeType(String t) {
+    switch (t.trim().toLowerCase()) {
+      case 'fill':
+      case 'blank':
+      case 'fillblank':
+      case '填空':
+      case '填空题':
+        return 'fill';
+      case 'essay':
+      case 'qa':
+      case 'short':
+      case 'shortanswer':
+      case '简答':
+      case '简答题':
+      case '问答':
+      case '问答题':
+        return 'essay';
+      case 'multi':
+      case 'multiple':
+      case '多选':
+      case '多选题':
+        return 'multi';
+      case 'judge':
+      case 'truefalse':
+      case '判断':
+      case '判断题':
+        return 'judge';
+      default:
+        return 'single';
+    }
+  }
+
+  /// 题型的中文名。
+  /// 放在这里而不是各页面各写一份 —— 答题页、错题本、题库列表都要用，
+  /// 散着写迟早会改漏一处（比如加了「排序题」只更新了其中一个文件）。
+  static String typeLabelOf(String t) {
+    switch (normalizeType(t)) {
+      case 'multi':
+        return '多选题';
+      case 'judge':
+        return '判断题';
+      case 'fill':
+        return '填空题';
+      case 'essay':
+        return '问答题';
+      default:
+        return '单选题';
+    }
+  }
+
+  factory Question.fromJson(Map<String, dynamic> j) {
+    final opts = _strList(j['options']);
+    final type = normalizeType((j['type'] ?? 'single').toString());
+
+    // answer 字段可能写成好几种形态，全都得认，否则用户手写题库必然踩坑：
+    //   [0] / [0,2]            选项下标（单选 / 多选）
+    //   "光合作用"              填空题答案
+    //   ["光合作用", "叶绿体"]   填空题的多个可接受答案
+    //   [0, "补充说明"]         混着写：能对上选项的当下标，其余当文本答案
+    final idx = <int>[];
+    final texts = <String>[];
+
+    void take(dynamic v) {
+      if (v == null) return;
+      if (v is List) {
+        for (final e in v) {
+          take(e);
+        }
+        return;
+      }
+      if (v is int) {
+        idx.add(v);
+        return;
+      }
+      final s = v.toString().trim();
+      if (s.isEmpty) return;
+      final asInt = int.tryParse(s);
+      // 只有在「有选项」且下标落在范围内时才当选项下标。
+      // 填空题没有选项，所以答案是 "3" 这种数字也不会被误当成下标。
+      if (asInt != null && opts.isNotEmpty && asInt >= 0 && asInt < opts.length) {
+        idx.add(asInt);
+      } else {
+        texts.add(s);
+      }
+    }
+
+    take(j['answer']);
+    // 另外几种常见的字段名也认，方便手写题库
+    take(j['answerText']);
+    take(j['textAnswer']);
+    take(j['text_accept']);
+
+    return Question(
+      id: j['id']?.toString() ?? '',
+      type: type,
+      stem: (j['stem'] ?? '').toString(),
+      options: opts,
+      answer: idx,
+      analysis: (j['analysis'] ?? '').toString(),
+      tags: _strList(j['tags']),
+      difficulty: int.tryParse('${j['difficulty'] ?? 2}') ?? 2,
+      textAccept: texts,
+    );
+  }
+}
+
+List<String> _strList(dynamic v) {
+  if (v is List) return v.map((e) => e.toString()).toList();
+  return const [];
 }
 
 /// 单词（单词库专用）
@@ -254,6 +373,16 @@ class WrongRecord {
   final DateTime lastWrongAt;
   final String myNote;
 
+  /// 原题题型。v1.3.0 加的：以前只看 answer 长度来猜单选/多选，
+  /// 填空题和问答题从错题本里还原出来就变成单选题了。
+  final String qtype;
+
+  /// 填空题可接受答案 / 问答题参考答案（从错题本还原题目时要用）
+  final List<String> textAccept;
+
+  /// 上一次手打的答案（填空 / 问答题）
+  final String lastText;
+
   const WrongRecord({
     this.id,
     required this.bankDir,
@@ -269,6 +398,9 @@ class WrongRecord {
     this.mastered = false,
     required this.lastWrongAt,
     this.myNote = '',
+    this.qtype = '',
+    this.textAccept = const [],
+    this.lastText = '',
   });
 
   WrongRecord copyWith({int? id, int? wrongCount, bool? mastered, List<int>? lastChoice, DateTime? lastWrongAt, String? myNote}) =>
@@ -287,6 +419,9 @@ class WrongRecord {
         mastered: mastered ?? this.mastered,
         lastWrongAt: lastWrongAt ?? this.lastWrongAt,
         myNote: myNote ?? this.myNote,
+        qtype: qtype,
+        textAccept: textAccept,
+        lastText: lastText,
       );
 
   Map<String, dynamic> toMap() => {
@@ -304,6 +439,9 @@ class WrongRecord {
         'mastered': mastered ? 1 : 0,
         'last_wrong_at': lastWrongAt.millisecondsSinceEpoch,
         'my_note': myNote,
+        'qtype': qtype,
+        'text_accept': jsonEncode(textAccept),
+        'last_text': lastText,
       };
 
   factory WrongRecord.fromMap(Map<String, dynamic> m) => WrongRecord(
@@ -321,6 +459,9 @@ class WrongRecord {
         mastered: ((m['mastered'] as int?) ?? 0) == 1,
         lastWrongAt: DateTime.fromMillisecondsSinceEpoch((m['last_wrong_at'] as int?) ?? 0),
         myNote: (m['my_note'] ?? '').toString(),
+        qtype: (m['qtype'] ?? '').toString(),
+        textAccept: _list(m['text_accept']),
+        lastText: (m['last_text'] ?? '').toString(),
       );
 
   static List<String> _list(dynamic v) {

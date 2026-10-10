@@ -8,7 +8,9 @@ import '../models/models.dart';
 /// 把一条错题记录还原成可作答的题目（错题本重做时用）
 Question questionFromWrong(WrongRecord r) => Question(
       id: r.questionId,
-      type: r.answer.length > 1 ? 'multi' : 'single',
+      // 优先用记录里存的题型；v1.3.0 之前的老记录没有 qtype，
+      // 才退回「按答案个数猜单选/多选」的老办法
+      type: r.qtype.isNotEmpty ? r.qtype : (r.answer.length > 1 ? 'multi' : 'single'),
       stem: r.stem,
       options: r.options,
       answer: r.answer,
@@ -16,6 +18,7 @@ Question questionFromWrong(WrongRecord r) => Question(
       tags: r.tags,
       bankDir: r.bankDir,
       bankName: r.bankName,
+      textAccept: r.textAccept,
     );
 
 /// 一条题库引用（就是服务器上的一个 .json 文件）
@@ -236,17 +239,34 @@ class QuizRepo {
               continue;
             }
             if (q['stem'] == null) errors.add('${f.name} 第 ${i + 1} 题：缺少 stem');
-            if (q['options'] is! List || (q['options'] as List).isEmpty) {
-              errors.add('${f.name} 第 ${i + 1} 题：options 为空');
-            }
-            if (q['answer'] is! List || (q['answer'] as List).isEmpty) {
-              errors.add('${f.name} 第 ${i + 1} 题：缺少 answer（答案下标数组）');
+
+            final qtype = Question.normalizeType((q['type'] ?? 'single').toString());
+            final isText = qtype == 'fill' || qtype == 'essay';
+            // 文本答案可能写在 answer / answerText / textAnswer 任何一个里
+            final rawAns = q['answer'] ?? q['answerText'] ?? q['textAnswer'];
+
+            if (isText) {
+              // 填空题 / 问答题：不打选项，答案是字符串（或字符串数组）
+              final empty = rawAns == null ||
+                  (rawAns is List && rawAns.isEmpty) ||
+                  (!(rawAns is List) && rawAns.toString().trim().isEmpty);
+              if (empty) {
+                errors.add('${f.name} 第 ${i + 1} 题：缺少答案文本'
+                    '（${qtype == 'fill' ? '填空' : '问答'}题的 answer 直接写文字即可，不用写下标）');
+              }
             } else {
-              final optLen = (q['options'] is List) ? (q['options'] as List).length : 0;
-              for (final a in q['answer'] as List) {
-                final idx = int.tryParse(a.toString()) ?? -1;
-                if (idx < 0 || idx >= optLen) {
-                  errors.add('${f.name} 第 ${i + 1} 题：answer 下标 $idx 越界（共 $optLen 个选项）');
+              if (q['options'] is! List || (q['options'] as List).isEmpty) {
+                errors.add('${f.name} 第 ${i + 1} 题：options 为空');
+              }
+              if (rawAns is! List || rawAns.isEmpty) {
+                errors.add('${f.name} 第 ${i + 1} 题：缺少 answer（答案下标数组）');
+              } else {
+                final optLen = (q['options'] is List) ? (q['options'] as List).length : 0;
+                for (final a in rawAns) {
+                  final idx = int.tryParse(a.toString()) ?? -1;
+                  if (idx < 0 || idx >= optLen) {
+                    errors.add('${f.name} 第 ${i + 1} 题：answer 下标 $idx 越界（共 $optLen 个选项）');
+                  }
                 }
               }
             }

@@ -214,13 +214,41 @@ class QuizPrefs {
   final int examMinutes;
   final bool autoNext;
   final bool showAnswerNow;
+
+  /// 「显示答案」模式下答完停留几秒自动跳下一题（0 = 不自动跳）
+  final int autoNextSec;
+
+  /// 「不带答案」模式下答错后停留几秒再跳下一题（答对立刻跳）
+  final int wrongStaySec;
+
   const QuizPrefs({
     this.perRound = 20,
     this.examCount = 30,
     this.examMinutes = 40,
     this.autoNext = false,
     this.showAnswerNow = true,
+    this.autoNextSec = 3,
+    this.wrongStaySec = 6,
   });
+
+  QuizPrefs copy({
+    int? perRound,
+    int? examCount,
+    int? examMinutes,
+    bool? autoNext,
+    bool? showAnswerNow,
+    int? autoNextSec,
+    int? wrongStaySec,
+  }) =>
+      QuizPrefs(
+        perRound: perRound ?? this.perRound,
+        examCount: examCount ?? this.examCount,
+        examMinutes: examMinutes ?? this.examMinutes,
+        autoNext: autoNext ?? this.autoNext,
+        showAnswerNow: showAnswerNow ?? this.showAnswerNow,
+        autoNextSec: autoNextSec ?? this.autoNextSec,
+        wrongStaySec: wrongStaySec ?? this.wrongStaySec,
+      );
 }
 
 class QuizPrefsNotifier extends StateNotifier<QuizPrefs> {
@@ -236,32 +264,44 @@ class QuizPrefsNotifier extends StateNotifier<QuizPrefs> {
       examMinutes: await s.examMinutes(),
       autoNext: await s.autoNext(),
       showAnswerNow: await s.showAnswerNow(),
+      autoNextSec: await s.autoNextSec(),
+      wrongStaySec: await s.wrongStaySec(),
     );
   }
 
   Future<void> setPerRound(int v) async {
     await SettingsStore.instance.setQuizCount(v);
-    state = QuizPrefs(perRound: v, examCount: state.examCount, examMinutes: state.examMinutes, autoNext: state.autoNext, showAnswerNow: state.showAnswerNow);
+    state = state.copy(perRound: v);
   }
 
   Future<void> setExamCount(int v) async {
     await SettingsStore.instance.setExamCount(v);
-    state = QuizPrefs(perRound: state.perRound, examCount: v, examMinutes: state.examMinutes, autoNext: state.autoNext, showAnswerNow: state.showAnswerNow);
+    state = state.copy(examCount: v);
   }
 
   Future<void> setExamMinutes(int v) async {
     await SettingsStore.instance.setExamMinutes(v);
-    state = QuizPrefs(perRound: state.perRound, examCount: state.examCount, examMinutes: v, autoNext: state.autoNext, showAnswerNow: state.showAnswerNow);
+    state = state.copy(examMinutes: v);
   }
 
   Future<void> setAutoNext(bool v) async {
     await SettingsStore.instance.setAutoNext(v);
-    state = QuizPrefs(perRound: state.perRound, examCount: state.examCount, examMinutes: state.examMinutes, autoNext: v, showAnswerNow: state.showAnswerNow);
+    state = state.copy(autoNext: v);
   }
 
   Future<void> setShowAnswerNow(bool v) async {
     await SettingsStore.instance.setShowAnswerNow(v);
-    state = QuizPrefs(perRound: state.perRound, examCount: state.examCount, examMinutes: state.examMinutes, autoNext: state.autoNext, showAnswerNow: v);
+    state = state.copy(showAnswerNow: v);
+  }
+
+  Future<void> setAutoNextSec(int v) async {
+    await SettingsStore.instance.setAutoNextSec(v);
+    state = state.copy(autoNextSec: v);
+  }
+
+  Future<void> setWrongStaySec(int v) async {
+    await SettingsStore.instance.setWrongStaySec(v);
+    state = state.copy(wrongStaySec: v);
   }
 }
 

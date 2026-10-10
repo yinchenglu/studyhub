@@ -96,6 +96,19 @@ class Defaults {
   static const int cacheLimitMb = 2048; // 缓存上限 2GB
   static const int scanMaxDepth = 4; // 媒体库最大扫描深度
 
+  /// 「显示答案」模式下答完自动跳下一题的秒数。0 = 不自动跳。
+  /// 给 3 秒是折中：够看一眼解析，又不至于干等。
+  static const int autoNextSec = 3;
+
+  /// 「不带答案」模式下答错后停留几秒再跳（答对是立刻跳）
+  static const int wrongStaySec = 6;
+
+  /// 「自动下一题」秒数可选项（0 表示关闭）
+  static const List<int> autoNextSecOptions = [0, 3, 5, 8, 10, 15];
+
+  /// 答错停留秒数可选项
+  static const List<int> wrongStaySecOptions = [2, 4, 6, 10, 15, 30];
+
   /// 默认下载目录（Android）：系统「下载」目录下的 StudyHub 文件夹
   static const String androidDownloadFolder = 'StudyHub';
 }

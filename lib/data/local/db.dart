@@ -32,7 +32,7 @@ class AppDb {
     final path = p.join(dir.path, 'studyhub.db');
     return openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE wrong (
@@ -50,6 +50,9 @@ class AppDb {
             mastered INTEGER DEFAULT 0,
             last_wrong_at INTEGER NOT NULL,
             my_note TEXT,
+            qtype TEXT,
+            text_accept TEXT,
+            last_text TEXT,
             UNIQUE(bank_dir, question_id)
           )
         ''');
@@ -103,6 +106,22 @@ class AppDb {
             )
           ''');
           await db.execute('CREATE INDEX IF NOT EXISTS idx_quiz_done_bank ON quiz_done(bank_dir)');
+        }
+        if (from < 3) {
+          // v1.3.0 新增：错题本要能记住原题题型和文本答案。
+          // 不加这三列的话，填空题从错题本里还原出来会变成单选题
+          // （旧代码靠 answer 的长度猜题型），而且手打的答案也丢了。
+          for (final col in const [
+            'qtype TEXT',
+            'text_accept TEXT',
+            'last_text TEXT',
+          ]) {
+            try {
+              await db.execute('ALTER TABLE wrong ADD COLUMN $col');
+            } catch (_) {
+              // 列已经存在（重复升级 / 新装库已带这些列）时忽略
+            }
+          }
         }
       },
     );
@@ -173,8 +192,11 @@ class AppDb {
 
   // ------------------------------------------------------------ 错题本
 
-  /// 答错时写入：已存在就累加错误次数并刷新快照
-  Future<void> upsertWrong(Question q, List<int> myChoice) async {
+  /// 答错时写入：已存在就累加错误次数并刷新快照。
+  ///
+  /// [myText] 是填空题 / 问答题手打的答案；选择题传空串即可。
+  /// [qtype] 存原题题型，否则从错题本还原时题型会丢（填空变单选）。
+  Future<void> upsertWrong(Question q, List<int> myChoice, {String myText = ''}) async {
     final d = await db;
     final now = DateTime.now().millisecondsSinceEpoch;
     final rows = await d.query('wrong',
@@ -194,6 +216,9 @@ class AppDb {
         'mastered': 0,
         'last_wrong_at': now,
         'my_note': '',
+        'qtype': q.type,
+        'text_accept': '${_json(q.textAccept)}',
+        'last_text': myText,
       });
     } else {
       final old = WrongRecord.fromMap(rows.first);
@@ -208,6 +233,9 @@ class AppDb {
           'options': '${_json(q.options)}',
           'answer': '${_json(q.answer)}',
           'analysis': q.analysis,
+          'qtype': q.type,
+          'text_accept': '${_json(q.textAccept)}',
+          'last_text': myText,
         },
         where: 'id = ?',
         whereArgs: [old.id],

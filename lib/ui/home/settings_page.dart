@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
+import '../../core/constants.dart';
 import '../../core/utils.dart';
 import '../../data/local/db.dart';
 import '../../data/local/settings_store.dart';
@@ -319,6 +320,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 SwitchListTile(
                   secondary: const Icon(Icons.flash_on_outlined),
                   title: const Text('答完自动下一题'),
+                  subtitle: const Text('不开「显示答案」时生效：答对立刻跳，答错停留一会儿'),
                   value: prefs.autoNext,
                   onChanged: (v) => ref.read(quizPrefsProvider.notifier).setAutoNext(v),
                 ),
@@ -326,9 +328,45 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 SwitchListTile(
                   secondary: const Icon(Icons.visibility_outlined),
                   title: const Text('选择后立即显示答案'),
-                  subtitle: const Text('关掉就是「答完再一起看结果」'),
+                  subtitle: const Text('关掉就是「先自己想，按确认才判定」'),
                   value: prefs.showAnswerNow,
                   onChanged: (v) => ref.read(quizPrefsProvider.notifier).setShowAnswerNow(v),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.timelapse),
+                  title: const Text('自动跳题秒数'),
+                  subtitle: Text(prefs.autoNextSec == 0
+                      ? '不自动跳（只对「显示答案」模式生效）'
+                      : '显示答案后 ${prefs.autoNextSec} 秒自动跳下一题'),
+                  trailing: DropdownButton<int>(
+                    value: prefs.autoNextSec,
+                    underline: const SizedBox.shrink(),
+                    items: [
+                      for (final s in Defaults.autoNextSecOptions)
+                        DropdownMenuItem(value: s, child: Text(s == 0 ? '关闭' : '$s 秒')),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) ref.read(quizPrefsProvider.notifier).setAutoNextSec(v);
+                    },
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.timer_off_outlined),
+                  title: const Text('答错后停留'),
+                  subtitle: Text('答错后 ${prefs.wrongStaySec} 秒再自动跳到下一题，方便看解析'),
+                  trailing: DropdownButton<int>(
+                    value: prefs.wrongStaySec,
+                    underline: const SizedBox.shrink(),
+                    items: [
+                      for (final s in Defaults.wrongStaySecOptions)
+                        DropdownMenuItem(value: s, child: Text('$s 秒')),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) ref.read(quizPrefsProvider.notifier).setWrongStaySec(v);
+                    },
+                  ),
                 ),
               ],
             ),
