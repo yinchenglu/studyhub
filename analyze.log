@@ -1,0 +1,61 @@
+Analyzing studyhub...                                           
+
+   info • Use a function declaration rather than a variable assignment to bind a function to a name. Try rewriting the closure assignment as a function declaration • lib/core/utils.dart:25:9 • prefer_function_declarations_over_variables
+   info • Use interpolation to compose strings and values. Try using string interpolation to build the composite string • lib/data/dav/webdav_client.dart:71:18 • prefer_interpolation_to_compose_strings
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:210:20 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:211:19 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:213:17 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:214:24 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:220:24 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:230:26 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:233:22 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:234:21 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:237:26 • unnecessary_string_interpolations
+  error • Undefined class 'CancelToken'. Try changing the name to the name of an existing class, or creating a class with the name 'CancelToken' • lib/data/repositories/media_repo.dart:51:5 • undefined_class
+warning • Unnecessary cast. Try removing the cast • lib/data/repositories/quiz_repo.dart:171:57 • unnecessary_cast
+   info • Use the 'is!' operator rather than negating the value of the 'is' operator. Try rewriting the condition to use the 'is!' operator • lib/data/repositories/quiz_repo.dart:252:20 • prefer_is_not_operator
+warning • A value of type 'int' can't be returned by the 'onError' handler because it must be assignable to 'FutureOr<Null>' • lib/providers/providers.dart:160:26 • invalid_return_type_for_catch_error
+   info • Use 'const' literals as arguments to constructors of '@immutable' classes. Try adding 'const' before the literal • lib/ui/home/server_guide_page.dart:109:19 • prefer_const_literals_to_create_immutables
+   info • Use interpolation to compose strings and values. Try using string interpolation to build the composite string • lib/ui/home/settings_page.dart:123:29 • prefer_interpolation_to_compose_strings
+   info • Unnecessary braces in a string interpolation. Try removing the braces • lib/ui/home/settings_page.dart:189:71 • unnecessary_brace_in_string_interps
+   info • 'groupValue' is deprecated and shouldn't be used. Use a RadioGroup ancestor to manage group value instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:382:19 • deprecated_member_use
+   info • 'onChanged' is deprecated and shouldn't be used. Use RadioGroup to handle value change instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:384:19 • deprecated_member_use
+   info • 'groupValue' is deprecated and shouldn't be used. Use a RadioGroup ancestor to manage group value instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:388:19 • deprecated_member_use
+   info • 'onChanged' is deprecated and shouldn't be used. Use RadioGroup to handle value change instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:390:19 • deprecated_member_use
+   info • 'groupValue' is deprecated and shouldn't be used. Use a RadioGroup ancestor to manage group value instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:394:19 • deprecated_member_use
+   info • 'onChanged' is deprecated and shouldn't be used. Use RadioGroup to handle value change instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:396:19 • deprecated_member_use
+   info • Use 'const' for final variables initialized to a constant value. Try replacing 'final' with 'const' • lib/ui/media/player_page.dart:255:5 • prefer_const_declarations
+warning • The value of the local variable 'size' isn't used. Try removing the variable or using it • lib/ui/media/player_page.dart:333:11 • unused_local_variable
+warning • Unused import: '../../data/dav/webdav_client.dart'. Try removing the import directive • lib/ui/notes/note_export.dart:13:8 • unused_import
+warning • Unused import: '../../data/dav/webdav_client.dart'. Try removing the import directive • lib/ui/notes/note_read_page.dart:7:8 • unused_import
+   info • 'imageBuilder' is deprecated and shouldn't be used. Use sizedImageBuilder instead. Try replacing the use of the deprecated member with the replacement • lib/ui/notes/note_read_page.dart:152:23 • deprecated_member_use
+warning • Unused import: '../../data/dav/webdav_client.dart'. Try removing the import directive • lib/ui/notes/notes_page.dart:8:8 • unused_import
+   info • Uses 'await' on an instance of 'bool', which is not a subtype of 'Future'. Try removing the 'await' or changing the expression • lib/ui/quiz/answer_page.dart:111:15 • await_only_futures
+warning • The member 'state' can only be used within 'package:state_notifier/state_notifier.dart' or a test • lib/ui/quiz/answer_page.dart:111:58 • invalid_use_of_visible_for_testing_member
+warning • The member 'state' can only be used within instance members of subclasses of 'StateNotifier' • lib/ui/quiz/answer_page.dart:111:58 • invalid_use_of_protected_member
+warning • Unused import: '../../data/dav/webdav_client.dart'. Try removing the import directive • lib/ui/tools/download_site_page.dart:12:8 • unused_import
+warning • Unused import: '../../data/dav/webdav_client.dart'. Try removing the import directive • lib/ui/tools/server_files_page.dart:7:8 • unused_import
+warning • Unused import: '../../data/dav/webdav_client.dart'. Try removing the import directive • lib/ui/tools/server_html_tools.dart:6:8 • unused_import
+   info • The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/services.dart'. Try removing the import directive • lib/ui/tools/tool_pages.dart:4:8 • unnecessary_import
+warning • Unused import: 'package:torch_light/torch_light.dart'. Try removing the import directive • lib/ui/tools/tool_pages.dart:26:8 • unused_import
+warning • Unused import: '../../data/local/db.dart'. Try removing the import directive • lib/ui/tools/tool_pages.dart:33:8 • unused_import
+  error • The method 'parseColor' isn't defined for the type 'ColorConvertPage'. Try correcting the name to the name of an existing method, or defining a method named 'parseColor' • lib/ui/tools/tool_pages.dart:1144:29 • undefined_method
+warning • The value of the field '_denied' isn't used. Try removing the field, or using it • lib/ui/tools/tool_pages.dart:2157:8 • unused_field
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/ui/tools/tool_pages.dart:2253:32 • unnecessary_string_interpolations
+   info • Unnecessary braces in a string interpolation. Try removing the braces • lib/ui/tools/tool_pages.dart:2313:21 • unnecessary_brace_in_string_interps
+   info • 'scale' is deprecated and shouldn't be used. Use scaleByVector3, scaleByVector4, or scaleByDouble instead. Try replacing the use of the deprecated member with the replacement • lib/ui/tools/tool_pages.dart:3045:27 • deprecated_member_use
+  error • Undefined class 'CameraController'. Try changing the name to the name of an existing class, or creating a class with the name 'CameraController' • lib/ui/tools/tool_pages_ext.dart:706:3 • undefined_class
+  error • Undefined class 'CameraController'. Try changing the name to the name of an existing class, or creating a class with the name 'CameraController' • lib/ui/tools/tool_pages_ext.dart:771:5 • undefined_class
+  error • The method 'availableCameras' isn't defined for the type '_LevelHelperPageState'. Try correcting the name to the name of an existing method, or defining a method named 'availableCameras' • lib/ui/tools/tool_pages_ext.dart:784:26 • undefined_method
+  error • Undefined name 'CameraLensDirection'. Try correcting the name to one that is defined, or defining the name • lib/ui/tools/tool_pages_ext.dart:794:29 • undefined_identifier
+  error • Undefined name 'CameraLensDirection'. Try correcting the name to one that is defined, or defining the name • lib/ui/tools/tool_pages_ext.dart:794:57 • undefined_identifier
+  error • The method 'CameraController' isn't defined for the type '_LevelHelperPageState'. Try correcting the name to the name of an existing method, or defining a method named 'CameraController' • lib/ui/tools/tool_pages_ext.dart:798:11 • undefined_method
+  error • Undefined name 'ResolutionPreset'. Try correcting the name to one that is defined, or defining the name • lib/ui/tools/tool_pages_ext.dart:798:34 • undefined_identifier
+  error • The method 'CameraPreview' isn't defined for the type '_LevelHelperPageState'. Try correcting the name to the name of an existing method, or defining a method named 'CameraPreview' • lib/ui/tools/tool_pages_ext.dart:938:28 • undefined_method
+  error • The method 'CameraPreview' isn't defined for the type '_LevelHelperPageState'. Try correcting the name to the name of an existing method, or defining a method named 'CameraPreview' • lib/ui/tools/tool_pages_ext.dart:949:53 • undefined_method
+   info • Use interpolation to compose strings and values. Try using string interpolation to build the composite string • lib/ui/tools/tool_pages_ext.dart:1453:7 • prefer_interpolation_to_compose_strings
+   info • The private field _carrier could be 'final'. Try making the field 'final' • lib/ui/tools/tool_pages_ext.dart:2510:10 • prefer_final_fields
+warning • The value of the field '_carrier' isn't used. Try removing the field, or using it • lib/ui/tools/tool_pages_ext.dart:2510:10 • unused_field
+warning • The value of the local variable 'scheme' isn't used. Try removing the variable or using it • lib/ui/tools/tools_page.dart:234:11 • unused_local_variable
+
+57 issues found. (ran in 11.3s)

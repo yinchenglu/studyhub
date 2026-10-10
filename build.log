@@ -1,0 +1,176 @@
+Running Gradle task 'assembleRelease'...                        
+Loading package information...                                                  
+Loading local repository...                                                     
+[                                       ] 3% Loading local repository...        
+[                                       ] 3% Fetch remote repository...         
+[=                                      ] 3% Fetch remote repository...         
+[=                                      ] 4% Fetch remote repository...         
+[=                                      ] 5% Fetch remote repository...         
+[==                                     ] 5% Fetch remote repository...         
+[==                                     ] 6% Fetch remote repository...         
+[==                                     ] 7% Fetch remote repository...         
+[==                                     ] 7% Computing updates...               
+[===                                    ] 8% Computing updates...               
+[===                                    ] 10% Computing updates...              
+[===                                    ] 10% Installing NDK (Side by side) 28.2
+[===                                    ] 10% Downloading android-ndk-r28c-linux
+[====                                   ] 10% Downloading android-ndk-r28c-linux
+[====                                   ] 11% Downloading android-ndk-r28c-linux
+[====                                   ] 12% Downloading android-ndk-r28c-linux
+[=====                                  ] 13% Downloading android-ndk-r28c-linux
+[=====                                  ] 14% Downloading android-ndk-r28c-linux
+[=====                                  ] 15% Downloading android-ndk-r28c-linux
+[======                                 ] 15% Downloading android-ndk-r28c-linux
+[======                                 ] 16% Downloading android-ndk-r28c-linux
+[======                                 ] 17% Downloading android-ndk-r28c-linux
+[=======                                ] 18% Downloading android-ndk-r28c-linux
+[=======                                ] 19% Downloading android-ndk-r28c-linux
+[=======                                ] 20% Downloading android-ndk-r28c-linux
+[========                               ] 20% Downloading android-ndk-r28c-linux
+[========                               ] 21% Downloading android-ndk-r28c-linux
+[========                               ] 22% Downloading android-ndk-r28c-linux
+[=========                              ] 23% Downloading android-ndk-r28c-linux
+[=========                              ] 24% Downloading android-ndk-r28c-linux
+[=========                              ] 25% Downloading android-ndk-r28c-linux
+[==========                             ] 25% Downloading android-ndk-r28c-linux
+[==========                             ] 26% Downloading android-ndk-r28c-linux
+[==========                             ] 27% Downloading android-ndk-r28c-linux
+[===========                            ] 28% Downloading android-ndk-r28c-linux
+[===========                            ] 29% Downloading android-ndk-r28c-linux
+[===========                            ] 30% Downloading android-ndk-r28c-linux
+[============                           ] 30% Downloading android-ndk-r28c-linux
+[============                           ] 31% Downloading android-ndk-r28c-linux
+[============                           ] 32% Downloading android-ndk-r28c-linux
+[============                           ] 33% Downloading android-ndk-r28c-linux
+[============                           ] 33% Unzipping...                      
+[============                           ] 33% Unzipping... android-ndk-r28c/    
+[============                           ] 33% Unzipping... android-ndk-r28c/READ
+[=============                          ] 33% Unzipping... android-ndk-r28c/READ
+[=============                          ] 33% Unzipping... android-ndk-r28c/meta
+[=============                          ] 33% Unzipping... android-ndk-r28c/shad
+[=============                          ] 33% Unzipping... android-ndk-r28c/ndk-
+[=============                          ] 33% Unzipping... android-ndk-r28c/wrap
+[=============                          ] 33% Unzipping... android-ndk-r28c/ndk-
+[=============                          ] 33% Unzipping... android-ndk-r28c/tool
+[=============                          ] 34% Unzipping... android-ndk-r28c/tool
+[=============                          ] 35% Unzipping... android-ndk-r28c/tool
+[==============                         ] 35% Unzipping... android-ndk-r28c/tool
+[==============                         ] 36% Unzipping... android-ndk-r28c/tool
+[==============                         ] 37% Unzipping... android-ndk-r28c/tool
+[===============                        ] 38% Unzipping... android-ndk-r28c/tool
+[===============                        ] 39% Unzipping... android-ndk-r28c/tool
+[===============                        ] 40% Unzipping... android-ndk-r28c/tool
+[================                       ] 40% Unzipping... android-ndk-r28c/tool
+[================                       ] 41% Unzipping... android-ndk-r28c/tool
+[================                       ] 42% Unzipping... android-ndk-r28c/tool
+[=================                      ] 43% Unzipping... android-ndk-r28c/tool
+[=================                      ] 44% Unzipping... android-ndk-r28c/tool
+[=================                      ] 45% Unzipping... android-ndk-r28c/tool
+[==================                     ] 45% Unzipping... android-ndk-r28c/tool
+[==================                     ] 46% Unzipping... android-ndk-r28c/tool
+[==================                     ] 47% Unzipping... android-ndk-r28c/tool
+[===================                    ] 48% Unzipping... android-ndk-r28c/tool
+[===================                    ] 49% Unzipping... android-ndk-r28c/tool
+[===================                    ] 50% Unzipping... android-ndk-r28c/tool
+[====================                   ] 50% Unzipping... android-ndk-r28c/tool
+[====================                   ] 51% Unzipping... android-ndk-r28c/tool
+[====================                   ] 52% Unzipping... android-ndk-r28c/tool
+[=====================                  ] 53% Unzipping... android-ndk-r28c/tool
+[=====================                  ] 54% Unzipping... android-ndk-r28c/tool
+[=====================                  ] 54% Unzipping... android-ndk-r28c/buil
+[=====================                  ] 54% Unzipping... android-ndk-r28c/sour
+[=====================                  ] 54% Unzipping... android-ndk-r28c/NOTI
+[=====================                  ] 54% Unzipping... android-ndk-r28c/ndk-
+[=====================                  ] 54% Unzipping... android-ndk-r28c/NOTI
+[=====================                  ] 54% Unzipping... android-ndk-r28c/pyth
+[=====================                  ] 54% Unzipping... android-ndk-r28c/preb
+[=====================                  ] 54% Unzipping... android-ndk-r28c/ndk-
+[=====================                  ] 54% Unzipping... android-ndk-r28c/sour
+[=====================                  ] 54% Unzipping... android-ndk-r28c/simp
+[=====================                  ] 55% Unzipping... android-ndk-r28c/simp
+[=====================                  ] 55% Unzipping... android-ndk-r28c/CHAN
+[=======================================] 100% Unzipping... android-ndk-r28c/CHA
+
+Downloading file from: https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7/default-arm64-v8a.jar
+Downloading file from: https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7/default-armeabi-v7a.jar
+Downloading file from: https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7/default-x86_64.jar
+Downloading file from: https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7/default-x86.jar
+WARNING: Your app uses the following plugins that apply Kotlin Gradle Plugin (KGP): device_info_plus, package_info_plus, share_plus, wakelock_plus
+Future versions of Flutter will fail to build if your app uses plugins that apply KGP.
+
+Please check the changelogs of these plugins and upgrade to a version that supports Built-in Kotlin.
+If no such version exists, report the issue to the plugin. If necessary, here is a guide on filing
+an issue against a plugin: https://docs.flutter.dev/release/breaking-changes/migrate-to-built-in-kotlin/for-app-developers#report-incompatible-kotlin-gradle-plugin-usage-to-plugin-authors
+
+If you are a plugin author, please migrate your plugin to Built-in Kotlin using this guide: https://docs.flutter.dev/release/breaking-changes/migrate-to-built-in-kotlin/for-plugin-authors
+lib/data/repositories/media_repo.dart:51:5: Error: Type 'CancelToken' not found.
+    CancelToken? cancelToken,
+    ^^^^^^^^^^^
+lib/ui/tools/tool_pages_ext.dart:706:3: Error: Type 'CameraController' not found.
+  CameraController? _cam;
+  ^^^^^^^^^^^^^^^^
+lib/data/repositories/media_repo.dart:51:5: Error: 'CancelToken' isn't a type.
+    CancelToken? cancelToken,
+    ^^^^^^^^^^^
+lib/ui/tools/tool_pages.dart:1144:29: Error: Member not found: 'ColorConvertPage.parseColor'.
+    return ColorConvertPage.parseColor(t);
+                            ^^^^^^^^^^
+lib/ui/tools/tool_pages_ext.dart:706:3: Error: 'CameraController' isn't a type.
+  CameraController? _cam;
+  ^^^^^^^^^^^^^^^^
+lib/ui/tools/tool_pages_ext.dart:771:5: Error: 'CameraController' isn't a type.
+    CameraController? c;
+    ^^^^^^^^^^^^^^^^
+lib/ui/tools/tool_pages_ext.dart:784:26: Error: The method 'availableCameras' isn't defined for the type '_LevelHelperPageState'.
+ - '_LevelHelperPageState' is from 'package:studyhub/ui/tools/tool_pages_ext.dart' ('lib/ui/tools/tool_pages_ext.dart').
+Try correcting the name to the name of an existing method, or defining a method named 'availableCameras'.
+      final cams = await availableCameras();
+                         ^^^^^^^^^^^^^^^^
+lib/ui/tools/tool_pages_ext.dart:794:29: Error: The getter 'CameraLensDirection' isn't defined for the type '_LevelHelperPageState'.
+ - '_LevelHelperPageState' is from 'package:studyhub/ui/tools/tool_pages_ext.dart' ('lib/ui/tools/tool_pages_ext.dart').
+Try correcting the name to the name of an existing getter, or defining a getter or field named 'CameraLensDirection'.
+      final want = _front ? CameraLensDirection.front : CameraLensDirection.back;
+                            ^^^^^^^^^^^^^^^^^^^
+lib/ui/tools/tool_pages_ext.dart:794:57: Error: The getter 'CameraLensDirection' isn't defined for the type '_LevelHelperPageState'.
+ - '_LevelHelperPageState' is from 'package:studyhub/ui/tools/tool_pages_ext.dart' ('lib/ui/tools/tool_pages_ext.dart').
+Try correcting the name to the name of an existing getter, or defining a getter or field named 'CameraLensDirection'.
+      final want = _front ? CameraLensDirection.front : CameraLensDirection.back;
+                                                        ^^^^^^^^^^^^^^^^^^^
+lib/ui/tools/tool_pages_ext.dart:798:34: Error: The getter 'ResolutionPreset' isn't defined for the type '_LevelHelperPageState'.
+ - '_LevelHelperPageState' is from 'package:studyhub/ui/tools/tool_pages_ext.dart' ('lib/ui/tools/tool_pages_ext.dart').
+Try correcting the name to the name of an existing getter, or defining a getter or field named 'ResolutionPreset'.
+      c = CameraController(desc, ResolutionPreset.high, enableAudio: false);
+                                 ^^^^^^^^^^^^^^^^
+lib/ui/tools/tool_pages_ext.dart:798:11: Error: The method 'CameraController' isn't defined for the type '_LevelHelperPageState'.
+ - '_LevelHelperPageState' is from 'package:studyhub/ui/tools/tool_pages_ext.dart' ('lib/ui/tools/tool_pages_ext.dart').
+Try correcting the name to the name of an existing method, or defining a method named 'CameraController'.
+      c = CameraController(desc, ResolutionPreset.high, enableAudio: false);
+          ^^^^^^^^^^^^^^^^
+lib/ui/tools/tool_pages_ext.dart:938:28: Error: The method 'CameraPreview' isn't defined for the type '_LevelHelperPageState'.
+ - '_LevelHelperPageState' is from 'package:studyhub/ui/tools/tool_pages_ext.dart' ('lib/ui/tools/tool_pages_ext.dart').
+Try correcting the name to the name of an existing method, or defining a method named 'CameraPreview'.
+    if (ps == null) return CameraPreview(c);
+                           ^^^^^^^^^^^^^
+lib/ui/tools/tool_pages_ext.dart:949:53: Error: The method 'CameraPreview' isn't defined for the type '_LevelHelperPageState'.
+ - '_LevelHelperPageState' is from 'package:studyhub/ui/tools/tool_pages_ext.dart' ('lib/ui/tools/tool_pages_ext.dart').
+Try correcting the name to the name of an existing method, or defining a method named 'CameraPreview'.
+        child: SizedBox(width: w, height: h, child: CameraPreview(c)),
+                                                    ^^^^^^^^^^^^^
+Target kernel_snapshot_program failed: Exception
+
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:compileFlutterBuildRelease'.
+> Process 'command '/opt/hostedtoolcache/flutter/stable-3.47.6-x64/flutter/bin/flutter'' finished with non-zero exit value 1
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 1m 27s
+Running Gradle task 'assembleRelease'...                           87.7s
+Gradle task assembleRelease failed with exit code 1
