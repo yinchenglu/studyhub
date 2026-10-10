@@ -157,7 +157,10 @@ final statsProvider = FutureProvider<StatsSummary>((ref) async {
     media.counts(maxDepth: 3).then((v) {
       videoCount = v['video'] ?? 0;
       imageCount = v['image'] ?? 0;
-    }).catchError((_) => 0),
+    // 这行以前是 `.catchError((_) => 0)` —— 返回 int 和 then 推导出的
+    // FutureOr<Null> 对不上，analyzer 报 invalid_return_type_for_catch_error，
+    // 而且真出异常时这个回调自己会抛 TypeError。改成空体闭包（隐式返回 null）。
+    }).catchError((_) {}),
     quiz.bankCount().then((v) => bankCount = v).catchError((_) => bankCount = 0),
     _countTools(account.client!).then((v) => toolCount = v).catchError((_) => toolCount = 0),
   ]);

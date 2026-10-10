@@ -1125,7 +1125,7 @@ class _ColorSchemeHelperPageState extends State<ColorSchemeHelperPage> {
   /// 解析用户输入的颜色。
   ///
   /// 先试「三个 0~255 的数字」这种朴素写法，再交给
-  /// ColorConvertPage.parseColor 处理 HEX / rgb() / hsl()。
+  /// _parseColorText 处理 HEX / rgb() / hsl()。
   Color? _parseInput(String s) {
     final t = s.trim();
     if (t.isEmpty) return null;
@@ -1141,7 +1141,9 @@ class _ColorSchemeHelperPageState extends State<ColorSchemeHelperPage> {
 
     // 复用颜色码转换那边的解析器 —— 两个页面对「什么算合法颜色」
     // 的判断必须一致，不然用户会觉得其中一个坏了。
-    return ColorConvertPage.parseColor(t);
+    // 注意：_parseColorText 是**文件顶层**的私有函数，
+    // 直接不带类名调用（早先写 `ColorConvertPage.parseColor` 编译不过）。
+    return _parseColorText(t);
   }
 
   void _applyInput(String s) {
@@ -1937,6 +1939,50 @@ class _DateCalcPageState extends State<DateCalcPage> {
 
 // ============================================================ 6. 颜色码转换
 
+/// 解析用户手打的各种颜色写法。
+///
+/// 提到顶层是有原因的：配色助手那边也要解析用户输入，两个页面
+/// 对「什么算合法颜色」必须完全一致 —— 否则用户会觉得其中一个坏了。
+/// 早先写成 _ColorConvertPageState 的静态方法，结果私有类从外面
+/// 根本引用不到（`ColorConvertPage.parseColor` 编译报 Member not found）。
+///
+/// 支持：`#RGB` / `#RRGGBB` / `#AARRGGBB`（不带 # 也行）、`rgb(r,g,b[,a])`、
+/// `hsl(h,s%,l%)`。认不出来返回 null。
+Color? _parseColorText(String s) {
+  var t = s.trim().replaceAll('#', '').replaceAll(' ', '');
+  if (t.isEmpty) return null;
+  if (t.toLowerCase().startsWith('rgb')) {
+    final nums = RegExp(r'[\d.]+').allMatches(t).map((m) => double.tryParse(m.group(0)!) ?? 0).toList();
+    if (nums.length >= 3) {
+      final a = nums.length >= 4 ? nums[3].clamp(0, 1) : 1.0;
+      return Color.fromARGB(
+        (a * 255).round(),
+        nums[0].clamp(0, 255).round(),
+        nums[1].clamp(0, 255).round(),
+        nums[2].clamp(0, 255).round(),
+      );
+    }
+    return null;
+  }
+  if (t.toLowerCase().startsWith('hsl')) {
+    final nums = RegExp(r'[\d.]+').allMatches(t).map((m) => double.tryParse(m.group(0)!) ?? 0).toList();
+    if (nums.length >= 3) {
+      return HSLColor.fromAHSL(1, nums[0] % 360, (nums[1] / 100).clamp(0, 1), (nums[2] / 100).clamp(0, 1))
+          .toColor();
+    }
+    return null;
+  }
+  if (t.length == 3) t = '${t[0]}${t[0]}${t[1]}${t[1]}${t[2]}${t[2]}';
+  if (t.length == 6) t = 'FF$t';
+  if (t.length == 8) {
+    final v = int.tryParse(t, radix: 16);
+    if (v == null) return null;
+    // 用户一般是 RRGGBBAA 习惯还是 AARRGGBB？这里按 AARRGGBB 解析（Flutter 习惯）
+    return Color(v);
+  }
+  return null;
+}
+
 class ColorConvertPage extends StatefulWidget {
   const ColorConvertPage({super.key});
 
@@ -1961,43 +2007,8 @@ class _ColorConvertPageState extends State<ColorConvertPage> {
     super.dispose();
   }
 
-  static Color? parseColor(String s) {
-    var t = s.trim().replaceAll('#', '').replaceAll(' ', '');
-    if (t.isEmpty) return null;
-    if (t.toLowerCase().startsWith('rgb')) {
-      final nums = RegExp(r'[\d.]+').allMatches(t).map((m) => double.tryParse(m.group(0)!) ?? 0).toList();
-      if (nums.length >= 3) {
-        final a = nums.length >= 4 ? nums[3].clamp(0, 1) : 1.0;
-        return Color.fromARGB(
-          (a * 255).round(),
-          nums[0].clamp(0, 255).round(),
-          nums[1].clamp(0, 255).round(),
-          nums[2].clamp(0, 255).round(),
-        );
-      }
-      return null;
-    }
-    if (t.toLowerCase().startsWith('hsl')) {
-      final nums = RegExp(r'[\d.]+').allMatches(t).map((m) => double.tryParse(m.group(0)!) ?? 0).toList();
-      if (nums.length >= 3) {
-        return HSLColor.fromAHSL(1, nums[0] % 360, (nums[1] / 100).clamp(0, 1), (nums[2] / 100).clamp(0, 1))
-            .toColor();
-      }
-      return null;
-    }
-    if (t.length == 3) t = '${t[0]}${t[0]}${t[1]}${t[1]}${t[2]}${t[2]}';
-    if (t.length == 6) t = 'FF$t';
-    if (t.length == 8) {
-      final v = int.tryParse(t, radix: 16);
-      if (v == null) return null;
-      // 用户一般是 RRGGBBAA 习惯还是 AARRGGBB？这里按 AARRGGBB 解析（Flutter 习惯）
-      return Color(v);
-    }
-    return null;
-  }
-
   void _parse(String s) {
-    final c = parseColor(s);
+    final c = _parseColorText(s);
     setState(() {
       _color = c;
       _error = c == null ? '识别不了这个颜色，试试 #RRGGBB 或 rgb(59,130,246)' : null;
@@ -2086,8 +2097,8 @@ class _ColorConvertPageState extends State<ColorConvertPage> {
                       decoration: BoxDecoration(
                         // 这里原本直接写 item.$2 —— 但那是 '#EF4444' 这种字符串，
                         // BoxDecoration.color 要的是 Color，编不过。
-                        // 下面一行取亮度时已经用了 parseColor()，这里补上。
-                        color: parseColor(item.$2),
+                        // 下面一行取亮度时已经用了 _parseColorText()，这里补上。
+                        color: _parseColorText(item.$2),
                         borderRadius: BorderRadius.circular(9),
                         border: Border.all(color: scheme.outlineVariant),
                       ),
@@ -2096,7 +2107,7 @@ class _ColorConvertPageState extends State<ColorConvertPage> {
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 11,
-                          color: (parseColor(item.$2)?.computeLuminance() ?? 1) > 0.55
+                          color: (_parseColorText(item.$2)?.computeLuminance() ?? 1) > 0.55
                               ? Colors.black87
                               : Colors.white,
                         ),

@@ -231,7 +231,8 @@ class _DownloadStationRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    // 这一行的配色是写死的（深绿底 + 白字），跟亮/暗主题无关，
+    // 所以不需要 scheme —— 之前留了个没用上的局部变量。
     return Material(
       color: const Color(0xFF0F6E56),
       borderRadius: BorderRadius.circular(16),

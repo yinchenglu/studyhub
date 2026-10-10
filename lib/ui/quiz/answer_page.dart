@@ -108,7 +108,11 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
   }
 
   Future<void> _load() async {
-    final v = await ref.read(quizPrefsProvider.notifier).state.showAnswerNow;
+    // 注意两点：
+    //   1. 从 provider 本身读值，不要走 `.notifier.state` —— 那个 state 是
+    //      @protected 的，在外部读会被 lint 判为 invalid_use_of_protected_member。
+    //   2. 读值是同步的，别加 await（analyzer 会报 await_only_futures）。
+    final v = ref.read(quizPrefsProvider).showAnswerNow;
     if (!mounted) return;
     setState(() => _showAnswerNow = v);
   }

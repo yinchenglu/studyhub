@@ -1,5 +1,9 @@
 import 'dart:io';
 
+// 上传要原样转发 CancelToken（让用户能在上传中途取消），
+// 而 CancelToken 是 dio 的类型 —— Dart 的 import 不传递，
+// 哪怕 webdav_client 已经引过，这里也得自己引一份。
+import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 
 import '../dav/webdav_client.dart';
