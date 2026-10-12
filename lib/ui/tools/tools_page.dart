@@ -11,6 +11,8 @@ import 'server_html_tools.dart';
 import 'tool_pages.dart';
 import 'tool_pages_calc.dart';
 import 'tool_pages_ext.dart';
+import 'tool_pages_ph.dart';
+import 'tool_pages_ph2.dart';
 import 'tool_pages_translate.dart';
 import 'tool_pages_v15.dart';
 
@@ -44,16 +46,15 @@ class ToolsPage extends ConsumerWidget {
       _ToolDef('时间戳转换', Icons.access_time, Color(0xFF534AB7)),
       _ToolDef('提词器', Icons.vertical_align_bottom, Color(0xFF27500A)),
       _ToolDef('LED 屏幕', Icons.brightness_high, Color(0xFFEF9F27)),
-      // v1.4.0 新增：用户电脑上一直在用的「消杀计算器.html」搬进来
-      _ToolDef('消杀计算器', Icons.science_outlined, Color(0xFF0F7B6C)),
-      // v1.4.0 新增：多词典在线翻译
-      _ToolDef('翻译', Icons.translate, Color(0xFF185FA5)),
+      // v1.4.0 新增：多词典在线翻译（要联网）
+      _ToolDef('翻译', Icons.translate, Color(0xFF185FA5), online: true),
     ]),
     // 用户要求：生活与娱乐排第 3。它原来在最后一位。
     _Category('生活与娱乐', Icons.sports_esports_outlined, [
       _ToolDef('SOS 手电筒', Icons.flashlight_on, Color(0xFFB8860B)),
       _ToolDef('抛硬币', Icons.casino_outlined, Color(0xFFE0A020)),
-      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5)),
+      // 快递查询要访问快递 100 的接口，是联网工具
+      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
     ]),
     _Category('颜色与设计', Icons.palette_outlined, [
       _ToolDef('配色助手', Icons.auto_awesome, Color(0xFFD4537E)),
@@ -73,6 +74,17 @@ class ToolsPage extends ConsumerWidget {
     // v1.5.0 新增：地理与定位
     _Category('地理与定位', Icons.explore_outlined, [
       _ToolDef('地图坐标转换', Icons.swap_horiz, Color(0xFF1D9E75)),
+    ]),
+    // v1.5.0 新增：公卫数据（消杀计算器从「时间与效率」移到这一类，
+    // 用户要求把这个类别做成类似 Epi Info StatCalc 的一组工具）
+    _Category('公卫数据', Icons.local_hospital_outlined, [
+      _ToolDef('消杀计算器', Icons.science_outlined, Color(0xFF0F7B6C)),
+      _ToolDef('公共卫生统计', Icons.pie_chart_outline, Color(0xFF185FA5)),
+      _ToolDef('病例对照研究', Icons.compare_arrows, Color(0xFF993C1D)),
+      _ToolDef('队列研究', Icons.timeline, Color(0xFF534AB7)),
+      _ToolDef('食物中毒分析', Icons.restaurant_menu, Color(0xFFD4537E)),
+      _ToolDef('Logistic 回归', Icons.insights, Color(0xFF0C447C)),
+      _ToolDef('营养配餐', Icons.local_dining, Color(0xFF1D9E75)),
     ]),
     _Category('设备与应用', Icons.phone_android, [
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
@@ -140,7 +152,8 @@ class ToolsPage extends ConsumerWidget {
                 const SizedBox(width: 9),
                 Expanded(
                   child: Text(
-                    '这些小工具都做在 App 里，没网也能用。\n'
+                    '图标右上角带蓝色小 Wi-Fi 的，是需要联网的工具；'
+                    '没有标记的都能离线用。\n'
                     '上面两个按钮需要连上你的 WebDAV 服务器：'
                     '「下载站」读 /${AppDirs.download}，「小工具」读 /${AppDirs.tools}。',
                     style: TextStyle(fontSize: 11.5, height: 1.7, color: scheme.onSurfaceVariant),
@@ -168,13 +181,32 @@ class ToolsPage extends ConsumerWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: t.color.withValues(alpha: 0.13),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(t.icon, color: t.color, size: 22),
+              // 图标右上角挂个「联网」小标：一眼能看出哪些工具要网络
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: t.color.withValues(alpha: 0.13),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(t.icon, color: t.color, size: 22),
+                  ),
+                  if (t.online)
+                    Positioned(
+                      right: -5,
+                      top: -5,
+                      child: Container(
+                        padding: const EdgeInsets.all(2.5),
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF185FA5),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.wifi, size: 10, color: Colors.white),
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(height: 9),
               Text(
@@ -246,6 +278,18 @@ Widget toolPageOf(String name) {
       return const CidrCalcPage();
     case '地图坐标转换':
       return const CoordinateConvertPage();
+    case '公共卫生统计':
+      return const EpiStatsPage();
+    case '病例对照研究':
+      return const CaseControlPage();
+    case '队列研究':
+      return const CohortPage();
+    case '食物中毒分析':
+      return const FoodPoisoningPage();
+    case 'Logistic 回归':
+      return const LogisticPage();
+    case '营养配餐':
+      return const NutritionPage();
     default:
       return const Scaffold(body: Center(child: Text('这个工具还没做好')));
   }
@@ -381,7 +425,17 @@ class _ToolDef {
   final String name;
   final IconData icon;
   final Color color;
-  const _ToolDef(this.name, this.icon, this.color);
+
+  /// 要不要联网。
+  ///
+  /// 用户要求「内置小工具哪些需要联网，要做区分标记」——
+  /// 因为很多人是在没网的地方用这些工具（野外调查、下乡、飞机上），
+  /// 点进去才发现要联网会很恼火。**默认 false（离线）**，
+  /// 只有确实要访问网络的工具才显式标 true。
+  /// 判据：要么请求远程接口（翻译 / 快递查询），要么依赖 WebDAV 服务器。
+  final bool online;
+
+  const _ToolDef(this.name, this.icon, this.color, {this.online = false});
 }
 
 /// 供别处复用的工具函数
