@@ -16,6 +16,7 @@ import '../home/login_page.dart';
 import 'note_edit_page.dart';
 import 'note_export.dart';
 import 'note_read_page.dart';
+import 'reading_page.dart';
 
 /// 笔记：按服务器 notes 目录浏览，支持新建目录 / 新建笔记 / 上传图片 / 改名 / 删除
 ///
@@ -517,6 +518,8 @@ class NotesPageState extends ConsumerState<NotesPage> {
         final isImg = FileTypes.isImage(e.name);
         final isHtml = FileTypes.isHtml(e.name);
         final isTxt = !e.isDir && !isHtml && FileTypes.isReadableText(e.name);
+        // v1.5.0：电子书单独认出来 —— epub 只有「阅读模式」一种打开方式
+        final isEpub = !e.isDir && FileTypes.ext(e.name) == 'epub';
         final checked = _selected.contains(e.path);
         // 上次看过的那篇。多选时不显示，免得跟勾选态打架。
         // v1.5.0：如果上次看的那篇在某个子目录里，那个**子目录**也高亮 ——
@@ -531,7 +534,9 @@ class NotesPageState extends ConsumerState<NotesPage> {
                     ? const Color(0xFFD4537E)
                     : isHtml
                         ? const Color(0xFFD85A30)
-                        : const Color(0xFF7F77DD);
+                        : isEpub
+                            ? const Color(0xFFB8860B)
+                            : const Color(0xFF7F77DD);
 
         // 先建 ListTile 再套一层 SizedBox：
         // 行高固定住，「上次看的那篇」才能靠 index 直接算出滚动位置。
@@ -559,7 +564,9 @@ class NotesPageState extends ConsumerState<NotesPage> {
                                   ? Icons.picture_as_pdf_outlined
                                   : isHtml
                                       ? Icons.language_outlined
-                                      : Icons.article_outlined,
+                                      : isEpub
+                                          ? Icons.menu_book_outlined
+                                          : Icons.article_outlined,
                       size: 20,
                       color: iconColor,
                     ),
@@ -576,6 +583,7 @@ class NotesPageState extends ConsumerState<NotesPage> {
               if (!e.isDir) formatBytes(e.size),
               if (e.modified != null) formatTime(e.modified),
               if (isPdf || isHtml) '可预览',
+              if (isEpub) '电子书 · 可阅读',
             ].join(' · '),
             style: const TextStyle(fontSize: 12),
             // 必须限一行 —— 行高是写死的 _kRowHeight，换行会被裁掉
@@ -598,7 +606,7 @@ class NotesPageState extends ConsumerState<NotesPage> {
                         child: Text('上次看到这儿',
                             style: TextStyle(fontSize: 10.5, color: scheme.primary)),
                       ),
-                    if (isTxt || isPdf || isImg || isHtml || e.isDir)
+                    if (isTxt || isPdf || isImg || isHtml || isEpub || e.isDir)
                       const Icon(Icons.chevron_right, size: 18),
                   ],
                 ),
@@ -611,6 +619,12 @@ class NotesPageState extends ConsumerState<NotesPage> {
               setState(() {
                 _sub = e.path.substring(AppDirs.notes.length + 1);
               });
+              await _load();
+            } else if (isEpub) {
+              // 电子书直接进阅读模式（没有别的打开方式）
+              await AppDb.instance.touchNote(e.path);
+              await Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => ReadingPage(path: e.path)));
               await _load();
             } else if (isMd) {
               // 记一笔「这篇我看过」—— 下次进这个目录要定位到它

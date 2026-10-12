@@ -10,6 +10,7 @@ import '../../providers/providers.dart';
 import '../media/image_viewer_page.dart';
 import 'note_edit_page.dart';
 import 'note_export.dart';
+import 'reading_page.dart';
 
 /// 笔记阅读页：Markdown 渲染 + 图片 / 动图显示 + 纯文本查看
 class NoteReadPage extends ConsumerStatefulWidget {
@@ -98,6 +99,12 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
       appBar: AppBar(
         title: Text(title, overflow: TextOverflow.ellipsis),
         actions: [
+          IconButton(
+            tooltip: '阅读模式',
+            icon: const Icon(Icons.menu_book_outlined),
+            onPressed: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => ReadingPage(path: widget.path))),
+          ),
           if (!widget.plain)
             IconButton(
               tooltip: '编辑',

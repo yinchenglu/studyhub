@@ -14,7 +14,8 @@ publish_to: 'none'
 #   v1.4.0+5 → 1005 / 2005   ← 递增即可直接覆盖安装
 #   v1.5.0+6 → 1006 / 2006
 #   v1.5.0+7 → 1007 / 2007   ← 错题本改版 + 配色助手传统色卡
-version: 1.5.0+7
+#   v1.5.0+8 → 1008 / 2008   ← 笔记阅读模式（epub / 小说）
+version: 1.5.0+8
 
 environment:
   # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps

@@ -115,6 +115,18 @@ class Defaults {
 
   /// 默认下载目录（Android）：系统「下载」目录下的 StudyHub 文件夹
   static const String androidDownloadFolder = 'StudyHub';
+
+  // ---------------------------------------------------------- 阅读模式（v1.5.0）
+
+  /// 正文默认字号。17 比 app 正文（15 左右）大一点，
+  /// 因为看小说是长时间盯屏，略大更省眼。
+  static const double readFontSize = 17;
+
+  /// 默认行距
+  static const double readLineHeight = 1.75;
+
+  /// 自动翻页间隔可选项（0 = 关闭）
+  static const List<int> readAutoSecOptions = [0, 5, 10, 15, 20, 30, 60];
 }
 
 /// App 版本（设置页「关于」里显示）。
@@ -124,4 +136,4 @@ class Defaults {
 ///     这个项目历次构建翻车全是因为依赖，为一个版本号不值得。
 ///   * 反正发版时 pubspec 里的 version 也是手改的，两处一起改就行。
 /// 改这里的时候记得同步 pubspec.yaml 的 version。
-const String kAppVersion = '1.4.0';
+const String kAppVersion = '1.5.0';

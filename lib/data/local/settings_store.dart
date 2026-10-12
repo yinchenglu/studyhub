@@ -31,6 +31,19 @@ class SettingsStore {
   static const _kDownloadDir = 'download_dir';
   static const _kRecentServers = 'recent_servers';
 
+  // v1.5.0 新增：笔记「阅读模式」的外观与行为。
+  // 全部走 SharedPreferences，不再单开表 —— 这几项都是「全局一套」的偏好，
+  // 不是按文件区分的记录。
+  static const _kReadFontSize = 'read_font_size';
+  static const _kReadLineHeight = 'read_line_height';
+  static const _kReadTheme = 'read_theme_index';
+  static const _kReadFont = 'read_font_family';
+  static const _kReadPaged = 'read_paged';
+  static const _kReadAutoSec = 'read_auto_sec';
+
+  /// 每本书读到哪了：key = read_pos:<笔记路径>，value = "章序号|页序号|滚动位置"
+  static const _kReadPosPrefix = 'read_pos:';
+
   final _secure = const FlutterSecureStorage();
   SharedPreferences? _p;
 
@@ -383,5 +396,85 @@ class SettingsStore {
     } else {
       await p.setString(_kDownloadDir, path.trim());
     }
+  }
+
+  // ----------------------------------------------------------- 阅读模式（v1.5.0）
+
+  Future<double> readFontSize() async {
+    final p = await _prefs;
+    return p.getDouble(_kReadFontSize) ?? Defaults.readFontSize;
+  }
+
+  Future<void> setReadFontSize(double v) async {
+    final p = await _prefs;
+    await p.setDouble(_kReadFontSize, v);
+  }
+
+  Future<double> readLineHeight() async {
+    final p = await _prefs;
+    return p.getDouble(_kReadLineHeight) ?? Defaults.readLineHeight;
+  }
+
+  Future<void> setReadLineHeight(double v) async {
+    final p = await _prefs;
+    await p.setDouble(_kReadLineHeight, v);
+  }
+
+  Future<int> readTheme() async {
+    final p = await _prefs;
+    return p.getInt(_kReadTheme) ?? 1;
+  }
+
+  Future<void> setReadTheme(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kReadTheme, v);
+  }
+
+  Future<int> readFontFamily() async {
+    final p = await _prefs;
+    return p.getInt(_kReadFont) ?? 0;
+  }
+
+  Future<void> setReadFontFamily(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kReadFont, v);
+  }
+
+  /// true = 左右翻页，false = 上下滚动
+  Future<bool> readPaged() async {
+    final p = await _prefs;
+    return p.getBool(_kReadPaged) ?? true;
+  }
+
+  Future<void> setReadPaged(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kReadPaged, v);
+  }
+
+  /// 自动翻页间隔秒数，0 = 关闭
+  Future<int> readAutoSec() async {
+    final p = await _prefs;
+    return p.getInt(_kReadAutoSec) ?? 0;
+  }
+
+  Future<void> setReadAutoSec(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kReadAutoSec, v);
+  }
+
+  /// 某一篇读到哪了。返回的字符串由调用方自己解释（见阅读页 _savePos）
+  Future<String?> readPos(String notePath) async {
+    final p = await _prefs;
+    return p.getString('$_kReadPosPrefix$notePath');
+  }
+
+  Future<void> setReadPos(String notePath, String value) async {
+    final p = await _prefs;
+    await p.setString('$_kReadPosPrefix$notePath', value);
+  }
+
+  Future<void> clearReadPos(String notePath) async {
+    final p = await _prefs;
+    await p.remove('$_kReadPosPrefix$notePath');
   }
 }

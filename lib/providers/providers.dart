@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/constants.dart';
 import '../data/dav/webdav_client.dart';
 import '../data/local/db.dart';
 import '../data/local/settings_store.dart';
@@ -332,6 +333,105 @@ class QuizPrefsNotifier extends StateNotifier<QuizPrefs> {
 }
 
 final quizPrefsProvider = StateNotifierProvider<QuizPrefsNotifier, QuizPrefs>((ref) => QuizPrefsNotifier());
+
+// ------------------------------------------------------------- 阅读模式设置（v1.5.0）
+
+/// 笔记「阅读模式」的外观 / 行为设置。
+///
+/// 和 QuizPrefs 一样是一套全局偏好；「读到哪了」属于每本书自己的状态，
+/// 不放这里（走 SettingsStore.readPos，按笔记路径做 key）。
+class ReadPrefs {
+  final double fontSize;
+  final double lineHeight;
+
+  /// 背景主题下标：0 纸白 / 1 米黄 / 2 护眼绿 / 3 夜间 / 4 灰
+  final int themeIndex;
+
+  /// 字体下标：0 系统 / 1 宋体 / 2 黑体 / 3 等宽
+  final int fontIndex;
+
+  /// true = 左右翻页，false = 上下滚动
+  final bool paged;
+
+  /// 自动翻页间隔秒数，0 = 关闭
+  final int autoSec;
+
+  const ReadPrefs({
+    this.fontSize = Defaults.readFontSize,
+    this.lineHeight = Defaults.readLineHeight,
+    this.themeIndex = 1,
+    this.fontIndex = 0,
+    this.paged = true,
+    this.autoSec = 0,
+  });
+
+  ReadPrefs copy({
+    double? fontSize,
+    double? lineHeight,
+    int? themeIndex,
+    int? fontIndex,
+    bool? paged,
+    int? autoSec,
+  }) =>
+      ReadPrefs(
+        fontSize: fontSize ?? this.fontSize,
+        lineHeight: lineHeight ?? this.lineHeight,
+        themeIndex: themeIndex ?? this.themeIndex,
+        fontIndex: fontIndex ?? this.fontIndex,
+        paged: paged ?? this.paged,
+        autoSec: autoSec ?? this.autoSec,
+      );
+}
+
+class ReadPrefsNotifier extends StateNotifier<ReadPrefs> {
+  ReadPrefsNotifier() : super(const ReadPrefs()) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    final s = SettingsStore.instance;
+    state = ReadPrefs(
+      fontSize: await s.readFontSize(),
+      lineHeight: await s.readLineHeight(),
+      themeIndex: await s.readTheme(),
+      fontIndex: await s.readFontFamily(),
+      paged: await s.readPaged(),
+      autoSec: await s.readAutoSec(),
+    );
+  }
+
+  Future<void> setFontSize(double v) async {
+    await SettingsStore.instance.setReadFontSize(v);
+    state = state.copy(fontSize: v);
+  }
+
+  Future<void> setLineHeight(double v) async {
+    await SettingsStore.instance.setReadLineHeight(v);
+    state = state.copy(lineHeight: v);
+  }
+
+  Future<void> setThemeIndex(int v) async {
+    await SettingsStore.instance.setReadTheme(v);
+    state = state.copy(themeIndex: v);
+  }
+
+  Future<void> setFontIndex(int v) async {
+    await SettingsStore.instance.setReadFontFamily(v);
+    state = state.copy(fontIndex: v);
+  }
+
+  Future<void> setPaged(bool v) async {
+    await SettingsStore.instance.setReadPaged(v);
+    state = state.copy(paged: v);
+  }
+
+  Future<void> setAutoSec(int v) async {
+    await SettingsStore.instance.setReadAutoSec(v);
+    state = state.copy(autoSec: v);
+  }
+}
+
+final readPrefsProvider = StateNotifierProvider<ReadPrefsNotifier, ReadPrefs>((ref) => ReadPrefsNotifier());
 
 // ------------------------------------------------------------- 错题本
 
