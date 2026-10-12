@@ -1,16 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/theme.dart';
+import '../../core/constants.dart';
 import '../../core/utils.dart';
 import '../../data/local/db.dart';
+import '../../data/models/models.dart';
 import '../../providers/providers.dart';
 import '../quiz/wrong_book_page.dart';
 import 'login_page.dart';
 import 'server_guide_page.dart';
 import 'settings_page.dart';
 
-/// 首页：未登录时给目录结构引导，登录后给账户信息 + 各类数量 + 错题本
+/// 首页：未登录时给目录结构引导，登录后给账号信息 + 错题本 + 最近浏览
+///
+/// v1.4.0 改动（按用户要求）：
+///   * **删掉「笔记多少篇 / 视频多少个 / 题库多少套 / 工具几个」那组四宫格**。
+///     那几个数字每次都要把服务器上的目录各扫一遍，服务器一慢下拉就卡住，
+///     而且进 App 想看的是「接着上次继续」，不是看库存。
+///   * **账号卡片加了「切换账号」** —— 可以同时保存好几个 WebDAV，
+///     在首页点一下就能换，不用退回设置页再登录一遍。
+///   * **「最近浏览」现在把笔记也纳进来了**（原来只有视频播放记录），
+///     点笔记那条会切到笔记模块。
 class HomePage extends ConsumerWidget {
   const HomePage({super.key});
 
@@ -22,7 +32,7 @@ class HomePage extends ConsumerWidget {
         title: const Text('学聚'),
         actions: [
           IconButton(
-            tooltip: '刷新统计',
+            tooltip: '刷新',
             onPressed: () {
               ref.invalidate(statsProvider);
               ref.invalidate(recentProvider);
@@ -43,7 +53,10 @@ class HomePage extends ConsumerWidget {
           ref.invalidate(statsProvider);
           ref.invalidate(recentProvider);
           await ref.read(accountProvider.notifier).recheck();
-          await ref.read(statsProvider.future);
+          // 统计只读本地 SQLite，正常不会挂；真挂了也别让下拉刷新崩掉
+          try {
+            await ref.read(statsProvider.future);
+          } catch (_) {}
         },
         child: account.isLoggedIn ? const _LoggedInView() : const _NotLoggedInView(),
       ),
@@ -238,62 +251,20 @@ class _LoggedInView extends ConsumerWidget {
                   Text('缺少：${check.missingDirs.join('、')}，可点上面的标签查看怎么建',
                       style: TextStyle(fontSize: 12, color: scheme.error)),
                 ],
+                const SizedBox(height: 12),
+                // ---- 切换账号：可以同时存好几个 WebDAV，这里直接换 ----
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _switchAccount(context, ref),
+                    icon: const Icon(Icons.swap_horiz, size: 18),
+                    label: Text(account.saved.length > 1
+                        ? '切换账号（已保存 ${account.saved.length} 个）'
+                        : '切换 / 添加账号'),
+                  ),
+                ),
               ],
             ),
-          ),
-        ),
-        const SizedBox(height: 16),
-
-        // ---- 四宫格统计 ----
-        stats.when(
-          loading: () => const _StatsSkeleton(),
-          error: (e, _) => _ErrorTile(text: '$e', onRetry: () => ref.invalidate(statsProvider)),
-          data: (s) => Column(
-            children: [
-              Row(
-                children: [
-                  _StatTile(
-                    label: '笔记',
-                    value: s.noteCount,
-                    unit: '篇',
-                    icon: Icons.description_outlined,
-                    color: ModuleColors.notes,
-                    onTap: () => _goTab(ref, 1),
-                  ),
-                  const SizedBox(width: 12),
-                  _StatTile(
-                    label: '视频',
-                    value: s.videoCount,
-                    unit: '个',
-                    icon: Icons.movie_outlined,
-                    color: ModuleColors.media,
-                    onTap: () => _goTab(ref, 2),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  _StatTile(
-                    label: '题库',
-                    value: s.bankCount,
-                    unit: '套',
-                    icon: Icons.quiz_outlined,
-                    color: ModuleColors.quiz,
-                    onTap: () => _goTab(ref, 3),
-                  ),
-                  const SizedBox(width: 12),
-                  _StatTile(
-                    label: '工具',
-                    value: 12,
-                    unit: '个',
-                    icon: Icons.widgets_outlined,
-                    color: ModuleColors.tools,
-                    onTap: () => _goTab(ref, 4),
-                  ),
-                ],
-              ),
-            ],
           ),
         ),
         const SizedBox(height: 16),
@@ -350,7 +321,7 @@ class _LoggedInView extends ConsumerWidget {
         ),
         const SizedBox(height: 16),
 
-        // ---- 最近浏览 ----
+        // ---- 最近浏览（视频播放记录 + 笔记打开记录）----
         Row(
           children: [
             Text('最近浏览', style: text.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
@@ -365,10 +336,6 @@ class _LoggedInView extends ConsumerWidget {
                     ),
               orElse: () => const SizedBox.shrink(),
             ),
-            TextButton(
-              onPressed: () => _goTab(ref, 2),
-              child: const Text('去媒体库'),
-            ),
           ],
         ),
         recent.maybeWhen(
@@ -377,7 +344,7 @@ class _LoggedInView extends ConsumerWidget {
                   child: Padding(
                     padding: const EdgeInsets.all(20),
                     child: Center(
-                      child: Text('还没有播放记录，去「视频」里挑一个看看吧',
+                      child: Text('还没有浏览记录，去「视频」或「笔记」里打开一个试试',
                           style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
                     ),
                   ),
@@ -387,17 +354,7 @@ class _LoggedInView extends ConsumerWidget {
                     children: [
                       for (var i = 0; i < list.length; i++) ...[
                         if (i > 0) const Divider(height: 1),
-                        ListTile(
-                          dense: true,
-                          leading: Icon(Icons.play_circle_outline, color: scheme.primary),
-                          title: Text(baseName(list[i].key), maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text(
-                            '看到 ${formatDuration(list[i].value.positionMs)} / ${formatDuration(list[i].value.durationMs)} · ${formatTime(list[i].value.updatedAt)}',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          trailing: const Icon(Icons.chevron_right, size: 18),
-                          onTap: () => _goTab(ref, 2),
-                        ),
+                        _recentTile(context, ref, list[i]),
                       ],
                     ],
                   ),
@@ -408,16 +365,111 @@ class _LoggedInView extends ConsumerWidget {
     );
   }
 
+  /// 一条最近浏览记录。笔记和视频的副标题不一样：
+  /// 笔记没有「看到几分几秒」这回事，硬套格式会出现「看到 00:00 / 00:00」。
+  Widget _recentTile(BuildContext context, WidgetRef ref, MapEntry<String, PlayProgress> e) {
+    final scheme = Theme.of(context).colorScheme;
+    final isNote = e.key.startsWith('${AppDirs.notes}/');
+    return ListTile(
+      dense: true,
+      leading: Icon(
+        isNote ? Icons.description_outlined : Icons.play_circle_outline,
+        color: isNote ? scheme.tertiary : scheme.primary,
+      ),
+      title: Text(baseName(e.key), maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        isNote
+            ? '笔记 · 打开于 ${formatTime(e.value.updatedAt)}'
+            : '看到 ${formatDuration(e.value.positionMs)} / ${formatDuration(e.value.durationMs)} · ${formatTime(e.value.updatedAt)}',
+        style: const TextStyle(fontSize: 12),
+      ),
+      trailing: const Icon(Icons.chevron_right, size: 18),
+      onTap: () => _goTab(ref, isNote ? 1 : 2),
+    );
+  }
+
   /// 切到底部菜单的某个模块（返回键行为因此和点底部菜单完全一致）
   void _goTab(WidgetRef ref, int i) => ref.read(tabIndexProvider.notifier).state = i;
 
-  /// 清空「最近浏览」和所有播放进度
+  /// 切换 / 添加账号。
+  /// 返回的可能是某条 DavAccount（切过去），也可能是添加新账号的指令。
+  Future<void> _switchAccount(BuildContext context, WidgetRef ref) async {
+    final st = ref.read(accountProvider);
+    final cur = st.account;
+    final picked = await showModalBottomSheet<Object>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        final cs = Theme.of(ctx).colorScheme;
+        return SafeArea(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 4),
+                  child: Text('切换服务器账号', style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+                if (st.saved.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text('还没有保存过别的账号', style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
+                  ),
+                for (final a in st.saved)
+                  Builder(builder: (_) {
+                    final same = cur != null && cur.baseUrl == a.baseUrl && cur.username == a.username;
+                    return ListTile(
+                      leading: Icon(
+                        same ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                        color: same ? cs.primary : cs.onSurfaceVariant,
+                      ),
+                      title: Text(a.alias.isEmpty ? a.baseUrl : a.alias),
+                      subtitle: Text('${a.username} · ${a.baseUrl}', style: const TextStyle(fontSize: 11.5)),
+                      onTap: () => Navigator.pop(ctx, a),
+                    );
+                  }),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.add),
+                  title: const Text('添加新账号 / 登录'),
+                  onTap: () => Navigator.pop(ctx, '__add__'),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (!context.mounted || picked == null) return;
+
+    if (picked == '__add__') {
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoginPage()));
+      if (context.mounted) {
+        ref.invalidate(statsProvider);
+        ref.invalidate(recentProvider);
+      }
+      return;
+    }
+    if (picked is! DavAccount) return;
+    if (cur != null && cur.baseUrl == picked.baseUrl && cur.username == picked.username) return;
+
+    await ref.read(accountProvider.notifier).switchAccount(picked);
+    ref.invalidate(statsProvider);
+    ref.invalidate(recentProvider);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('已切换到 ${picked.alias.isEmpty ? picked.baseUrl : picked.alias}')));
+    }
+  }
+
+  /// 清空「最近浏览」和所有浏览 / 播放进度
   Future<void> _clearRecent(BuildContext context, WidgetRef ref) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('清除浏览记录？'),
-        content: const Text('会清空「最近浏览」，同时把每个视频的观看进度归零。'),
+        content: const Text('会清空「最近浏览」，笔记和视频的进度也会一起归零。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('清除')),
@@ -455,116 +507,6 @@ class _Chip extends StatelessWidget {
             Icon(icon, size: 13, color: color),
             const SizedBox(width: 5),
             Text(label, style: TextStyle(fontSize: 12, color: color)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _StatTile extends StatelessWidget {
-  final String label;
-  final int value;
-  final String unit;
-  final IconData icon;
-  final Color color;
-  final VoidCallback onTap;
-
-  const _StatTile({
-    required this.label,
-    required this.value,
-    required this.unit,
-    required this.icon,
-    required this.color,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final text = Theme.of(context).textTheme;
-    return Expanded(
-      child: Card(
-        child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(icon, size: 18, color: color),
-                    const SizedBox(width: 6),
-                    Text(label, style: TextStyle(fontSize: 13, color: color, fontWeight: FontWeight.w500)),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.baseline,
-                  textBaseline: TextBaseline.alphabetic,
-                  children: [
-                    Text('$value', style: text.headlineSmall?.copyWith(fontWeight: FontWeight.w600)),
-                    const SizedBox(width: 3),
-                    Text(unit, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _StatsSkeleton extends StatelessWidget {
-  const _StatsSkeleton();
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Row(children: [
-          Expanded(child: _box(context)),
-          const SizedBox(width: 12),
-          Expanded(child: _box(context)),
-        ]),
-        const SizedBox(height: 12),
-        Row(children: [
-          Expanded(child: _box(context)),
-          const SizedBox(width: 12),
-          Expanded(child: _box(context)),
-        ]),
-      ],
-    );
-  }
-
-  Widget _box(BuildContext context) => Container(
-        height: 84,
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
-          borderRadius: BorderRadius.circular(14),
-        ),
-      );
-}
-
-class _ErrorTile extends StatelessWidget {
-  final String text;
-  final VoidCallback onRetry;
-  const _ErrorTile({required this.text, required this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('统计失败：$text', style: const TextStyle(fontSize: 13, height: 1.5)),
-            const SizedBox(height: 8),
-            OutlinedButton(onPressed: onRetry, child: const Text('重试')),
           ],
         ),
       ),

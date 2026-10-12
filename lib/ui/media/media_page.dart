@@ -22,6 +22,10 @@ import 'player_page.dart';
 ///     不如按目录一层层找。换成右上角排序按钮。
 ///   * 新增：新建目录 / 上传视频 / 上传图片
 ///   * 长按菜单新增「重命名」，目录和文件都能改名
+///
+/// v1.4.0 起：
+///   * 新增**多选**模式（右上角 ☑ 进入），批量删除；
+///     目录和文件的右键（长按）菜单里也都加了「删除」。
 class MediaPage extends ConsumerStatefulWidget {
   const MediaPage({super.key});
 
@@ -42,6 +46,18 @@ class MediaPageState extends ConsumerState<MediaPage> {
   bool _uploading = false;
   double? _uploadProgress;
 
+  /// 删除中（显示进度用）
+  bool _deleting = false;
+
+  /// 多选模式。`null` = 不在多选；否则装的是已选中的**完整服务器路径**。
+  ///
+  /// 用「可空集合」而不是「bool + 集合」是因为这两者必须同时成立 ——
+  /// 拆成两个字段迟早会出现 `_selecting == true` 但 `_selected` 为 null
+  /// 的中间态，然后在某处空指针。
+  Set<String>? _selected;
+
+  bool get _selecting => _selected != null;
+
   @override
   void initState() {
     super.initState();
@@ -56,8 +72,12 @@ class MediaPageState extends ConsumerState<MediaPage> {
     await _load();
   }
 
-  /// 手机返回键：优先返回上级目录；已在本页根目录时返回 false
+  /// 手机返回键：多选中就先退出多选 → 再逐级返回上级目录 → 本页根目录返回 false
   bool handleBack() {
+    if (_selecting) {
+      _exitSelect();
+      return true;
+    }
     if (_sub.isNotEmpty) {
       _goUp();
       return true;
@@ -67,6 +87,12 @@ class MediaPageState extends ConsumerState<MediaPage> {
 
   void _goUp() {
     setState(() => _sub = parentOf(_sub));
+    _load();
+  }
+
+  /// 进入某个子目录
+  void _enterDir(DavEntry e) {
+    setState(() => _sub = e.path.substring(AppDirs.media.length + 1));
     _load();
   }
 
@@ -99,13 +125,37 @@ class MediaPageState extends ConsumerState<MediaPage> {
   Widget build(BuildContext context) {
     final logged = ref.watch(accountProvider).isLoggedIn;
     final scheme = Theme.of(context).colorScheme;
-    // 登录成功后自动拉一次内容
-    ref.listen(accountProvider.select((s) => s.isLoggedIn), (prev, next) {
-      if (next && prev != next) _load();
+    // 登录成功或切换账号后自动拉一次内容
+    ref.listen(accountProvider.select(accountKeyOf), (prev, next) {
+      if (next.isNotEmpty && prev != next) _load();
     });
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: _selecting ? _selectAppBar(scheme) : _browseAppBar(scheme, logged),
+      body: !logged
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.cloud_off_outlined, size: 48, color: scheme.onSurfaceVariant),
+                  const SizedBox(height: 12),
+                  const Text('还没有连接服务器'),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: () => Navigator.of(context)
+                        .push(MaterialPageRoute(builder: (_) => const LoginPage()))
+                        .then((_) => _load()),
+                    child: const Text('去连接'),
+                  ),
+                ],
+              ),
+            )
+          : RefreshIndicator(onRefresh: _load, child: _body()),
+    );
+  }
+
+  /// 平时（浏览模式）的顶栏
+  PreferredSizeWidget _browseAppBar(ColorScheme scheme, bool logged) => AppBar(
         automaticallyImplyLeading: false,
         leading: _sub.isNotEmpty
             ? IconButton(
@@ -131,6 +181,13 @@ class MediaPageState extends ConsumerState<MediaPage> {
             SortButton(
               value: _sort,
               onChanged: (v) => setState(() => _sort = v),
+            ),
+          // 多选入口。目录为空时不显示 —— 没东西可勾。
+          if (logged && _dirEntries.isNotEmpty)
+            IconButton(
+              tooltip: '多选',
+              icon: const Icon(Icons.checklist),
+              onPressed: () => _startSelect(),
             ),
           if (logged)
             PopupMenuButton<String>(
@@ -163,33 +220,93 @@ class MediaPageState extends ConsumerState<MediaPage> {
             ),
           IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
         ],
-        bottom: _uploading
-            ? PreferredSize(
-                preferredSize: const Size.fromHeight(3),
-                child: LinearProgressIndicator(value: _uploadProgress, minHeight: 3),
-              )
-            : null,
+        bottom: _busyBar,
+      );
+
+  /// 多选模式下的顶栏：左边退出，标题显示选中数量，右边全选 + 删除
+  PreferredSizeWidget _selectAppBar(ColorScheme scheme) {
+    final sel = _selected ?? const <String>{};
+    final all = _shown;
+    final allSelected = all.isNotEmpty && sel.length >= all.length;
+    return AppBar(
+      automaticallyImplyLeading: false,
+      leading: IconButton(
+        tooltip: '退出多选',
+        onPressed: _exitSelect,
+        icon: const Icon(Icons.close),
       ),
-      body: !logged
-          ? Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.cloud_off_outlined, size: 48, color: scheme.onSurfaceVariant),
-                  const SizedBox(height: 12),
-                  const Text('还没有连接服务器'),
-                  const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: () => Navigator.of(context)
-                        .push(MaterialPageRoute(builder: (_) => const LoginPage()))
-                        .then((_) => _load()),
-                    child: const Text('去连接'),
-                  ),
-                ],
-              ),
-            )
-          : RefreshIndicator(onRefresh: _load, child: _body()),
+      title: Text('已选 ${sel.length} 项'),
+      actions: [
+        TextButton(
+          onPressed: allSelected ? _clearSelection : _selectAll,
+          child: Text(allSelected ? '取消全选' : '全选'),
+        ),
+        IconButton(
+          tooltip: '删除选中',
+          onPressed: sel.isEmpty || _deleting
+              ? null
+              : () => _confirmDelete(_entriesFor(sel)),
+          icon: Icon(Icons.delete_outline, color: sel.isEmpty ? null : scheme.error),
+        ),
+      ],
+      bottom: _busyBar,
     );
+  }
+
+  /// 顶栏底下那条细进度条：上传 / 删除时显示
+  PreferredSizeWidget? get _busyBar {
+    if (_uploading) {
+      return PreferredSize(
+        preferredSize: const Size.fromHeight(3),
+        child: LinearProgressIndicator(value: _uploadProgress, minHeight: 3),
+      );
+    }
+    if (_deleting) {
+      return const PreferredSize(
+        preferredSize: Size.fromHeight(3),
+        child: LinearProgressIndicator(minHeight: 3),
+      );
+    }
+    return null;
+  }
+
+  /// 把一组路径还原成 DavEntry。
+  ///
+  /// 兜底那个分支理论上走不到（选中的路径一定来自当前列表），
+  /// 但列表刷新和删除之间有个时间窗，真撞上了也不该崩 —— 删除只用到 path。
+  List<DavEntry> _entriesFor(Set<String> paths) => paths
+      .map((p) => _dirEntries.firstWhere(
+            (e) => e.path == p,
+            orElse: () => DavEntry(path: p, isDir: false),
+          ))
+      .toList();
+
+  // ------------------------------------------------------------ 多选
+
+  /// 进入多选。[first] 非空时顺便把它勾上（长按直接进多选用）。
+  void _startSelect([String? first]) {
+    setState(() => _selected = <String>{if (first != null) first});
+  }
+
+  void _exitSelect() {
+    setState(() => _selected = null);
+  }
+
+  void _toggleSelect(String path) {
+    final s = _selected;
+    if (s == null) return;
+    setState(() {
+      // Set.remove 返回「有没有真删掉」，正好当开关用
+      if (!s.remove(path)) s.add(path);
+    });
+  }
+
+  void _selectAll() {
+    setState(() => _selected = _shown.map((e) => e.path).toSet());
+  }
+
+  void _clearSelection() {
+    setState(() => _selected = <String>{});
   }
 
   Widget _body() {
@@ -232,12 +349,19 @@ class MediaPageState extends ConsumerState<MediaPage> {
       );
     }
     final shown = _shown;
+    final sel = _selected;
     return ListView.separated(
       padding: const EdgeInsets.only(bottom: 24),
       itemCount: shown.length,
       separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
       itemBuilder: (context, i) {
         final e = shown[i];
+        final checked = sel != null && sel.contains(e.path);
+
+        // 多选模式下：勾选框占据原本 chevron / 类型图标的位置，
+        // 点整行就是勾选，长按菜单也停掉（避免和「选择」这个动作打架）。
+        // 勾选框放右边而不是左边，是为了让左侧的图标 / 缩略图留在原位 ——
+        // 选东西的时候眼睛是靠左边那列认人的。
         if (e.isDir) {
           return ListTile(
             leading: Container(
@@ -252,12 +376,17 @@ class MediaPageState extends ConsumerState<MediaPage> {
             subtitle: e.modified == null
                 ? null
                 : Text(formatTime(e.modified), style: const TextStyle(fontSize: 12)),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () async {
-              setState(() => _sub = e.path.substring(AppDirs.media.length + 1));
-              await _load();
+            trailing: sel != null
+                ? Checkbox(value: checked, onChanged: (_) => _toggleSelect(e.path))
+                : const Icon(Icons.chevron_right),
+            onTap: () {
+              if (sel != null) {
+                _toggleSelect(e.path);
+              } else {
+                _enterDir(e);
+              }
             },
-            onLongPress: () => _showDirActions(e),
+            onLongPress: sel != null ? null : () => _showDirActions(e),
           );
         }
         final isVideo = FileTypes.isPlayable(e.name);
@@ -268,12 +397,20 @@ class MediaPageState extends ConsumerState<MediaPage> {
             '${formatBytes(e.size)}${e.modified == null ? '' : ' · ${formatTime(e.modified)}'}',
             style: const TextStyle(fontSize: 12),
           ),
-          trailing: Icon(
-            isVideo ? Icons.play_circle_outline : Icons.photo_outlined,
-            color: scheme.primary,
-          ),
-          onTap: () => _open(MediaItem(path: e.path, isVideo: isVideo, size: e.size, modified: e.modified)),
-          onLongPress: () => _showActions(e),
+          trailing: sel != null
+              ? Checkbox(value: checked, onChanged: (_) => _toggleSelect(e.path))
+              : Icon(
+                  isVideo ? Icons.play_circle_outline : Icons.photo_outlined,
+                  color: scheme.primary,
+                ),
+          onTap: () {
+            if (sel != null) {
+              _toggleSelect(e.path);
+              return;
+            }
+            _open(MediaItem(path: e.path, isVideo: isVideo, size: e.size, modified: e.modified));
+          },
+          onLongPress: sel != null ? null : () => _showActions(e),
         );
       },
     );
@@ -283,6 +420,7 @@ class MediaPageState extends ConsumerState<MediaPage> {
 
   /// 目录长按菜单
   void _showDirActions(DavEntry e) {
+    final scheme = Theme.of(context).colorScheme;
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -307,8 +445,7 @@ class MediaPageState extends ConsumerState<MediaPage> {
               title: const Text('打开'),
               onTap: () {
                 Navigator.pop(ctx);
-                setState(() => _sub = e.path.substring(AppDirs.media.length + 1));
-                _load();
+                _enterDir(e);
               },
             ),
             ListTile(
@@ -319,14 +456,24 @@ class MediaPageState extends ConsumerState<MediaPage> {
                 _rename(e);
               },
             ),
+            ListTile(
+              leading: Icon(Icons.delete_outline, color: scheme.error),
+              title: Text('删除', style: TextStyle(color: scheme.error)),
+              subtitle: const Text('整个目录连同里面的东西一起删掉', style: TextStyle(fontSize: 12)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _confirmDelete([e]);
+              },
+            ),
           ],
         ),
       ),
     );
   }
 
-  /// 文件长按菜单：可以不用打开就直接下载 / 改名
+  /// 文件长按菜单：可以不用打开就直接下载 / 改名 / 删除
   void _showActions(DavEntry e) {
+    final scheme = Theme.of(context).colorScheme;
     final isVideo = FileTypes.isPlayable(e.name);
     showModalBottomSheet(
       context: context,
@@ -373,10 +520,106 @@ class MediaPageState extends ConsumerState<MediaPage> {
                 _rename(e);
               },
             ),
+            ListTile(
+              leading: Icon(Icons.delete_outline, color: scheme.error),
+              title: Text('删除', style: TextStyle(color: scheme.error)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _confirmDelete([e]);
+              },
+            ),
           ],
         ),
       ),
     );
+  }
+
+  // ------------------------------------------------------------ 删除
+
+  /// 删除确认 + 执行。
+  ///
+  /// 会先弹一个确认框 —— 这些是服务器上的文件，删掉本地没有任何回收站，
+  /// 而且目录是递归删的，一次能带走几百个文件。误触的代价太大，
+  /// 所以哪怕只删一个也要问一次，并且在框里写清楚到底会删掉什么。
+  Future<void> _confirmDelete(List<DavEntry> targets) async {
+    if (targets.isEmpty) return;
+    final dirs = targets.where((e) => e.isDir).length;
+    final files = targets.length - dirs;
+    var bytes = 0;
+    for (final t in targets) {
+      if (!t.isDir) bytes += t.size;
+    }
+
+    final detail = <String>[
+      if (dirs > 0) '$dirs 个目录（连同里面的全部内容）',
+      if (files > 0) '$files 个文件${bytes > 0 ? '，共 ${formatBytes(bytes)}' : ''}',
+    ].join('、');
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final s = Theme.of(ctx).colorScheme;
+        return AlertDialog(
+          title: Text(
+            targets.length == 1 ? '删除「${targets.first.name}」？' : '删除这 ${targets.length} 项？',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(detail),
+              const SizedBox(height: 10),
+              Text(
+                '文件会直接从服务器上抹掉，没有回收站，删了找不回来。',
+                style: TextStyle(fontSize: 12.5, color: s.error),
+              ),
+              if (targets.length > 1) ...[
+                const SizedBox(height: 10),
+                Text(
+                  targets.map((e) => e.name).take(6).join('、') +
+                      (targets.length > 6 ? ' 等' : ''),
+                  style: TextStyle(fontSize: 12, color: s.onSurfaceVariant),
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: s.error, foregroundColor: s.onError),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+    if (ok != true || !mounted) return;
+
+    final repo = ref.read(mediaRepoProvider);
+    if (repo == null) return;
+    final paths = targets.map((e) => e.path).toList();
+    setState(() => _deleting = true);
+    try {
+      final failed = await repo.deleteMany(paths);
+      if (!mounted) return;
+      setState(() => _selected = null); // 删完退出多选
+      await _load();
+      if (!mounted) return;
+      final done = paths.length - failed.length;
+      if (failed.isEmpty) {
+        _toast('已删除 $done 项');
+      } else {
+        // 把第一条真实错误也带上 —— 只说「有 3 项没删掉」等于什么都没说
+        _toast('已删除 $done 项，${failed.length} 项失败：${failed.first.value}');
+      }
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
   }
 
   // ------------------------------------------------------------ 写操作

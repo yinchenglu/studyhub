@@ -16,8 +16,9 @@ enum QuizMode { practice, exam }
 ///
 /// v1.3.0 起的变化：
 ///   * 左右滑动切上一题 / 下一题
-///   * 顶栏有「显示答案」开关，做题过程中随时能切，不用回设置页
-///   * 显示答案模式下：可选 3/5/8/10/15 秒自动跳下一题，并带暂停/继续
+///   * 顶栏有「显示答案」按钮 —— v1.4.0 起是**真的把当前题的答案显示出来**，
+///     v1.3.0 它只切了个模式位，对眼前这道题没作用（用户反馈「没效果」）
+///   * 显示答案模式下：可选自动跳下一题的秒数，并带暂停/继续
 ///   * 不带答案模式下：答对立刻自动跳，答错停留可配置的秒数
 ///   * 修掉两个老问题：
 ///       1. 多选题永远不自动跳（提交走的是另一条分支，漏了调度）
@@ -271,6 +272,26 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     if (autoSubmit) _commit();
   }
 
+  /// 「显示答案」按钮。
+  ///
+  /// v1.3.0 这个按钮只切了 `_showAnswerNow` —— 那是个**模式位**，
+  /// 管的是「以后作答完要不要立刻判定」，对**眼前这道题没有任何作用**。
+  /// 用户点了一下，答案还是不出来，反馈就是「按钮没效果」。
+  ///
+  /// 现在改成名副其实：点一下立刻把当前题的答案显出来，
+  /// 顺手把模式也打开（下次作答就自动揭示）。
+  ///
+  /// 只揭示、不记录对错 —— 用户可能是没作答就想瞄一眼，
+  /// 不该因此往错题本里塞东西。
+  void _revealNow() {
+    if (_revealedHere || _finished) return;
+    setState(() => _revealed.add(_i));
+    if (!_showAnswerNow) {
+      setState(() => _showAnswerNow = true);
+      ref.read(quizPrefsProvider.notifier).setShowAnswerNow(true);
+    }
+  }
+
   /// 提交当前题：揭示答案 → 记录 → 排自动跳题
   void _commit() {
     final idx = _i;
@@ -456,13 +477,10 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
             icon: Icon(_autoPaused ? Icons.play_circle_outline : Icons.pause_circle_outline),
           ),
           IconButton(
-            tooltip: _showAnswerNow ? '当前：直接显示答案（点一下改成不显示）' : '当前：不直接显示答案',
-            onPressed: () async {
-              final v = !_showAnswerNow;
-              setState(() => _showAnswerNow = v);
-              await ref.read(quizPrefsProvider.notifier).setShowAnswerNow(v);
-            },
-            icon: Icon(_showAnswerNow ? Icons.visibility : Icons.visibility_off_outlined),
+            // 已经揭示过就不用再点了（灰掉，免得以为按钮坏了）
+            tooltip: _revealedHere ? '这道题的答案已经显示了' : '显示这道题的答案',
+            onPressed: _revealedHere ? null : _revealNow,
+            icon: Icon(_revealedHere ? Icons.visibility : Icons.visibility_off_outlined),
           ),
           PopupMenuButton<String>(
             onSelected: (v) {

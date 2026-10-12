@@ -126,9 +126,9 @@ class QuizPageState extends ConsumerState<QuizPage> {
   Widget build(BuildContext context) {
     final logged = ref.watch(accountProvider).isLoggedIn;
     final scheme = Theme.of(context).colorScheme;
-    // 登录成功后自动拉一次
-    ref.listen(accountProvider.select((s) => s.isLoggedIn), (prev, next) {
-      if (next && prev != next) _load();
+    // 登录成功或切换账号后自动拉一次
+    ref.listen(accountProvider.select(accountKeyOf), (prev, next) {
+      if (next.isNotEmpty && prev != next) _load();
     });
 
     return Scaffold(

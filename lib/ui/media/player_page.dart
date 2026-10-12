@@ -1,12 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../core/downloader.dart';
+import '../../core/screen_orientation.dart';
 import '../../core/utils.dart';
 import '../../data/local/db.dart';
 import '../../data/local/settings_store.dart';
@@ -16,8 +16,11 @@ import '../../providers/providers.dart';
 /// 视频播放页：nplayer 风格
 /// · 双击左右两侧：快退 / 快进 10 秒
 /// · 左右滑动：拖进度（松手才跳，带预览时间）
-/// · 右半屏上下滑：音量；左半屏上下滑：画面亮度（调暗）
-/// · 长按：临时 2 倍速；倍速菜单 0.5× ~ 3.0×
+/// · 右半屏上下滑：音量（上滑变大）；左半屏上下滑：画面亮度（上滑变亮）
+/// · 长按：锁定 / 解锁屏幕方向（v1.3.0 及以前这里是「临时 2 倍速」，v1.4.0 改掉）
+/// · 跟着手机方向自动翻转：竖屏 / 左横屏 / 右横屏；锁定后不再自动翻转，
+///   而且点击屏幕也不呼出控制栏 —— 躺床上单手划着看时不会误触出一堆按钮
+/// · 倍速菜单 0.5× ~ 3.0×
 /// · 自动记忆播放进度，下次接着看
 class PlayerPage extends ConsumerStatefulWidget {
   final List<MediaItem> playlist;
@@ -40,10 +43,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   bool _buffering = true;
   double _rate = 1.0;
   double _volume = 60;
-  double _dim = 0; // 画面亮度：0 最亮，0.7 最暗
+  double _dim = 0; // 亮度遮罩：0 全亮，0.7 最暗
   bool _uiVisible = true;
-  bool _landscape = false;
-  bool _longPressFast = false;
+
+  /// 屏幕方向是否被钉死（v1.4.0 起替代了 v1.3.0 那个手动的横/竖屏开关）。
+  /// 锁定时：不跟随重力翻转，并且点击屏幕不再呼出控制栏。
+  bool _locked = false;
+
   String? _error;
 
   // 拖进度预览
@@ -62,6 +68,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     _index = widget.initialIndex;
     _player = Player();
     _controller = VideoController(_player);
+    // 一进来就允许跟着手机转 —— 用户要的是「自动向左横屏、向右横屏、竖屏」，
+    // 不需要先手动点一下开关。想固定住再按锁定按钮。
+    ScreenOrientation.followDevice();
     _init();
   }
 
@@ -148,6 +157,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   }
 
   void _toggleUi() {
+    // 锁定状态下点屏幕什么都不做 —— 用户要的正是「锁定后点击屏幕不出现菜单」。
+    // 解锁走长按，或点那个常驻的小锁图标。
+    if (_locked) return;
     setState(() => _uiVisible = !_uiVisible);
     if (_uiVisible) _scheduleHide();
   }
@@ -168,15 +180,31 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     }
   }
 
-  Future<void> _toggleFullscreen() async {
-    setState(() => _landscape = !_landscape);
-    if (_landscape) {
-      await SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  /// 锁定 / 解锁屏幕方向。
+  ///
+  /// 锁定走原生 `SCREEN_ORIENTATION_LOCKED`（冻结在当前朝向），
+  /// 解锁就是把允许方向重新放开成「竖屏 + 两个横屏」。
+  /// 为什么不像 v1.3.0 那样用 `setPreferredOrientations([单个方向])` 来锁：
+  /// Dart 侧根本分不清当前是左横屏还是右横屏，猜错就是画面倒转 180°。
+  /// 详见 `core/screen_orientation.dart` 顶部的说明。
+  Future<void> _toggleLock() async {
+    final next = !_locked;
+    // MediaQuery 必须在 await 之前读 —— 之后 context 可能已经不可用。
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    if (next) {
+      await ScreenOrientation.lockHere(landscape: isLandscape);
     } else {
-      await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      await ScreenOrientation.followDevice();
     }
+    if (!mounted) return;
+    setState(() {
+      _locked = next;
+      // 锁定的瞬间就把控制栏收掉，免得它悬在那儿挡住画面，
+      // 也免得用户以为「锁定了怎么按钮还在」。
+      _uiVisible = !next;
+    });
+    if (!next) _scheduleHide();
+    _toast(next ? '已锁定：点屏幕不再呼出控制栏，长按可解锁' : '已解锁：跟随手机方向自动翻转');
   }
 
   /// 下载当前视频到「设置 → 下载目录」
@@ -205,8 +233,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     }
     _saveProgress();
     _player.dispose();
-    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    // 把方向还给整个 App：其余页面全是竖屏布局，横着退出去会很难看。
+    // 顺带也把可能的「锁定」状态清掉 —— followDevice/restorePortrait 都是
+    // setPreferredOrientations，会把原生的 SCREEN_ORIENTATION_LOCKED 覆盖掉。
+    ScreenOrientation.restorePortrait();
     super.dispose();
   }
 
@@ -239,27 +269,45 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   void _onVerticalUpdate(DragUpdateDetails d, bool rightSide, double screenHeight) {
     if (_duration.inMilliseconds <= 0) return;
+    // primaryDelta > 0 表示手指往下走（屏幕坐标系 y 向下），取负号之后
+    // 就变成「上滑为正、下滑为负」。
     final delta = -(d.primaryDelta ?? 0) / (screenHeight * 0.6);
     setState(() {
       if (rightSide) {
+        // 右半屏：上滑变大声。这是所有播放器的习惯，保持一致。
         _volume = (_volume + delta * 100).clamp(0, 100);
         _player.setVolume(_volume);
       } else {
-        _dim = (_dim + delta * 0.7).clamp(0, 0.7);
+        // 左半屏：上滑变亮。
+        // v1.3.0 这里是 `_dim + delta`，也就是上滑反而更暗 —— 用户明确要求反过来。
+        // `_dim` 是「黑色遮罩的不透明度」，越大越暗，所以变亮要**减**。
+        _dim = (_dim - delta * 0.7).clamp(0, 0.7);
       }
     });
   }
 
+  /// 快进 / 快退 10 秒。
+  /// 双击屏幕左右半边和底栏那两个按钮都走这里，省得两处各写一份边界判断
+  /// （超头和超尾各要 clamp 一次，写两遍迟早有一遍会漏）。
+  void _seekBy({bool forward = false}) {
+    final step = const Duration(seconds: 10);
+    final t = forward ? _position + step : _position - step;
+    if (t < Duration.zero) {
+      _player.seek(Duration.zero);
+    } else if (_duration > Duration.zero && t > _duration) {
+      _player.seek(_duration);
+    } else {
+      _player.seek(t);
+    }
+  }
+
   Future<void> _onDoubleTapDown(TapDownDetails d, double width) async {
     final x = d.localPosition.dx;
-    final step = const Duration(seconds: 10);
     if (x < width * 0.4) {
-      final t = _position - step;
-      await _player.seek(t < Duration.zero ? Duration.zero : t);
+      _seekBy();
       _toast('◀ 快退 10 秒');
     } else if (x > width * 0.6) {
-      final t = _position + step;
-      await _player.seek(t > _duration ? _duration : t);
+      _seekBy(forward: true);
       _toast('快进 10 秒 ▶');
     } else {
       _playing ? _player.pause() : _player.play();
@@ -330,7 +378,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.of(context).size;
     return Scaffold(
       backgroundColor: Colors.black,
       body: LayoutBuilder(
@@ -338,16 +385,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
           behavior: HitTestBehavior.opaque,
           onTap: _toggleUi,
           onDoubleTapDown: (d) => _onDoubleTapDown(d, constraints.maxWidth),
-          onLongPressStart: (_) async {
-            _longPressFast = true;
-            await _player.setRate(2.0);
-            if (mounted) setState(() {});
-          },
-          onLongPressEnd: (_) async {
-            _longPressFast = false;
-            await _player.setRate(_rate);
-            if (mounted) setState(() {});
-          },
+          // 长按 = 锁定 / 解锁。v1.3.0 这里是「按住临时 2 倍速」，
+          // v1.4.0 按用户要求换成了锁定 —— 倍速还有菜单里的 0.5×~3.0× 可选。
+          // 只在 Start 里切一次：End 也会触发，两个都写就来回切两下等于没切。
+          onLongPressStart: (_) => _toggleLock(),
           onHorizontalDragStart: (_) => _hideTimer?.cancel(),
           onHorizontalDragUpdate: _onHorizontalUpdate,
           onHorizontalDragEnd: _onHorizontalEnd,
@@ -389,13 +430,39 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   ),
                 ),
 
-              if (_longPressFast)
-                const Positioned(top: 70, right: 20, child: _Badge(text: '2.0× 快进中')),
+              // 锁定后控制栏全收，只留这么一个小锁。
+              // 点它比「先长按再猜」直观得多，而且它是独立按钮、
+              // 不会被外层 onTap 吞掉，所以不算「点屏幕呼出菜单」。
+              if (_locked)
+                Positioned(
+                  top: 76,
+                  left: 14,
+                  child: SafeArea(
+                    child: Material(
+                      color: Colors.black.withValues(alpha: 0.45),
+                      shape: const StadiumBorder(),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: _toggleLock,
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.lock, color: Colors.white, size: 16),
+                              SizedBox(width: 6),
+                              Text('已锁定', style: TextStyle(color: Colors.white, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
 
               if (_seeking) _seekPreview(constraints),
-              if (_uiVisible) ...[
+              if (_uiVisible && !_locked) ...[
                 _topBar(),
-                _centerControls(),
                 _bottomBar(),
               ],
             ],
@@ -451,45 +518,16 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   icon: const Icon(Icons.download_outlined, color: Colors.white),
                   onPressed: _download,
                 ),
+                // v1.3.0 这里是「切横屏 / 竖屏」，v1.4.0 改成锁定按钮：
+                // 横竖屏现在跟着手机自动走，这里只负责「定住不动」。
                 IconButton(
-                  tooltip: '横屏 / 竖屏',
-                  icon: Icon(_landscape ? Icons.screen_lock_portrait_outlined : Icons.screen_lock_landscape_outlined, color: Colors.white),
-                  onPressed: _toggleFullscreen,
+                  tooltip: _locked ? '已锁定方向，点击解锁' : '锁定方向（点屏幕不再呼出控制栏）',
+                  icon: Icon(_locked ? Icons.lock : Icons.lock_open, color: Colors.white),
+                  onPressed: _toggleLock,
                 ),
               ],
             ),
           ),
-        ),
-      );
-
-  Widget _centerControls() => Center(
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            IconButton(
-              iconSize: 42,
-              icon: const Icon(Icons.replay_10, color: Colors.white),
-              onPressed: () {
-                final t = _position - const Duration(seconds: 10);
-                _player.seek(t < Duration.zero ? Duration.zero : t);
-              },
-            ),
-            const SizedBox(width: 28),
-            IconButton(
-              iconSize: 64,
-              icon: Icon(_playing ? Icons.pause_circle_filled : Icons.play_circle_fill, color: Colors.white),
-              onPressed: () => _playing ? _player.pause() : _player.play(),
-            ),
-            const SizedBox(width: 28),
-            IconButton(
-              iconSize: 42,
-              icon: const Icon(Icons.forward_10, color: Colors.white),
-              onPressed: () {
-                final t = _position + const Duration(seconds: 10);
-                _player.seek(t > _duration ? _duration : t);
-              },
-            ),
-          ],
         ),
       );
 
@@ -538,10 +576,30 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                       icon: const Icon(Icons.speed, size: 18, color: Colors.white),
                       label: Text('${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 1 : 2)}×', style: const TextStyle(color: Colors.white)),
                     ),
+                    // 上一集 / 快退 10 / 播放暂停 / 快进 10 / 下一集 —— 挤在一排。
+                    // v1.3.0 里「暂停 + 快进 + 快退」是浮在画面**正中**的三个大按钮，
+                    // 竖屏看视频时正好压在字幕上。用户要求挪下来和音量排一起，
+                    // 位置放在上一集与下一集之间，顺手对着看也方便。
                     IconButton(
                       tooltip: '上一集',
                       icon: const Icon(Icons.skip_previous, color: Colors.white),
                       onPressed: _prev,
+                    ),
+                    IconButton(
+                      tooltip: '快退 10 秒（也可以双击屏幕左半边）',
+                      icon: const Icon(Icons.replay_10, color: Colors.white),
+                      onPressed: _seekBy,
+                    ),
+                    IconButton(
+                      tooltip: _playing ? '暂停' : '播放',
+                      iconSize: 38,
+                      icon: Icon(_playing ? Icons.pause_circle_filled : Icons.play_circle_fill, color: Colors.white),
+                      onPressed: () => _playing ? _player.pause() : _player.play(),
+                    ),
+                    IconButton(
+                      tooltip: '快进 10 秒（也可以双击屏幕右半边）',
+                      icon: const Icon(Icons.forward_10, color: Colors.white),
+                      onPressed: () => _seekBy(forward: true),
                     ),
                     IconButton(
                       tooltip: '下一集',
@@ -572,7 +630,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   Padding(
                     padding: const EdgeInsets.only(bottom: 2),
                     child: Text(
-                      '双击左右快进快退 · 左右滑拖进度 · 右半屏上下滑音量 · 左半屏上下滑亮度 · 长按 2 倍速',
+                      '双击左右快进快退 · 左右滑拖进度 · 右半屏上下滑音量 · 左半屏上下滑亮度 · 长按锁定',
                       style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 10.5),
                     ),
                   ),
@@ -580,17 +638,5 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
             ),
           ),
         ),
-      );
-}
-
-class _Badge extends StatelessWidget {
-  final String text;
-  const _Badge({required this.text});
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.6), borderRadius: BorderRadius.circular(20)),
-        child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 12)),
       );
 }

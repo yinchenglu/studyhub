@@ -31,6 +31,9 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   late int _index;
   bool _uiVisible = true;
 
+  /// 当前是不是横屏（v1.4.0 新增手动切换）
+  bool _landscape = false;
+
   @override
   void initState() {
     super.initState();
@@ -43,7 +46,24 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   void dispose() {
     _controller.dispose();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    // 退出图片查看时把方向还给竖屏 —— 不然回到列表页还是横的
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     super.dispose();
+  }
+
+  /// 横屏 / 竖屏切换。
+  ///
+  /// 看横构图的大图时横过来能多显示一大截，所以给个手动开关，
+  /// 而不是跟随手机传感器 —— 躺在床上看时自动旋转很烦。
+  Future<void> _toggleOrientation() async {
+    final next = !_landscape;
+    setState(() => _landscape = next);
+    if (next) {
+      await SystemChrome.setPreferredOrientations(
+          [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+    } else {
+      await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    }
   }
 
   @override
@@ -121,6 +141,14 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
                   style: const TextStyle(color: Colors.white, fontSize: 14),
                   overflow: TextOverflow.ellipsis,
                 ),
+              ),
+              IconButton(
+                tooltip: _landscape ? '切回竖屏' : '横屏看',
+                icon: Icon(
+                  _landscape ? Icons.stay_current_portrait : Icons.stay_current_landscape,
+                  color: Colors.white,
+                ),
+                onPressed: _toggleOrientation,
               ),
               IconButton(
                 tooltip: '下载到本地',

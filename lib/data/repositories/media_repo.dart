@@ -45,6 +45,51 @@ class MediaRepo {
     } catch (_) {}
   }
 
+  /// 删除一个文件或目录。
+  ///
+  /// 目录是**递归删**的 —— 这一步靠 WebDAV 服务器自己的 DELETE 语义保证
+  /// （群晖、Nextcloud、chfs 都是这个行为）。客户端不需要、也不应该
+  /// 先递归列一遍再逐个发请求：几百个文件会变几百次往返，还可能删到一半断线
+  /// 留下个半空目录。
+  Future<void> deleteEntry(String path) async {
+    await dav.delete(path);
+    await _invalidateAfterDelete(const [path]);
+  }
+
+  /// 批量删除，返回**删失败的项**（路径 → 错误信息）。
+  ///
+  /// 故意不在第一个失败处就中断：挑 20 个文件删，因为其中一个是只读
+  /// 就把剩下 19 个也放着不动，用户只会看到「点了没反应」。
+  /// 全删完再统一报告哪些没删掉。
+  Future<List<MapEntry<String, String>>> deleteMany(Iterable<String> paths) async {
+    final failed = <MapEntry<String, String>>[];
+    final deleted = <String>[];
+    for (final path in paths) {
+      try {
+        await dav.delete(path);
+        deleted.add(path);
+      } catch (e) {
+        failed.add(MapEntry(path, e.toString()));
+      }
+    }
+    await _invalidateAfterDelete(deleted);
+    return failed;
+  }
+
+  /// 删除之后的本地清理：
+  ///   * 媒体索引是整库扫描出来的，删过东西就过期了，直接清空；
+  ///   * 播放进度按路径清 —— 不然首页「最近浏览」会留着已删文件的条目。
+  /// 这两步失败都不该让「删除」本身报错，所以各自吞掉异常。
+  Future<void> _invalidateAfterDelete(List<String> deleted) async {
+    try {
+      await AppDb.instance.replaceMediaIndex(const []);
+    } catch (_) {}
+    if (deleted.isEmpty) return;
+    try {
+      await AppDb.instance.forgetProgress(deleted);
+    } catch (_) {}
+  }
+
   /// 上传本地文件到某个相对目录，返回新建的相对路径。
   /// 视频走流式上传，不会把整个文件读进内存。
   Future<String> uploadFile(

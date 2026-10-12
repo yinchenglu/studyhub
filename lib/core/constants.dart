@@ -104,11 +104,24 @@ class Defaults {
   static const int wrongStaySec = 6;
 
   /// 「自动下一题」秒数可选项（0 表示关闭）
-  static const List<int> autoNextSecOptions = [0, 3, 5, 8, 10, 15];
+  ///
+  /// v1.4.0 按用户要求调整：补上 1 秒和 2 秒（想快刷的人需要更短的间隔），
+  /// 去掉 10 秒和 15 秒（真想要那么久，不如关掉自动跳、自己按下一题）。
+  static const List<int> autoNextSecOptions = [0, 1, 2, 3, 5, 8];
 
-  /// 答错停留秒数可选项
-  static const List<int> wrongStaySecOptions = [2, 4, 6, 10, 15, 30];
+  /// 答错停留秒数可选项。
+  /// v1.4.0 去掉末尾两项 —— 15 / 30 秒等得太久，实际上没人会让它自己跳。
+  static const List<int> wrongStaySecOptions = [2, 4, 6, 10];
 
   /// 默认下载目录（Android）：系统「下载」目录下的 StudyHub 文件夹
   static const String androidDownloadFolder = 'StudyHub';
 }
+
+/// App 版本（设置页「关于」里显示）。
+///
+/// 为什么写死在这里而不是读 pubspec / package_info_plus：
+///   * 读 pubspec 要引 yaml 解析，读 package_info_plus 要再加一个原生插件。
+///     这个项目历次构建翻车全是因为依赖，为一个版本号不值得。
+///   * 反正发版时 pubspec 里的 version 也是手改的，两处一起改就行。
+/// 改这里的时候记得同步 pubspec.yaml 的 version。
+const String kAppVersion = '1.4.0';

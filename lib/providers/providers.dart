@@ -21,9 +21,23 @@ class AccountState {
   final bool loading;
   final String? error;
 
-  const AccountState({this.account, this.client, this.check, this.loading = false, this.error});
+  /// 本地保存过的全部账号（首页 / 设置页的切换列表）
+  final List<DavAccount> saved;
+
+  const AccountState({
+    this.account,
+    this.client,
+    this.check,
+    this.loading = false,
+    this.error,
+    this.saved = const [],
+  });
 
   bool get isLoggedIn => account != null && client != null;
+
+  /// 除当前账号外还有别的可切 —— 用来决定要不要显示「切换」入口
+  bool get hasOtherAccounts =>
+      saved.where((e) => e.baseUrl != account?.baseUrl || e.username != account?.username).isNotEmpty;
 
   AccountState copyWith({
     DavAccount? account,
@@ -31,6 +45,7 @@ class AccountState {
     ConnectionCheck? check,
     bool? loading,
     String? error,
+    List<DavAccount>? saved,
     bool clearError = false,
     bool clearAccount = false,
   }) =>
@@ -40,6 +55,7 @@ class AccountState {
         check: check ?? this.check,
         loading: loading ?? this.loading,
         error: clearError ? null : (error ?? this.error),
+        saved: saved ?? this.saved,
       );
 }
 
@@ -48,11 +64,18 @@ class AccountNotifier extends StateNotifier<AccountState> {
 
   /// App 启动时恢复上次的登录
   Future<void> restore() async {
+    await refreshSaved();
     final acc = await SettingsStore.instance.loadAccount();
     if (acc == null) return;
-    state = AccountState(account: acc, client: WebDavClient(acc));
+    state = state.copyWith(account: acc, client: WebDavClient(acc), clearAccount: false);
     // 后台悄悄探测一次，不阻塞界面
     checkInBackground();
+  }
+
+  /// 重新读一遍本地保存的账号列表
+  Future<void> refreshSaved() async {
+    final list = await SettingsStore.instance.savedAccounts();
+    state = state.copyWith(saved: list);
   }
 
   /// 登录：保存账号 + 做一次完整检测
@@ -67,11 +90,40 @@ class AccountNotifier extends StateNotifier<AccountState> {
       }
       await SettingsStore.instance.saveAccount(acc);
       await SettingsStore.instance.setLastServerCheck(DateTime.now().toIso8601String());
-      state = AccountState(account: acc, client: client, check: check);
+      final saved = await SettingsStore.instance.savedAccounts();
+      state = AccountState(account: acc, client: client, check: check, saved: saved);
       return check;
     } catch (e) {
       state = state.copyWith(loading: false, error: e.toString());
       return ConnectionCheck(ok: false, message: e.toString());
+    }
+  }
+
+  /// 切到另一个已保存的账号。
+  ///
+  /// 切换不动服务器上的任何东西，只是把「当前用哪个账号」换掉，
+  /// 然后重建 client、清掉上一账号留下的连接检测结果。
+  /// 各页面的数据靠 ref.listen(accountProvider) 自己重新拉。
+  Future<void> switchAccount(DavAccount acc) async {
+    state = state.copyWith(loading: true, clearError: true);
+    await SettingsStore.instance.switchTo(acc);
+    await refreshSaved();
+    state = AccountState(
+      account: acc,
+      client: WebDavClient(acc),
+      saved: state.saved,
+    );
+    checkInBackground();
+  }
+
+  /// 从列表里删掉一个账号（连密码一起）
+  Future<void> removeAccount(DavAccount acc) async {
+    await SettingsStore.instance.removeAccount(acc);
+    final cur = state.account;
+    final same = cur != null && cur.baseUrl == acc.baseUrl && cur.username == acc.username;
+    await refreshSaved();
+    if (same) {
+      state = state.copyWith(clearAccount: true);
     }
   }
 
@@ -102,11 +154,19 @@ class AccountNotifier extends StateNotifier<AccountState> {
 
   Future<void> logout() async {
     await SettingsStore.instance.logout();
-    state = const AccountState();
+    state = state.copyWith(clearAccount: true);
   }
 }
 
 final accountProvider = StateNotifierProvider<AccountNotifier, AccountState>((ref) => AccountNotifier());
+
+/// 当前账号的标识串（地址 + 用户名），未登录为空串。
+///
+/// 各页面用它做 `ref.listen` 的 key 来决定要不要重新拉数据。
+/// **不能只监听 isLoggedIn** —— 从「家里的群晖」切到「公司的 NAS」时
+/// isLoggedIn 一直是 true，前后相等，页面就不会重载，看到的还是上一台服务器的内容。
+String accountKeyOf(AccountState s) =>
+    s.account == null ? '' : '${s.account!.baseUrl}|${s.account!.username}';
 
 /// 当前登录用的 WebDAV 客户端（未登录为 null）
 final davClientProvider = Provider<WebDavClient?>((ref) => ref.watch(accountProvider).client);
@@ -134,60 +194,23 @@ final quizRepoProvider = Provider<QuizRepo?>((ref) {
 
 // ------------------------------------------------------------- 首页统计
 
-/// 首页四宫格 + 错题本数字。下拉刷新时 ref.invalidate 重算
+/// 首页剩下的唯一一个统计：错题本数字。
+///
+/// v1.4.0 把「笔记多少篇 / 视频多少个 / 题库多少套」那组四宫格去掉了：
+///   * 用户明确要求删掉；
+///   * 那几个数字每次下拉都要把 notes / media / quiz / tools 四个目录
+///     各扫一遍（media 还要递归），服务器一慢，下拉刷新就卡在那儿。
+/// 现在只查本地 SQLite，秒回。
 final statsProvider = FutureProvider<StatsSummary>((ref) async {
-  final account = ref.watch(accountProvider);
   final db = AppDb.instance;
-
   final wrongCount = await db.wrongCount();
-  final todayReview = await db.wrongCount(mastered: false);
-
-  if (!account.isLoggedIn) {
-    return StatsSummary(wrongCount: wrongCount, todayReviewCount: todayReview);
-  }
-
-  final notes = NoteRepo(account.client!);
-  final media = MediaRepo(account.client!);
-  final quiz = QuizRepo(account.client!);
-
-  var noteCount = 0, videoCount = 0, imageCount = 0, bankCount = 0, toolCount = 0;
-
-  await Future.wait([
-    notes.allNotes(maxDepth: 3).then((v) => noteCount = v.length).catchError((_) => noteCount = 0),
-    media.counts(maxDepth: 3).then((v) {
-      videoCount = v['video'] ?? 0;
-      imageCount = v['image'] ?? 0;
-    // 这行以前是 `.catchError((_) => 0)` —— 返回 int 和 then 推导出的
-    // FutureOr<Null> 对不上，analyzer 报 invalid_return_type_for_catch_error，
-    // 而且真出异常时这个回调自己会抛 TypeError。改成空体闭包（隐式返回 null）。
-    }).catchError((_) {}),
-    quiz.bankCount().then((v) => bankCount = v).catchError((_) => bankCount = 0),
-    _countTools(account.client!).then((v) => toolCount = v).catchError((_) => toolCount = 0),
-  ]);
-
-  return StatsSummary(
-    noteCount: noteCount,
-    videoCount: videoCount,
-    imageCount: imageCount,
-    bankCount: bankCount,
-    toolCount: toolCount,
-    wrongCount: wrongCount,
-    todayReviewCount: todayReview,
-  );
+  final unmastered = await db.wrongCount(mastered: false);
+  return StatsSummary(wrongCount: wrongCount, todayReviewCount: unmastered);
 });
 
-Future<int> _countTools(WebDavClient client) async {
-  try {
-    final entries = await client.list('tools', depth: 1);
-    return entries.where((e) => !e.isDir).length + entries.where((e) => e.isDir).length;
-  } catch (_) {
-    return 0;
-  }
-}
-
-/// 最近浏览（本地播放进度记录）
+/// 最近浏览（本地播放 / 打开记录，视频和笔记都在里面）
 final recentProvider = FutureProvider<List<MapEntry<String, PlayProgress>>>((ref) async {
-  return AppDb.instance.recentPlayed(limit: 8);
+  return AppDb.instance.recentPlayed(limit: 12);
 });
 
 // ------------------------------------------------------------- 主题

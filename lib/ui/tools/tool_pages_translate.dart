@@ -1,0 +1,731 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+
+import 'tool_pages.dart';
+
+/// 在线翻译 / 词典
+///
+/// v1.4.0 新增。要求是「调用常用的网络字典、网络翻译接口，多提供一些可以切换；
+/// 英语单词要有音标和语音、例句」。
+///
+/// **接口可用性是实测过的**，不是照文档猜的：
+///   * 有道 `dict.youdao.com/jsonapi` —— 通。英汉 + 汉英，词和句子都认。
+///     返回里有音标（ukphone/usphone）、释义、词形变化、短语、同近义词、
+///     网络释义、双语例句 —— 一个词该有的它都有，所以设为默认源。
+///   * 百度 `fanyi.baidu.com/sug`（POST kw=）—— 通。返回若干条 k→v，
+///     中英双向都能用，胜在快、结果短。
+///   * MyMemory `api.mymemory.translated.net/get` —— 通。纯翻译，长句子表现最好。
+///   * 谷歌 `translate.googleapis.com` —— **实测超时**，而且国内本来就访问不了，不做。
+///   * 百度 `fanyi.baidu.com/transapi` —— 返回 errno 1022（要 token），不做。
+///   * vvhan / oioweb 那两个「免费 API」—— 一个 DNS 解析不了、一个 404，不做。
+///
+/// **语音不走任何 TTS 包**：新的原生插件在这个项目里风险太高（历次构建失败
+/// 全是依赖）。直接用有道的发音接口 `dictvoice?audio=单词&type=1|2` 拿到 mp3
+/// 字节，存到缓存目录后交给已有的 media_kit 播放 —— 第一次联网取，之后就本地读。
+class TranslatePage extends StatefulWidget {
+  const TranslatePage({super.key});
+
+  @override
+  State<TranslatePage> createState() => _TranslatePageState();
+}
+
+/// 数据源
+enum _Src { youdao, baidu, mymemory }
+
+class _TranslatePageState extends State<TranslatePage> {
+  final _input = TextEditingController();
+
+  /// 自己建一个 Dio，不用 WebDAV 那个 —— 目标域名完全不同，
+  /// 也不该带上 WebDAV 的 Basic Auth 头。
+  final _dio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 10),
+    receiveTimeout: const Duration(seconds: 20),
+    // 默认的 dart-http UA 太容易被这些接口拦，报一个普通浏览器的
+    headers: const {'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36'},
+  ));
+
+  _Src _src = _Src.youdao;
+  bool _busy = false;
+  String? _error;
+  String _query = '';
+
+  _Youdao? _youdao;
+  List<(String, String)> _baidu = const [];
+  String? _mymemory;
+
+  Player? _player;
+
+  @override
+  void initState() {
+    super.initState();
+    // 输入框有内容时右边才显示「清空」小叉，所以要跟着输入重画
+    _input.addListener(_onInput);
+  }
+
+  void _onInput() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _input.removeListener(_onInput);
+    _input.dispose();
+    _player?.dispose();
+    super.dispose();
+  }
+
+  // ---------------------------------------------------------------- 查询
+
+  bool get _hasCjk => RegExp(r'[\u4e00-\u9fff]').hasMatch(_query);
+
+  Future<void> _go() async {
+    final q = _input.text.trim();
+    if (q.isEmpty) {
+      setState(() {
+        _error = '先输入要查的单词或句子';
+        _youdao = null;
+        _baidu = const [];
+        _mymemory = null;
+        _query = '';
+      });
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _busy = true;
+      _error = null;
+      _query = q;
+    });
+    try {
+      switch (_src) {
+        case _Src.youdao:
+          final r = await _dio.get<String>(
+            'https://dict.youdao.com/jsonapi?q=${Uri.encodeComponent(q)}',
+            options: Options(responseType: ResponseType.plain),
+          );
+          if (!mounted) return;
+          setState(() => _youdao = _parseYoudao(_decode(r.data)));
+          if (_youdao!.isEmpty) setState(() => _error = '有道没有查出结果');
+        case _Src.baidu:
+          final r = await _dio.post<String>(
+            'https://fanyi.baidu.com/sug',
+            data: {'kw': q},
+            options: Options(
+              contentType: Headers.formUrlEncodedContentType,
+              responseType: ResponseType.plain,
+            ),
+          );
+          final j = _decode(r.data);
+          if (!mounted) return;
+          final data = (j['data'] as List?) ?? const [];
+          setState(() => _baidu = [
+                for (final e in data)
+                  if (e is Map) ('${e['k'] ?? ''}', '${e['v'] ?? ''}'),
+              ]);
+          if (_baidu.isEmpty) setState(() => _error = '百度没有查出结果');
+        case _Src.mymemory:
+          final pair = _hasCjk ? 'zh-CN|en' : 'en|zh-CN';
+          final r = await _dio.get<String>(
+            'https://api.mymemory.translated.net/get'
+            '?q=${Uri.encodeComponent(q)}&langpair=${Uri.encodeComponent(pair)}',
+            options: Options(responseType: ResponseType.plain),
+          );
+          final j = _decode(r.data);
+          if (!mounted) return;
+          final rd = j['responseData'];
+          final text = rd is Map ? '${rd['translatedText'] ?? ''}' : '';
+          final status = j['responseStatus'];
+          if (status != null && '$status' != '200') {
+            setState(() => _error = 'MyMemory 返回 $status：${j['responseDetails'] ?? ''}');
+          } else if (text.trim().isEmpty) {
+            setState(() => _error = 'MyMemory 没有查出结果');
+          } else {
+            setState(() => _mymemory = text);
+          }
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = '网络请求失败：${_short(e)}');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  static String _short(Object e) {
+    if (e is DioException) {
+      final t = e.type;
+      if (t == DioExceptionType.connectionTimeout) return '连接超时，检查一下网络';
+      if (t == DioExceptionType.receiveTimeout) return '等待响应超时';
+      if (t == DioExceptionType.connectionError) return '连不上（可能被网络环境拦了）';
+      return '${e.message ?? e}';
+    }
+    final s = e.toString();
+    return s.length > 90 ? '${s.substring(0, 90)}…' : s;
+  }
+
+  /// 解 JSON；接口偶尔会带 BOM 或前后空白，这里统一处理
+  Map<String, dynamic> _decode(String? body) {
+    final s = (body ?? '').replaceFirst('\uFEFF', '').trim();
+    if (s.isEmpty) return const {};
+    try {
+      final v = jsonDecode(s);
+      return v is Map ? Map<String, dynamic>.from(v) : const {};
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  // ---------------------------------------------------------------- 解析
+
+  static Map<String, dynamic> _m(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : const {};
+  static List _l(dynamic v) => v is List ? v : const [];
+
+  /// 从有道那种套娃结构里抠纯文本。
+  ///
+  /// 形状有好几种，都实测过：
+  ///   `{l: {i: ["int. 喂，你好"]}}`          —— 英汉释义
+  ///   `{l: {i: ["", {#text: "hello"}], #tran: "喂，你好"}}` —— 汉英释义（译文在 #tran）
+  ///   `{l: {i: "打招呼；问好"}}`              —— 短语
+  /// 所以优先级是 #tran → #text → i → l，字符串列表按分号拼起来。
+  static String _t(dynamic node) {
+    if (node == null) return '';
+    if (node is String) return node.trim();
+    if (node is num || node is bool) return '$node';
+    if (node is List) {
+      return node.map(_t).where((e) => e.isNotEmpty).join('；');
+    }
+    if (node is Map) {
+      for (final k in const ['#tran', '#text', 'i', 'l', 'value', 'text']) {
+        if (node.containsKey(k)) {
+          final s = _t(node[k]);
+          if (s.isNotEmpty) return s;
+        }
+      }
+    }
+    return '';
+  }
+
+  /// `trs` 是个数组，每项 `{tr: [{l: {...}}]}`；一项就是一行释义
+  static List<String> _trs(dynamic trs) => [
+        for (final e in _l(trs)) _t(_m(e)['tr']),
+      ].where((e) => e.isNotEmpty).toList();
+
+  _Youdao _parseYoudao(Map<String, dynamic> j) {
+    final ec = _m(j['ec']);
+    final ce = _m(j['ce']);
+
+    // 英文词：ec 里有音标和释义。中文词：只有 ce。
+    final word = _m(_l(ec['word']).isNotEmpty ? _l(ec['word']).first : null);
+
+    final trs = <String>[
+      ..._trs(word['trs']),
+      ..._trs(_l(ce['word']).isNotEmpty ? _m(_l(ce['word']).first)['trs'] : null),
+    ];
+
+    // 词形变化：复数 / 过去式之类
+    final wfs = <String>[];
+    for (final e in _l(word['wfs'])) {
+      final wf = _m(_m(e)['wf']);
+      final n = _t(wf['name']);
+      final v = _t(wf['value']);
+      if (n.isNotEmpty && v.isNotEmpty) wfs.add('$n $v');
+    }
+
+    // 短语
+    final phrs = <(String, String)>[];
+    for (final e in _l(_m(j['phrs'])['phrs'])) {
+      final phr = _m(_m(e)['phr']);
+      final head = _t(phr['headword']);
+      final tr = _t(phr['trs']);
+      if (head.isNotEmpty) phrs.add((head, tr));
+    }
+
+    // 同近义词
+    final synos = <String>[];
+    for (final e in _l(_m(j['syno'])['synos'])) {
+      final s = _m(_m(e)['syno']);
+      final pos = _t(s['pos']);
+      final tran = _t(s['tran']);
+      final words = _l(s['ws'])
+          .map((w) => _t(_m(w)['w']))
+          .where((w) => w.isNotEmpty)
+          .join('、');
+      final line = [if (pos.isNotEmpty) pos, if (tran.isNotEmpty) tran, if (words.isNotEmpty) words].join(' ');
+      if (line.trim().isNotEmpty) synos.add(line.trim());
+    }
+
+    // 网络释义
+    final web = <(String, String)>[];
+    for (final e in _l(_m(j['web_trans'])['web-translation'])) {
+      final item = _m(e);
+      final key = _t(item['key']);
+      final vals = _l(item['trans'])
+          .map((t) => _t(_m(t)['value']))
+          .where((v) => v.isNotEmpty)
+          .take(4)
+          .join('、');
+      if (key.isNotEmpty && vals.isNotEmpty) web.add((key, vals));
+    }
+
+    // 双语例句
+    final sents = <(String, String)>[];
+    final bp = _m(j['blng_sents_part']);
+    for (final e in _l(bp['sentence-pair'])) {
+      final item = _m(e);
+      final en = _t(item['sentence']);
+      final zh = _t(item['sentence-translation']);
+      if (en.isNotEmpty) sents.add((en, zh));
+    }
+
+    return _Youdao(
+      phrase: _t(word['return-phrase']).isNotEmpty ? _t(word['return-phrase']) : _query,
+      ukPhone: _t(word['ukphone']),
+      usPhone: _t(word['usphone']),
+      trs: trs,
+      wfs: wfs,
+      phrs: phrs,
+      synos: synos,
+      web: web,
+      sents: sents,
+    );
+  }
+
+  // ---------------------------------------------------------------- 发音
+
+  /// 播放发音。type：1 = 英音，2 = 美音。
+  ///
+  /// 先把 mp3 拉到本地缓存再播 —— 直接让播放器去流这个地址，
+  /// 网络一抖就没声音；而且同一个词反复点应该秒出。
+  Future<void> _speak(String text, int type) async {
+    final t = text.trim();
+    if (t.isEmpty) return;
+    try {
+      final dir = await getTemporaryDirectory();
+      final safe = t.hashCode.toRadixString(16);
+      final f = File(p.join(dir.path, 'tts_${safe}_$type.mp3'));
+      if (!await f.exists()) {
+        final r = await _dio.get<List<int>>(
+          'https://dict.youdao.com/dictvoice?type=$type&audio=${Uri.encodeComponent(t)}',
+          options: Options(responseType: ResponseType.bytes),
+        );
+        final bytes = r.data;
+        if (bytes == null || bytes.isEmpty) throw Exception('没有拿到音频');
+        await f.writeAsBytes(bytes);
+      }
+      _player ??= Player();
+      await _player!.setVolume(100);
+      await _player!.open(Media('file://${f.path}'));
+    } catch (e) {
+      if (mounted) toast(context, '发音取不到：${_short(e)}');
+    }
+  }
+
+  // ---------------------------------------------------------------- 界面
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return ToolScaffold(
+      title: '翻译',
+      subtitle: '英汉词典 + 句子翻译，可切换数据源',
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+        children: [
+          // ---------------- 输入 ----------------
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: _input,
+                    minLines: 1,
+                    maxLines: 4,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (_) => _go(),
+                    decoration: InputDecoration(
+                      hintText: '输入英文单词 / 句子，或中文',
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                      suffixIcon: _input.text.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: '清空',
+                              icon: const Icon(Icons.clear, size: 18),
+                              onPressed: () => setState(() {
+                                _input.clear();
+                                _error = null;
+                                _youdao = null;
+                                _baidu = const [];
+                                _mymemory = null;
+                                _query = '';
+                              }),
+                            ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final s in _Src.values)
+                        ChoiceChip(
+                          label: Text(_srcName(s)),
+                          selected: _src == s,
+                          // 换数据源时把上一家的报错一起清掉，
+                          // 不然「有道没查出结果」会一直挂在界面上误导人
+                          onSelected: (_) => setState(() {
+                            _src = s;
+                            _error = null;
+                          }),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: _busy ? null : _go,
+                          icon: _busy
+                              ? const SizedBox(
+                                  height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.search, size: 18),
+                          label: Text(_busy ? '查询中…' : '翻译'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          if (_error != null) _errBox(scheme, _error!),
+          if (_query.isNotEmpty) ..._resultArea(scheme),
+          const SizedBox(height: 14),
+          _notes(scheme),
+        ],
+      ),
+    );
+  }
+
+  static String _srcName(_Src s) => switch (s) {
+        _Src.youdao => '有道词典',
+        _Src.baidu => '百度词典',
+        _Src.mymemory => 'MyMemory',
+      };
+
+  List<Widget> _resultArea(ColorScheme scheme) {
+    switch (_src) {
+      case _Src.youdao:
+        final y = _youdao;
+        if (y == null) return const [];
+        return [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ---- 词头 + 发音 ----
+                  Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    children: [
+                      Text(y.phrase.isEmpty ? _query : y.phrase,
+                          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600)),
+                      _speakBtn('英', () => _speak(y.phrase.isEmpty ? _query : y.phrase, 1)),
+                      _speakBtn('美', () => _speak(y.phrase.isEmpty ? _query : y.phrase, 2)),
+                    ],
+                  ),
+                  if (y.ukPhone.isNotEmpty || y.usPhone.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 14,
+                      runSpacing: 4,
+                      children: [
+                        if (y.ukPhone.isNotEmpty) _phone('英', y.ukPhone, scheme),
+                        if (y.usPhone.isNotEmpty) _phone('美', y.usPhone, scheme),
+                      ],
+                    ),
+                  ],
+                  if (y.trs.isNotEmpty) _block('释义', [for (final t in y.trs) _line(t)], scheme),
+                  if (y.wfs.isNotEmpty) _block('词形变化', [for (final t in y.wfs) _line(t)], scheme),
+                  if (y.phrs.isNotEmpty)
+                    _block('短语', [
+                      for (final e in y.phrs)
+                        _kv(e.$1, e.$2, scheme),
+                    ], scheme),
+                  if (y.synos.isNotEmpty) _block('同近义词', [for (final t in y.synos) _line(t)], scheme),
+                  if (y.web.isNotEmpty)
+                    _block('网络释义', [
+                      for (final e in y.web) _kv(e.$1, e.$2, scheme),
+                    ], scheme),
+                  if (y.sents.isNotEmpty)
+                    _block('双语例句', [
+                      for (var i = 0; i < y.sents.length; i++) ...[
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('${i + 1}. ${y.sents[i].$1}',
+                                      style: const TextStyle(fontSize: 13.5, height: 1.5)),
+                                  if (y.sents[i].$2.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 2, bottom: 2),
+                                      child: Text(y.sents[i].$2,
+                                          style: TextStyle(
+                                              fontSize: 13, height: 1.5, color: scheme.onSurfaceVariant)),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: '读这句',
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(Icons.volume_up_outlined, size: 18),
+                              onPressed: () => _speak(y.sents[i].$1, 2),
+                            ),
+                          ],
+                        ),
+                        if (i < y.sents.length - 1) const SizedBox(height: 8),
+                      ],
+                    ], scheme),
+                  if (y.isEmpty)
+                    Text('没有查到内容', style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
+                ],
+              ),
+            ),
+          ),
+        ];
+
+      case _Src.baidu:
+        if (_baidu.isEmpty) return const [];
+        return [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(_query,
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                      ),
+                      _speakBtn('读一下', () => _speak(_query, 2)),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  for (final e in _baidu) ...[
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (e.$1 != _query) ...[
+                          Container(
+                            margin: const EdgeInsets.only(top: 2),
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: scheme.secondaryContainer.withValues(alpha: 0.7),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(e.$1, style: TextStyle(fontSize: 11.5, color: scheme.onSecondaryContainer)),
+                          ),
+                          const SizedBox(width: 8),
+                        ],
+                        Expanded(child: Text(e.$2, style: const TextStyle(fontSize: 13.5, height: 1.6))),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  Text('百度词典给的是简明对照，要音标和例句请切到有道词典',
+                      style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+                ],
+              ),
+            ),
+          ),
+        ];
+
+      case _Src.mymemory:
+        final text = _mymemory;
+        if (text == null) return const [];
+        return [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_query, style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
+                  const SizedBox(height: 6),
+                  SelectableText(text, style: const TextStyle(fontSize: 17, height: 1.6)),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: () => copyText(context, text),
+                        icon: const Icon(Icons.copy, size: 17),
+                        label: const Text('复制'),
+                      ),
+                      if (!_hasCjk) ...[
+                        const SizedBox(width: 10),
+                        OutlinedButton.icon(
+                          onPressed: () => _speak(_query, 2),
+                          icon: const Icon(Icons.volume_up_outlined, size: 17),
+                          label: const Text('读原文'),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ];
+    }
+  }
+
+  Widget _speakBtn(String label, VoidCallback onTap) => ActionChip(
+        avatar: const Icon(Icons.volume_up_outlined, size: 15),
+        label: Text(label, style: const TextStyle(fontSize: 12)),
+        visualDensity: VisualDensity.compact,
+        onPressed: onTap,
+      );
+
+  Widget _phone(String tag, String value, ColorScheme scheme) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+            decoration: BoxDecoration(
+              color: scheme.tertiaryContainer.withValues(alpha: 0.7),
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Text(tag, style: TextStyle(fontSize: 10.5, color: scheme.onTertiaryContainer)),
+          ),
+          const SizedBox(width: 5),
+          Text('/$value/', style: const TextStyle(fontSize: 13.5)),
+        ],
+      );
+
+  Widget _block(String title, List<Widget> lines, ColorScheme scheme) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Container(width: 3, height: 13, color: scheme.primary.withValues(alpha: 0.7)),
+              const SizedBox(width: 7),
+              Text(title,
+                  style: TextStyle(
+                      fontSize: 12.5, fontWeight: FontWeight.w600, color: scheme.primary)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...lines,
+        ],
+      );
+
+  Widget _line(String t) => Padding(
+        padding: const EdgeInsets.only(bottom: 5),
+        child: Text(t, style: const TextStyle(fontSize: 13.5, height: 1.6)),
+      );
+
+  Widget _kv(String k, String v, ColorScheme scheme) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(k, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(v, style: TextStyle(fontSize: 13, height: 1.5, color: scheme.onSurfaceVariant)),
+            ),
+          ],
+        ),
+      );
+
+  Widget _errBox(ColorScheme scheme, String msg) => Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(13),
+        decoration: BoxDecoration(
+          color: scheme.errorContainer.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.error_outline, size: 18, color: scheme.error),
+            const SizedBox(width: 8),
+            Expanded(child: Text(msg, style: const TextStyle(fontSize: 13, height: 1.5))),
+          ],
+        ),
+      );
+
+  Widget _notes(ColorScheme scheme) => Container(
+        padding: const EdgeInsets.all(13),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.info_outline, size: 17, color: scheme.onSurfaceVariant),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Text(
+                '三个数据源都是公开的免 key 接口，用的同一个网络，'
+                '哪个不通就换一个再试。\n'
+                '· 有道：最全，有音标 / 词形变化 / 短语 / 同近义词 / 双语例句\n'
+                '· 百度：最简，给几条「词 → 译」的对照\n'
+                '· MyMemory：长句子翻得最顺，词条信息少\n'
+                '发音来自有道，一个词读一次就会存到本地，之后点了马上响。',
+                style: TextStyle(fontSize: 11.5, height: 1.75, color: scheme.onSurfaceVariant),
+              ),
+            ),
+          ],
+        ),
+      );
+}
+
+/// 有道词典的解析结果
+class _Youdao {
+  final String phrase;
+  final String ukPhone;
+  final String usPhone;
+  final List<String> trs;
+  final List<String> wfs;
+  final List<(String, String)> phrs;
+  final List<String> synos;
+  final List<(String, String)> web;
+  final List<(String, String)> sents;
+
+  const _Youdao({
+    required this.phrase,
+    required this.ukPhone,
+    required this.usPhone,
+    required this.trs,
+    required this.wfs,
+    required this.phrs,
+    required this.synos,
+    required this.web,
+    required this.sents,
+  });
+
+  bool get isEmpty =>
+      trs.isEmpty && phrs.isEmpty && synos.isEmpty && web.isEmpty && sents.isEmpty && wfs.isEmpty;
+}

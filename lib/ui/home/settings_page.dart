@@ -11,7 +11,6 @@ import '../../data/local/settings_store.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
 import 'login_page.dart';
-import 'server_guide_page.dart';
 
 /// 设置页：账号、缓存、播放、刷题、外观、关于
 class SettingsPage extends ConsumerStatefulWidget {
@@ -328,7 +327,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 SwitchListTile(
                   secondary: const Icon(Icons.visibility_outlined),
                   title: const Text('选择后立即显示答案'),
-                  subtitle: const Text('关掉就是「先自己想，按确认才判定」'),
+                  subtitle: const Text('关掉就是「先自己想，按确认才判定」。'
+                      '答题页顶栏的眼睛按钮随时能把当前这道题的答案调出来'),
                   value: prefs.showAnswerNow,
                   onChanged: (v) => ref.read(quizPrefsProvider.notifier).setShowAnswerNow(v),
                 ),
@@ -437,14 +437,42 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.history_toggle_off),
-                  title: const Text('清空播放进度'),
+                  title: const Text('清空视频播放进度'),
+                  subtitle: const Text('所有视频的观看进度归零，「最近浏览」里的视频记录一并清掉'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () async {
-                    final ok = await _confirm('清空播放进度？', '所有视频的观看进度会归零。');
+                    final ok = await _confirm('清空视频播放进度？', '所有视频的观看进度会归零，笔记的浏览记录不受影响。');
                     if (!ok) return;
-                    await AppDb.instance.clearProgress();
+                    await AppDb.instance.clearMediaProgress();
                     ref.invalidate(recentProvider);
-                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已清空')));
+                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已清空视频进度')));
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.menu_book_outlined),
+                  title: const Text('清空笔记浏览进度'),
+                  subtitle: const Text('忘掉「每个目录上次看到哪篇」，下次进去重新定位'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async {
+                    final ok = await _confirm('清空笔记浏览进度？', '笔记内容不会被删，只是忘掉阅读位置记录。');
+                    if (!ok) return;
+                    await AppDb.instance.clearNoteProgress();
+                    ref.invalidate(recentProvider);
+                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已清空笔记进度')));
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.fact_check_outlined),
+                  title: const Text('清空刷题进度'),
+                  subtitle: const Text('每套题库的「已刷 N 题」归零，错题本不受影响'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async {
+                    final ok = await _confirm('清空刷题进度？', '所有题库的刷题记录都会清零（错题本保留）。');
+                    if (!ok) return;
+                    await AppDb.instance.clearDone();
+                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已清空刷题进度')));
                   },
                 ),
               ],
@@ -456,18 +484,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             margin: const EdgeInsets.symmetric(horizontal: 16),
             child: Column(
               children: [
-                const ListTile(
-                  leading: Icon(Icons.info_outline),
-                  title: Text('学聚 · StudyHub'),
-                  subtitle: Text('版本 1.0.0　自用版\n资料全部存放在你自己的 WebDAV 服务器'),
-                  isThreeLine: true,
-                ),
-                const Divider(height: 1),
                 ListTile(
-                  leading: const Icon(Icons.account_tree_outlined),
-                  title: const Text('服务器目录规范'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ServerGuidePage())),
+                  leading: const Icon(Icons.info_outline),
+                  title: const Text('学聚 · StudyHub'),
+                  subtitle: Text('版本 $kAppVersion　自用版\n资料全部存放在你自己的 WebDAV 服务器'),
+                  isThreeLine: true,
                 ),
                 const Divider(height: 1),
                 ListTile(

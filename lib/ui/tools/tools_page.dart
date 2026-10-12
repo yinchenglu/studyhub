@@ -9,7 +9,9 @@ import '../../providers/providers.dart';
 import 'download_site_page.dart';
 import 'server_html_tools.dart';
 import 'tool_pages.dart';
+import 'tool_pages_calc.dart';
 import 'tool_pages_ext.dart';
+import 'tool_pages_translate.dart';
 
 /// 工具页
 ///
@@ -41,6 +43,10 @@ class ToolsPage extends ConsumerWidget {
       _ToolDef('时间戳转换', Icons.access_time, Color(0xFF534AB7)),
       _ToolDef('提词器', Icons.vertical_align_bottom, Color(0xFF27500A)),
       _ToolDef('LED 屏幕', Icons.brightness_high, Color(0xFFEF9F27)),
+      // v1.4.0 新增：用户电脑上一直在用的「消杀计算器.html」搬进来
+      _ToolDef('消杀计算器', Icons.science_outlined, Color(0xFF0F7B6C)),
+      // v1.4.0 新增：多词典在线翻译
+      _ToolDef('翻译', Icons.translate, Color(0xFF185FA5)),
     ]),
     // 用户要求：生活与娱乐排第 3。它原来在最后一位。
     _Category('生活与娱乐', Icons.sports_esports_outlined, [
@@ -219,6 +225,10 @@ Widget toolPageOf(String name) {
       return const SketchPadPage();
     case '快递查询':
       return const ExpressQueryPage();
+    case '消杀计算器':
+      return const DisinfectCalcPage();
+    case '翻译':
+      return const TranslatePage();
     default:
       return const Scaffold(body: Center(child: Text('这个工具还没做好')));
   }

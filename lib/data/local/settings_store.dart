@@ -43,7 +43,25 @@ class SettingsStore {
     return _p!;
   }
 
-  // ----------------------------------------------------------- 账号
+  // ----------------------------------------------------------- 账号（支持多个）
+  //
+  // v1.4.0 起：可以同时保存好几个 WebDAV 服务器 / 账号，首页直接切换。
+  //
+  // 存储布局（密码和列表故意分两处）：
+  //   dav_accounts    —— JSON 数组，每项 {alias, baseUrl, username, root}，**不含密码**
+  //   dav_active_key  —— 当前用哪个，值形如 "http://192.168.1.10:5005/|admin"
+  //   FlutterSecureStorage —— 每个账号一条密码，key 由 baseUrl|username 派生
+  //
+  // 密码不放进 JSON 是因为 SharedPreferences 是明文的；分开存还有个额外好处：
+  // 同一台服务器换用户名时，两个人的密码天然不会串。
+  //
+  // 兼容：老版本只存了一个 dav_account，首次 loadAccount 时会自动搬进列表。
+
+  static const _kAccounts = 'dav_accounts';
+  static const _kActiveKey = 'dav_active_key';
+
+  /// 账号的唯一标识。同一个地址下的不同用户算两个账号。
+  static String keyOf(DavAccount a) => '${a.baseUrl}|${a.username}';
 
   DavAccount? _account;
 
@@ -51,35 +69,135 @@ class SettingsStore {
 
   bool get isLoggedIn => _account != null && _account!.baseUrl.isNotEmpty;
 
-  /// 从本地恢复上次登录的账号
-  Future<DavAccount?> loadAccount() async {
+  Future<SharedPreferences> get _prefs async {
+    _p ??= await SharedPreferences.getInstance();
+    return _p!;
+  }
+
+  /// 读账号列表（不含密码，内部用）
+  Future<List<DavAccount>> _rawAccounts() async {
     final p = await _prefs;
-    final s = p.getString(_kAccount);
-    if (s == null) return null;
+    final s = p.getString(_kAccounts);
+    if (s == null || s.isEmpty) return [];
     try {
-      final j = jsonDecode(s) as Map<String, dynamic>;
-      final acc = DavAccount.fromJson(j);
-      final pwd = await _secure.read(key: acc.secretKey) ?? '';
-      _account = acc.copyWith(password: pwd);
-      return _account;
+      return (jsonDecode(s) as List)
+          .map((e) => DavAccount.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
     } catch (_) {
-      return null;
+      return [];
     }
   }
 
+  Future<void> _writeAccounts(List<DavAccount> list) async {
+    final p = await _prefs;
+    await p.setString(_kAccounts, jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
+
+  /// 全部保存过的账号，**含密码**（首页 / 设置页的切换列表用）
+  Future<List<DavAccount>> savedAccounts() async {
+    final out = <DavAccount>[];
+    for (final a in await _rawAccounts()) {
+      final pwd = await _secure.read(key: a.secretKey) ?? '';
+      out.add(a.copyWith(password: pwd));
+    }
+    return out;
+  }
+
+  /// 从本地恢复上次用的账号。
+  /// 顺便把老版本的单个账号搬进新的列表结构。
+  Future<DavAccount?> loadAccount() async {
+    final p = await _prefs;
+
+    // ---- 一次性迁移：老结构 dav_account → dav_accounts ----
+    final legacy = p.getString(_kAccount);
+    if (legacy != null) {
+      try {
+        final acc = DavAccount.fromJson(jsonDecode(legacy) as Map<String, dynamic>);
+        final pwd = await _secure.read(key: acc.secretKey) ?? '';
+        await saveAccount(acc.copyWith(password: pwd));
+      } catch (_) {
+        // 迁不动就当没有，不能让老数据把启动流程卡死
+      }
+      await p.remove(_kAccount);
+    }
+
+    final list = await _rawAccounts();
+    if (list.isEmpty) return null;
+
+    final key = p.getString(_kActiveKey);
+    DavAccount pick = list.first;
+    if (key != null) {
+      for (final e in list) {
+        if (keyOf(e) == key) {
+          pick = e;
+          break;
+        }
+      }
+    }
+    final pwd = await _secure.read(key: pick.secretKey) ?? '';
+    _account = pick.copyWith(password: pwd);
+    return _account;
+  }
+
+  /// 保存一个账号并把它设为「当前」。
+  /// 已存在（同名同地址同用户）就更新，否则插到列表最前面。
   Future<void> saveAccount(DavAccount acc) async {
     final p = await _prefs;
     await _secure.write(key: acc.secretKey, value: acc.password);
-    await p.setString(_kAccount, jsonEncode(acc.toJson()));
+    final list = await _rawAccounts();
+    list.removeWhere((e) => keyOf(e) == keyOf(acc));
+    list.insert(
+      0,
+      DavAccount(
+        alias: acc.alias,
+        baseUrl: acc.baseUrl,
+        username: acc.username,
+        password: '',
+        root: acc.root,
+      ),
+    );
+    await _writeAccounts(list);
+    await p.setString(_kActiveKey, keyOf(acc));
     _account = acc;
     await rememberServer(acc);
   }
 
-  /// 退出登录：只清账号本体。
-  /// 已登录过的「服务器地址」保留下来，下次打开登录页可以直接选，用户名密码留空。
+  /// 切到另一个已经保存过的账号（首页 / 设置页点一下就走这里）
+  Future<void> switchTo(DavAccount acc) async {
+    final p = await _prefs;
+    await p.setString(_kActiveKey, keyOf(acc));
+    // 切过去的账号要排到最前，列表顺序就是「最近用过」
+    final list = await _rawAccounts();
+    list.removeWhere((e) => keyOf(e) == keyOf(acc));
+    list.insert(
+      0,
+      DavAccount(alias: acc.alias, baseUrl: acc.baseUrl, username: acc.username, password: '', root: acc.root),
+    );
+    await _writeAccounts(list);
+    _account = acc; // 外面传进来的已经带密码
+  }
+
+  /// 从列表里彻底删掉一个账号（连密码一起删）
+  Future<void> removeAccount(DavAccount acc) async {
+    final list = await _rawAccounts();
+    list.removeWhere((e) => keyOf(e) == keyOf(acc));
+    await _writeAccounts(list);
+    try {
+      await _secure.delete(key: acc.secretKey);
+    } catch (_) {}
+    final p = await _prefs;
+    if (p.getString(_kActiveKey) == keyOf(acc)) {
+      await p.remove(_kActiveKey);
+      _account = null;
+    }
+  }
+
+  /// 断开当前连接。
+  /// **不删已保存的账号列表** —— 用户只是退出，不是把服务器忘了；
+  /// 下次在首页点一下就能切回来。要彻底删得用 removeAccount。
   Future<void> logout() async {
     final p = await _prefs;
-    await p.remove(_kAccount);
+    await p.remove(_kActiveKey);
     _account = null;
   }
 

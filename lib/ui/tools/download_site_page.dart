@@ -111,68 +111,87 @@ class _DownloadSitePageState extends ConsumerState<DownloadSitePage> {
     final logged = ref.watch(accountProvider).isLoggedIn;
     final files = _entries.where((e) => !e.isDir).toList();
 
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        leading: _sub.isNotEmpty
-            ? IconButton(
-                tooltip: '返回上级目录',
-                onPressed: () {
-                  setState(() => _sub = parentOf(_sub));
-                  _load();
+    // 返回键：这个页面是从工具页 push 出来的独立路由，RootShell 的
+    // PopScope 拦不到它 —— 系统返回键会直接 Navigator.pop()，一步退回
+    // 工具主菜单，中间的目录层级全被跳过（用户报的就是这个）。
+    //
+    // 这里自己再套一层 PopScope，用**动态 canPop**：
+    //   * 在子目录里 canPop = false → 系统返回事件被拦下，只回上一级；
+    //   * 到了根目录 canPop = true → 不再拦截，交给 Navigator 正常 pop，
+    //     一步退回工具主菜单。
+    //
+    // 注意别在这里写 Navigator.maybePop() 来「放行」：canPop 为 false 时
+    // maybePop 会走 RoutePopDisposition.doNotPop 分支，把回调再叫一遍，
+    // 直接死循环。用动态 canPop 才是官方推荐写法。
+    return PopScope(
+      canPop: _sub.isEmpty,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        handleBack();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          leading: _sub.isNotEmpty
+              ? IconButton(
+                  tooltip: '返回上级目录',
+                  onPressed: () {
+                    setState(() => _sub = parentOf(_sub));
+                    _load();
+                  },
+                  icon: const Icon(Icons.arrow_back),
+                )
+              : null,
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('服务器下载站'),
+              Text(
+                '/${AppDirs.download}${_sub.isEmpty ? '' : '/$_sub'}',
+                style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+          actions: [
+            if (files.isNotEmpty)
+              PopupMenuButton<String>(
+                onSelected: (v) async {
+                  if (v == 'all') await _downloadAll(files);
                 },
-                icon: const Icon(Icons.arrow_back),
-              )
-            : null,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('服务器下载站'),
-            Text(
-              '/${AppDirs.download}${_sub.isEmpty ? '' : '/$_sub'}',
-              style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
-            ),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'all',
+                    child: ListTile(
+                        leading: Icon(Icons.download_for_offline_outlined),
+                        title: Text('全部下载到本地'),
+                        dense: true),
+                  ),
+                ],
+              ),
+            IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
           ],
         ),
-        actions: [
-          if (files.isNotEmpty)
-            PopupMenuButton<String>(
-              onSelected: (v) async {
-                if (v == 'all') await _downloadAll(files);
-              },
-              itemBuilder: (_) => const [
-                PopupMenuItem(
-                  value: 'all',
-                  child: ListTile(
-                      leading: Icon(Icons.download_for_offline_outlined),
-                      title: Text('全部下载到本地'),
-                      dense: true),
+        body: !logged
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.cloud_off_outlined, size: 46, color: scheme.onSurfaceVariant),
+                      const SizedBox(height: 12),
+                      const Text('需要先连接你的 WebDAV 服务器'),
+                      const SizedBox(height: 8),
+                      Text(
+                        '下载站的货架在服务器的 /${AppDirs.download} 目录。',
+                        style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
                 ),
-              ],
-            ),
-          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
-        ],
+              )
+            : RefreshIndicator(onRefresh: _load, child: _body(scheme)),
       ),
-      body: !logged
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.cloud_off_outlined, size: 46, color: scheme.onSurfaceVariant),
-                    const SizedBox(height: 12),
-                    const Text('需要先连接你的 WebDAV 服务器'),
-                    const SizedBox(height: 8),
-                    Text(
-                      '下载站的货架在服务器的 /${AppDirs.download} 目录。',
-                      style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : RefreshIndicator(onRefresh: _load, child: _body(scheme)),
     );
   }
 

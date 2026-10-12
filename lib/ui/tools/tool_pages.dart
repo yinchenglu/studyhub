@@ -1399,10 +1399,25 @@ class _PomodoroPageState extends State<PomodoroPage> {
     ('清脆提示', 'assets/sounds/bell_tip.wav'),
     ('上课铃', 'assets/sounds/bell_class.wav'),
     ('下课铃', 'assets/sounds/bell_break.wav'),
+    // 用户自己提供的校园课间铃（mp3）。放在这一排里，名字里点明来源，
+    // 免得以后分不清哪个是合成音、哪个是自己传的。
+    ('课间铃（我的）', 'assets/sounds/school-bell-for-recess.mp3'),
     ('轻柔三音', 'assets/sounds/bell_soft.wav'),
     ('深钟', 'assets/sounds/bell_deep.wav'),
     ('闹钟', 'assets/sounds/bell_alarm.wav'),
   ];
+
+  /// 当前铃声的显示名（找不到就回落到「自定义」）
+  String get _bellLabel {
+    for (final b in _bells) {
+      if (b.$2 == _bell) return b.$1;
+    }
+    return '自定义';
+  }
+
+  /// 当前这一个阶段的**完整**秒数。
+  /// 用来判断「是不是刚开始一个新阶段」（剩余 == 整段长度）。
+  int get _phaseTotal => (_isWork ? _work : (_done % _rounds == 0 ? _long : _short)) * 60;
 
   @override
   void initState() {
@@ -1466,9 +1481,65 @@ class _PomodoroPageState extends State<PomodoroPage> {
   /// 阶段结束时响铃
   Future<void> _ring() => _play(_bell);
 
+  /// 弹出铃声选择列表。
+  ///
+  /// v1.4.0 从「主界面平铺 8 行」改成弹窗 —— 铃声一共 8 个，
+  /// 铺在页面上要占大半屏，把下面的时长设置全挤到屏幕外了。
+  /// 选中即试听：光看「深钟」「叮咚」这些名字根本猜不出区别。
+  Future<void> _pickBell() async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        final cs = Theme.of(ctx).colorScheme;
+        return SafeArea(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 4),
+                  child: Text('选择铃声', style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+                for (final b in _bells)
+                  ListTile(
+                    dense: true,
+                    leading: Icon(
+                      _bell == b.$2 ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                      size: 20,
+                      color: _bell == b.$2 ? cs.primary : cs.onSurfaceVariant,
+                    ),
+                    title: Text(b.$1),
+                    trailing: b.$2.isEmpty
+                        ? Icon(Icons.volume_off_outlined, size: 19, color: cs.onSurfaceVariant)
+                        : IconButton(
+                            tooltip: '试听',
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.play_circle_outline, size: 21),
+                            onPressed: () => _play(b.$2),
+                          ),
+                    onTap: () => Navigator.pop(ctx, b.$2),
+                  ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted || picked == null) return;
+    setState(() => _bell = picked);
+    _saveBell();
+    _play(picked);
+  }
+
   // ------------------------------------------------------------ 计时
 
   void _start() {
+    // v1.4.0：用户要求「专注开始」也要有提示音。
+    // 这里只在**全新一个阶段的起点**响：暂停后继续时 _left 已经小于整段长度，
+    // 不会再响；阶段结束那一刻已由 _finishPhase 响过（_done > 0），这里不重复。
+    if (_done == 0 && _left == _phaseTotal) _ring();
     setState(() => _running = true);
     keepScreenOn(true);
     _t?.cancel();
@@ -1501,7 +1572,9 @@ class _PomodoroPageState extends State<PomodoroPage> {
 
   void _finishPhase() {
     HapticFeedback.heavyImpact();
-    // 铃声和震动同时来，隔着口袋也能察觉
+    // 每一次阶段切换都响：专注结束（= 短休 / 长休开始）、休息结束（= 下一个专注开始）。
+    // 这一刻同时也是「该抬头看一眼」的时刻 —— 计时停了，不会自动往下走。
+    // 铃声和震动同时来，隔着口袋也能察觉。
     _ring();
 
     final wasWork = _isWork;
@@ -1529,7 +1602,7 @@ class _PomodoroPageState extends State<PomodoroPage> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final total = (_isWork ? _work : (_done % _rounds == 0 ? _long : _short)) * 60;
+    final total = _phaseTotal;
     final ratio = total == 0 ? 0.0 : 1 - _left / total;
     final mm = (_left ~/ 60).toString().padLeft(2, '0');
     final ss = (_left % 60).toString().padLeft(2, '0');
@@ -1633,69 +1706,61 @@ class _PomodoroPageState extends State<PomodoroPage> {
           ),
 
           // -------------------- 铃声 --------------------
-          const ToolSection('铃声（一个阶段结束时响）'),
+          // v1.4.0：原来把 8 个铃声平铺成 8 行 ListTile，占掉大半屏，
+          // 想调下面的「时长设置」得先划过去。现在压成一张两行的卡片：
+          // 第一行显示当前铃声（点开弹窗选），第二行只有音量。
+          const ToolSection('铃声（专注开始 / 阶段切换时响）'),
           Card(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
-              child: Column(
-                children: [
-                  for (final b in _bells)
-                    // 没用 RadioListTile：它的 groupValue / onChanged 在新版
-                    // Flutter 里被标记弃用、转向 RadioGroup 那套新 API，
-                    // 而这里是锁 3.47.6 编译的，跨版本行为不好保证。
-                    // 一个选中圆点而已，自己画最稳。
-                    ListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      onTap: () {
-                        setState(() => _bell = b.$2);
-                        _saveBell();
-                        // 选中即试听 —— 光看「深钟」「叮咚」这些名字
-                        // 根本猜不出区别，不试听就得一个个点过去听。
-                        _play(b.$2);
-                      },
-                      leading: Icon(
-                        _bell == b.$2
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_unchecked,
-                        size: 20,
-                        color: _bell == b.$2 ? scheme.primary : scheme.onSurfaceVariant,
-                      ),
-                      title: Text(b.$1, style: const TextStyle(fontSize: 13.5)),
-                      trailing: b.$2.isEmpty
-                          ? Icon(Icons.volume_off_outlined,
-                              size: 19, color: scheme.onSurfaceVariant)
-                          : IconButton(
-                              tooltip: '试听',
-                              visualDensity: VisualDensity.compact,
-                              icon: const Icon(Icons.play_circle_outline, size: 21),
-                              onPressed: () => _play(b.$2),
-                            ),
-                    ),
-                  const Divider(height: 6),
+            child: Column(
+              children: [
+                ListTile(
+                  leading: Icon(
+                    _bell.isEmpty ? Icons.volume_off_outlined : Icons.notifications_active_outlined,
+                    color: _bell.isEmpty ? scheme.onSurfaceVariant : scheme.primary,
+                  ),
+                  title: Text(_bellLabel),
+                  subtitle: Text(_bell.isEmpty ? '关闭了铃声，到点只震动' : '阶段开始 / 结束时各响一次',
+                      style: const TextStyle(fontSize: 12)),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_bell.isNotEmpty)
+                        IconButton(
+                          tooltip: '试听',
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.play_circle_outline, size: 21),
+                          onPressed: () => _play(_bell),
+                        ),
+                      const Icon(Icons.chevron_right, size: 20),
+                    ],
+                  ),
+                  onTap: _pickBell,
+                ),
+                if (_bell.isNotEmpty) ...[
+                  const Divider(height: 1),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(0, 4, 8, 6),
+                    padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
                     child: Row(
                       children: [
-                        Text('音量', style: TextStyle(fontSize: 13, color: scheme.onSurface)),
+                        Icon(Icons.volume_down_outlined, size: 18, color: scheme.onSurfaceVariant),
                         Expanded(
                           child: Slider(
                             value: _bellVol,
                             min: 0,
                             max: 1,
-                            onChanged: _bell.isEmpty
-                                ? null
-                                : (v) => setState(() => _bellVol = v),
-                            onChangeEnd: (_) => _saveBell(),
+                            onChanged: (v) => setState(() => _bellVol = v),
+                            onChangeEnd: (_) {
+                              _saveBell();
+                              _play(_bell);
+                            },
                           ),
                         ),
-                        Text('${(_bellVol * 100).round()}%',
-                            style: const TextStyle(fontSize: 11.5)),
+                        Text('${(_bellVol * 100).round()}%', style: const TextStyle(fontSize: 11.5)),
                       ],
                     ),
                   ),
                 ],
-              ),
+              ],
             ),
           ),
 

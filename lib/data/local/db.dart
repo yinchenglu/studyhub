@@ -342,7 +342,7 @@ class AppDb {
     );
   }
 
-  /// 最近看过的视频（首页「最近浏览」用）
+  /// 最近看过的视频 / 笔记（首页「最近浏览」用）
   Future<List<MapEntry<String, PlayProgress>>> recentPlayed({int limit = 10}) async {
     final d = await db;
     final rows = await d.query('progress', orderBy: 'updated_at DESC', limit: limit);
@@ -359,9 +359,75 @@ class AppDb {
         .toList();
   }
 
-  Future<void> clearProgress() async {
+  /// 记录一次「打开了这篇笔记」。
+  ///
+  /// 复用 progress 表而不是单开一张：这张表的语义是「最近浏览过什么 +
+  /// 看到哪儿了」，笔记天然符合。缺点是字段名叫 position_ms / duration_ms，
+  /// 对笔记没意义 —— 统一写 0，靠路径前缀（notes/）区分类型。
+  Future<void> touchNote(String path) async {
+    if (path.isEmpty) return;
+    await saveProgress(path, 0, 0);
+  }
+
+  /// 最近打开过的笔记路径，新的在前。
+  ///
+  /// 笔记页拿它来找「这个目录里上次看到哪篇」。
+  /// 多取一些（40 条）是因为要按父目录过滤 —— 用户可能刚在别的目录看过一堆，
+  /// 只取几条容易把当前目录的那篇挤出窗口。
+  Future<List<String>> recentNotes({int limit = 40}) async {
     final d = await db;
-    await d.delete('progress');
+    final rows = await d.query(
+      'progress',
+      columns: ['path'],
+      where: 'path LIKE ?',
+      whereArgs: ['${AppDirs.notes}/%'],
+      orderBy: 'updated_at DESC',
+      limit: limit,
+    );
+    return rows.map((r) => r['path'].toString()).toList();
+  }
+
+  /// 清空进度。
+  ///
+  /// [prefix] 为空 → 全清（老行为）；
+  /// 给了前缀 → 只清这个前缀下的记录，用来把「笔记」「视频」的进度分开清。
+  Future<void> clearProgress({String? prefix}) async {
+    final d = await db;
+    if (prefix == null || prefix.isEmpty) {
+      await d.delete('progress');
+      return;
+    }
+    await d.delete('progress', where: 'path LIKE ?', whereArgs: ['$prefix/%']);
+  }
+
+  /// 只清笔记浏览记录（notes/ 开头的那些）
+  Future<void> clearNoteProgress() => clearProgress(prefix: AppDirs.notes);
+
+  /// 只清视频 / 媒体播放进度。
+  ///
+  /// 用 NOT LIKE 而不是 LIKE 'media/%' —— 视频也可能从「下载站」（download/）
+  /// 直接播放，只按 media/ 匹配会漏掉那些记录。
+  Future<void> clearMediaProgress() async {
+    final d = await db;
+    await d.delete('progress', where: 'path NOT LIKE ?', whereArgs: ['${AppDirs.notes}/%']);
+  }
+
+  /// 忘掉某些路径的浏览 / 播放进度。
+  ///
+  /// 从服务器上删掉视频或笔记之后，本地还留着「看到 12:34」这种记录，
+  /// 首页「最近浏览」就会点出一个已经不存在的文件。
+  /// 目录要连子项一起清，所以除了精确匹配，还要按 `path/` 前缀匹配 ——
+  /// 路径里不会出现别的分隔符，这个前缀匹配是安全的。
+  Future<void> forgetProgress(Iterable<String> paths) async {
+    final list = paths.where((e) => e.isNotEmpty).toList();
+    if (list.isEmpty) return;
+    final d = await db;
+    final batch = d.batch();
+    for (final path in list) {
+      batch.delete('progress', where: 'path = ?', whereArgs: [path]);
+      batch.delete('progress', where: 'path LIKE ?', whereArgs: ['$path/%']);
+    }
+    await batch.commit(noResult: true);
   }
 
   // ------------------------------------------------------------ 媒体索引

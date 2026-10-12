@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  学聚的自适应图标（Android 8.0+ 走这一套，旧系统走 mipmap-*/ic_launcher.png）。
+  背景层是一整块渐变位图；前景层是透明底上的白色书本，图案落在中央 66dp 安全圆内。
+  资源名 ic_launcher_bg / ic_launcher_fg 是故意起的「独有名」——
+  这样覆盖进 flutter create 的骨架时，只会顶掉同名的 ic_launcher.xml，
+  不会和模板自带的任何 drawable / color 资源撞名导致 duplicate resource。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@mipmap/ic_launcher_bg" />
+    <foreground android:drawable="@mipmap/ic_launcher_fg" />
+</adaptive-icon>
