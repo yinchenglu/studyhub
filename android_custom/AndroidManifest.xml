@@ -32,6 +32,24 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!--
+      指南针：读经纬度与海拔。
+      只要「粗略位置」也能显示海拔（网络定位通常没有海拔，GPS 有），
+      所以两个都声明，Dart 侧优先申请精确位置、失败就退到粗略。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!--
+      后台录音（录音录像工具）。
+      WAKE_LOCK 上面已经有了；这里补前台服务相关的三条：
+        FOREGROUND_SERVICE            前台服务本体
+        FOREGROUND_SERVICE_MICROPHONE Android 14 起，麦克风类型的前台服务必须单独申请
+      没有前台服务的话，Android 9 起后台应用拿不到麦克风 —— 一息屏录音就断。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <!--
       应用管理工具：列出手机上已安装的应用、并提取安装包。
       Android 11+ 默认只能看到一部分应用，要完整列表必须声明 QUERY_ALL_PACKAGES。
       不想用这个工具的话可以删掉这一行（工具页会提示权限不足）。
@@ -92,6 +110,20 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!--
+          后台录音服务。
+          注意名字里的 `$`：RecorderService 是 MainActivity 的嵌套类
+          （Kotlin 嵌套类相当于 Java 的 static nested class，框架能反射实例化）。
+          这么写是为了让云端构建只需要注入 MainActivity.kt 这一个文件，
+          不用再改工作流去拷第二个 .kt。
+          foregroundServiceType="microphone" 是 Android 14 的硬要求。
+        -->
+        <service
+            android:name=".MainActivity$RecorderService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
     </application>
 
     <queries>

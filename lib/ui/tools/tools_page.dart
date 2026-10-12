@@ -10,10 +10,12 @@ import 'download_site_page.dart';
 import 'server_html_tools.dart';
 import 'tool_pages.dart';
 import 'tool_pages_calc.dart';
+import 'tool_pages_compass.dart';
 import 'tool_pages_ext.dart';
 import 'tool_pages_id.dart';
 import 'tool_pages_ph.dart';
 import 'tool_pages_ph2.dart';
+import 'tool_pages_recorder.dart';
 import 'tool_pages_sync.dart';
 import 'tool_pages_translate.dart';
 import 'tool_pages_v15.dart';
@@ -23,14 +25,22 @@ import 'tool_pages_v15b.dart';
 ///
 /// 布局约定：
 ///   * 最上面单独一行是「服务器下载站」—— 直接进，不折叠、不藏在菜单里
-///   * 下面按用途分成 6 类，一共 20 个离线小工具
+///   * 下面按用途分成 11 类，一共 37 个离线小工具
 ///   * 最后再挂一个「服务器小工具」，识别服务器 tools 目录里的 html 小工具
 ///
-/// v1.3.0 按用户要求重排了分类归属与顺序：
+/// 分类的由来（每次加工具都要重申一遍，否则很容易按「技术实现」分类、
+/// 而不是按「用户想干什么」分类）：
 ///   测量与感官 ← 挂画助手（要对着实物比水平线，本质是测量）
-///   时间与效率 ← LED 屏幕（滚动字幕就是打鸡血/报时用的）
-///   生活与娱乐 提到第 3 位，SOS 手电筒放它第一个
+///   时间与效率 ← LED 屏幕 / 翻页时钟（都是消耗时间的效率工具）
+///   生活与娱乐 第 3 位，SOS 手电筒放它第一个（用户点名的顺序）
 ///   颜色与设计 ← 简易画板（画画就是配色调色的事）
+///   计算与网络 ← CIDR、高级计算器（偏工程计算）
+///   地理与定位 ← 坐标转换、身份证查户籍、指南针
+///   公卫数据   ← 消杀计算器从这里起家，扩成一组类 Epi Info StatCalc 的工具
+///   同步与备份 ← 文件夹同步（本地 ↔ WebDAV，后台对着跑）
+///   音频与录制 ← 后台录音录像（v1.5.0 新增，只有一个工具但独立成类：
+///                它是唯一一个「会一直在后台跑」的工具，混在别类里不好找）
+///   设备与应用 ← 应用管理
 class ToolsPage extends ConsumerWidget {
   const ToolsPage({super.key});
 
@@ -83,6 +93,9 @@ class ToolsPage extends ConsumerWidget {
       _ToolDef('地图坐标转换', Icons.swap_horiz, Color(0xFF1D9E75)),
       // v1.5.0 新增：身份证前 6 位查户籍地（自带 2978 个区划码，不用联网）
       _ToolDef('身份证查户籍', Icons.badge_outlined, Color(0xFFB8860B)),
+      // v1.5.0 新增（用户第 1 条第 ⑤ 项）：地磁方向 + 经纬度 + 海拔。
+      // 方向靠磁力计（离线、不要权限），经纬度/海拔靠定位（要权限）。
+      _ToolDef('指南针', Icons.explore, Color(0xFF0F7B6C)),
     ]),
     // v1.5.0 新增：公卫数据（消杀计算器从「时间与效率」移到这一类，
     // 用户要求把这个类别做成类似 Epi Info StatCalc 的一组工具）
@@ -99,6 +112,11 @@ class ToolsPage extends ConsumerWidget {
     _Category('同步与备份', Icons.sync_outlined, [
       // 用户第 1 条第 ⑷ 项：本地文件夹 ↔ 服务器文件夹，后台每隔几分钟对一次
       _ToolDef('文件夹同步', Icons.sync_alt, Color(0xFF0F7B6C)),
+    ]),
+    // v1.5.0 新增：音频与录制
+    // 用户第 1 条第 ① 项：后台录音录像（类似 Alibi）
+    _Category('音频与录制', Icons.mic_none, [
+      _ToolDef('后台录音录像', Icons.fiber_manual_record, Color(0xFFD4537E)),
     ]),
     _Category('设备与应用', Icons.phone_android, [
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
@@ -312,6 +330,10 @@ Widget toolPageOf(String name) {
       return const FolderSyncPage();
     case '翻页时钟':
       return const FlipClockPage();
+    case '指南针':
+      return const CompassPage();
+    case '后台录音录像':
+      return const AudioRecorderPage();
     default:
       return const Scaffold(body: Center(child: Text('这个工具还没做好')));
   }
