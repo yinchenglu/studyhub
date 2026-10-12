@@ -353,8 +353,8 @@ class SyncService extends ChangeNotifier {
           }
         } else if (l != null && r != null) {
           // 两边都有：先看大小，再看修改时间
-          if (l.size == r.size && _sameTime(l.mtime, r.modified)) continue;
-          final lNewer = _isNewer(l.mtime, r.modified);
+          if (l.size == r.size && _sameTime(l.mtime, r.mtime)) continue;
+          final lNewer = _isNewer(l.mtime, r.mtime);
           if (lNewer && mayUp) {
             if (await _upload(c, remoteRel, _localTarget(localRoot, rel), l)) {
               _emit(_state.copy(uploaded: _state.uploaded + 1));

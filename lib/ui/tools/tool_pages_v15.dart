@@ -999,9 +999,19 @@ class CoordinateConvertPage extends StatefulWidget {
 class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
   final _lat = TextEditingController(text: '39.908692');
   final _lon = TextEditingController(text: '116.397477');
-  double? _latV;
-  double? _lonV;
+
+  /// 输入那一串坐标**属于哪个坐标系**。
+  /// 不给出这个选择，就等于假定输入永远是 GPS 原始值 ——
+  /// 可用户从高德/百度复制的坐标是 GCJ02 / BD09，直接当 WGS84 算会整体偏 300~600 米。
+  int _src = 0;
   String? _error;
+
+  static const _srcLabels = <String>['WGS84', 'GCJ02', 'BD09'];
+  static const _srcHints = <String>[
+    'GPS 原始 / 海外地图（OSM、Google 海外）',
+    '火星坐标（高德、腾讯、Google 中国）',
+    '百度坐标',
+  ];
 
   @override
   void dispose() {
@@ -1010,22 +1020,24 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
     super.dispose();
   }
 
-  void _pick() {
+  /// 校验输入。通过返回 true，并在 _error 里留下 null。
+  bool _pick() {
     final lat = double.tryParse(_lat.text.trim());
     final lon = double.tryParse(_lon.text.trim());
     if (lat == null || lon == null) {
       _error = '纬度 / 经度得是数字';
-      return;
+      return false;
     }
     if (!lat.isFinite || !lon.isFinite) {
       _error = '纬度 / 经度不是有限数';
-      return;
+      return false;
     }
     if (lat.abs() > 90 || lon.abs() > 180) {
       _error = '纬度范围 -90~90，经度范围 -180~180';
-      return;
+      return false;
     }
     _error = null;
+    return true;
   }
 
   /// 复制一行的值
@@ -1052,6 +1064,7 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
                 child: TextField(
                   controller: _lat,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                  onChanged: (_) => setState(_pick),
                   decoration: const InputDecoration(
                     labelText: '纬度',
                     hintText: '39.908692',
@@ -1065,6 +1078,7 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
                 child: TextField(
                   controller: _lon,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                  onChanged: (_) => setState(_pick),
                   decoration: const InputDecoration(
                     labelText: '经度',
                     hintText: '116.397477',
@@ -1074,6 +1088,31 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text('输入坐标属于哪个坐标系',
+                style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+          ),
+          const SizedBox(height: 6),
+          SegmentedButton<int>(
+            segments: [
+              for (var i = 0; i < _srcLabels.length; i++)
+                ButtonSegment<int>(value: i, label: Text(_srcLabels[i])),
+            ],
+            selected: <int>{_src},
+            showSelectedIcon: false,
+            onSelectionChanged: (s) => setState(() {
+              _src = s.first;
+              _pick();
+            }),
+          ),
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerLeft,
+            child:
+                Text(_srcHints[_src], style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
           ),
           const SizedBox(height: 10),
           FilledButton.icon(
@@ -1137,28 +1176,54 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
   Widget _resultBlock(BuildContext context) {
     final lat = double.tryParse(_lat.text.trim());
     final lon = double.tryParse(_lon.text.trim());
-    if (lat == null || lon == null) {
+    if (lat == null || lon == null || _error != null) {
       return const SizedBox.shrink();
     }
-    final wgs = _Coord.wgs84(lat, lon);
+    final src = _Coord(lat, lon);
+    // 先把它归一到 WGS84，再从 WGS84 推到另外两个 —— 这样无论输入是哪个系，
+    // 三个结果都自洽（而不是只做单向：WGS84 进、另外两个出）。
+    final _Coord wgs;
+    switch (_src) {
+      case 1:
+        wgs = _CoordTransform.gcj02ToWgs84(src);
+        break;
+      case 2:
+        wgs = _CoordTransform.gcj02ToWgs84(_CoordTransform.bd09ToGcj02(src));
+        break;
+      default:
+        wgs = _Coord.wgs84(lat, lon);
+    }
     final gcj = _CoordTransform.wgs84ToGcj02(wgs);
     final bd = _CoordTransform.gcj02ToBd09(gcj);
+    final out = _CoordTransform.outOfChina(wgs.lat, wgs.lon);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _coordCard(context, 'WGS84（GPS 原始）', wgs, '标准坐标'),
+        _coordCard(context, 'WGS84（GPS 原始）', wgs, '标准坐标', _src == 0),
         const SizedBox(height: 8),
-        _coordCard(context, 'GCJ02（火星坐标）', gcj, '高德 / 腾讯 / Google 中国'),
+        _coordCard(context, 'GCJ02（火星坐标）', gcj, '高德 / 腾讯 / Google 中国', _src == 1),
         const SizedBox(height: 8),
-        _coordCard(context, 'BD09（百度坐标）', bd, '百度地图'),
+        _coordCard(context, 'BD09（百度坐标）', bd, '百度地图', _src == 2),
+        if (out) ...[
+          const SizedBox(height: 8),
+          Text(
+            '注意：该点在「中国大陆粗略范围」之外，三系坐标不做偏移（三者数值相近是正常的）。',
+            style: TextStyle(fontSize: 11, height: 1.6, color: Theme.of(context).colorScheme.error),
+          ),
+        ],
       ],
     );
   }
 
-  Widget _coordCard(BuildContext context, String title, _Coord c, String note) {
+  Widget _coordCard(
+      BuildContext context, String title, _Coord c, String note, bool isSource) {
     final scheme = Theme.of(context).colorScheme;
     return Card(
       margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: isSource ? BorderSide(color: scheme.primary, width: 1.4) : BorderSide.none,
+      ),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: () => _copy(context, title, c.lat, c.lon),
@@ -1171,6 +1236,18 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
                 children: [
                   Text(title,
                       style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                  if (isSource) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: scheme.primary.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text('输入',
+                          style: TextStyle(fontSize: 10, color: scheme.primary)),
+                    ),
+                  ],
                   const Spacer(),
                   Icon(Icons.copy_rounded, size: 15, color: scheme.onSurfaceVariant),
                 ],
@@ -1185,12 +1262,33 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
                 ),
               ),
               const SizedBox(height: 3),
+              Text('${_dms(c.lat, true)}   ${_dms(c.lon, false)}',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                    color: scheme.onSurfaceVariant,
+                  )),
+              const SizedBox(height: 3),
               Text(note, style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
             ],
           ),
         ),
       ),
     );
+  }
+
+  /// 十进制度 → 度分秒（导航 / 测绘里常用写法）。
+  /// 分秒用 Unicode 的撇号 ′ ″，这样字符串里不用转义引号。
+  static String _dms(double v, bool isLat) {
+    final hemi = isLat ? (v >= 0 ? 'N' : 'S') : (v >= 0 ? 'E' : 'W');
+    final a = v.abs();
+    final d = a.floor();
+    final mFull = (a - d) * 60;
+    final m = mFull.floor();
+    final s = (mFull - m) * 60;
+    final mm = m.toString().padLeft(2, '0');
+    final ss = s.toStringAsFixed(1).padLeft(4, '0');
+    return '$d°$mm′$ss″$hemi';
   }
 }
 
