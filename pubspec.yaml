@@ -12,7 +12,7 @@ publish_to: 'none'
 #   v1.2.0+3 → 1003 / 2003
 #   v1.3.0+4 → 1004 / 2004
 #   v1.4.0+5 → 1005 / 2005   ← 递增即可直接覆盖安装
-version: 1.4.0+5
+version: 1.5.0+6
 
 environment:
   # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps

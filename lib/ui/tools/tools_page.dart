@@ -12,6 +12,7 @@ import 'tool_pages.dart';
 import 'tool_pages_calc.dart';
 import 'tool_pages_ext.dart';
 import 'tool_pages_translate.dart';
+import 'tool_pages_v15.dart';
 
 /// 工具页
 ///
@@ -63,6 +64,15 @@ class ToolsPage extends ConsumerWidget {
       _ToolDef('摩斯电码', Icons.wifi_tethering, Color(0xFF0F6E56)),
       _ToolDef('加密编码', Icons.lock_outline, Color(0xFF993C1D)),
       _ToolDef('二维码生成', Icons.qr_code_2, Color(0xFF1D9E75)),
+    ]),
+    // v1.5.0 新增：网络与计算（CIDR、计算器等偏工具的）
+    _Category('计算与网络', Icons.calculate_outlined, [
+      _ToolDef('高级计算器', Icons.functions, Color(0xFF534AB7)),
+      _ToolDef('CIDR 子网计算', Icons.hub_outlined, Color(0xFF0C447C)),
+    ]),
+    // v1.5.0 新增：地理与定位
+    _Category('地理与定位', Icons.explore_outlined, [
+      _ToolDef('地图坐标转换', Icons.swap_horiz, Color(0xFF1D9E75)),
     ]),
     _Category('设备与应用', Icons.phone_android, [
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
@@ -229,6 +239,13 @@ Widget toolPageOf(String name) {
       return const DisinfectCalcPage();
     case '翻译':
       return const TranslatePage();
+    // ---- v1.5.0 ----
+    case '高级计算器':
+      return const AdvCalcPage();
+    case 'CIDR 子网计算':
+      return const CidrCalcPage();
+    case '地图坐标转换':
+      return const CoordinateConvertPage();
     default:
       return const Scaffold(body: Center(child: Text('这个工具还没做好')));
   }
