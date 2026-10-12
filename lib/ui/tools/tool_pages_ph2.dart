@@ -880,6 +880,16 @@ class _NutritionPageState extends State<NutritionPage> {
   ///   3. 剩下的蛋白由「肉蛋 : 大豆 = 2 : 1」承担
   ///   4. 剩下的脂肪再扣掉肉蛋豆自带的，余量给烹调油
   ///   5. 剩下的碳水全部由谷薯类承担
+  ///
+  /// ★ v1.5.0 修的真 bug：**谷薯类自己也带蛋白和脂肪**（每份 2 g 蛋白 / 0.5 g 脂肪），
+  ///   第一版压根没把这部分算进蛋白 / 脂肪预算 —— 于是页面顶上说「蛋白质 97.5 g」，
+  ///   底下那张食物表实际给出 132 g，**整整多 34.5 g（多 35%）**。
+  ///   营养师一眼就能看出这两处自相矛盾；用户照着吃也会吃超。
+  ///
+  ///   修法是让 3/5 两步互相咬合：先按「谷薯不带蛋白脂肪」算一版拿到谷薯份数，
+  ///   把谷薯带的蛋白 / 脂肪扣进预算再重算，反复几轮直到份数不再变。
+  ///   份数是 0.5 的整数倍（离散的），所以必然收敛 —— 实测 2~3 轮就稳定，
+  ///   这里留 8 轮上限纯粹是保险。
   ({List<_R> rows, List<_R> mealRows, String? warning, int totalPortions}) _buildPlan(
       double kcal) {
     final pTarget = kcal * _protRatio / 100 / 4;     // g
@@ -888,44 +898,59 @@ class _NutritionPageState extends State<NutritionPage> {
 
     // 固定项
     const nVeg = 1.0, nFruit = 1.0, nMilk = 1.5;
-    final exVeg = _exchList[1], exFruit = _exchList[2], exMilk = _exchList[4];
+    final exGrain = _exchList[0], exVeg = _exchList[1], exFruit = _exchList[2],
+        exBean = _exchList[3], exMilk = _exchList[4], exMeat = _exchList[5],
+        exOil = _exchList[6];
     final fixedProt = nVeg * exVeg.prot + nFruit * exFruit.prot + nMilk * exMilk.prot;
     final fixedFat = nVeg * exVeg.fat + nFruit * exFruit.fat + nMilk * exMilk.fat;
     final fixedCarb = nVeg * exVeg.carb + nFruit * exFruit.carb + nMilk * exMilk.carb;
 
-    var restProt = pTarget - fixedProt;
-    var restFat = fTarget - fixedFat;
-    var restCarb = cTarget - fixedCarb;
-
-    final exMeat = _exchList[5], exBean = _exchList[3], exOil = _exchList[6],
-        exGrain = _exchList[0];
-
-    // 肉蛋 : 大豆 = 2 : 1 分掉剩下的蛋白
+    // ---- 迭代解出谷薯 / 肉蛋 / 大豆 的份数 ----
     var nMeat = 0.0;
     var nBean = 0.0;
-    if (restProt > 0) {
-      // 解 9a + 9b = restProt，a = 2b  →  27b = restProt
-      nBean = _roundHalf(restProt / 27);
-      nMeat = _roundHalf(restProt / 9 - nBean);
-      if (nMeat < 0) nMeat = 0;
-      if (nBean < 0) nBean = 0;
+    var nGrain = 0.0;
+    var grainProt = 0.0;   // 谷薯自带的蛋白（要从蛋白预算里扣）
+    var grainFat = 0.0;    // 谷薯自带的脂肪（要从脂肪预算里扣）
+
+    for (var round = 0; round < 8; round++) {
+      // 3) 蛋白预算（扣掉固定项和谷薯自带）→ 肉蛋 : 大豆 = 2 : 1
+      //    解 9a + 9b = 预算 且 a = 2b  ⇒  27b = 预算
+      //    循环里的临时名后面都带 x —— 别和循环外那几个 final 重名，
+      //    虽然 Dart 允许跨作用域遮蔽，但读代码的人会以为它们是一回事。
+      final budgetP = pTarget - fixedProt - grainProt;
+      var meatX = 0.0, beanX = 0.0;
+      if (budgetP > 0) {
+        beanX = _roundHalf(budgetP / 27);
+        meatX = _roundHalf(budgetP / 9 - beanX);
+        if (meatX < 0) meatX = 0;
+        if (beanX < 0) beanX = 0;
+      }
+      // 5) 碳水预算（扣掉固定项和大豆自带，大豆每份也带 4 g 碳水）→ 全给谷薯
+      final budgetC = cTarget - fixedCarb - beanX * exBean.carb;
+      var grainX = budgetC > 0 ? _roundHalf(budgetC / exGrain.carb) : 0.0;
+      if (grainX < 0) grainX = 0;
+
+      final np = grainX * exGrain.prot;
+      final nf = grainX * exGrain.fat;
+      final stable = np == grainProt && nf == grainFat;
+      nMeat = meatX;
+      nBean = beanX;
+      nGrain = grainX;
+      grainProt = np;
+      grainFat = nf;
+      if (stable) break;
     }
-    restProt = pTarget - fixedProt - nMeat * exMeat.prot - nBean * exBean.prot;
-    restFat = fTarget -
-        fixedFat -
-        nMeat * exMeat.fat -
-        nBean * exBean.fat;
-    restCarb = cTarget -
-        fixedCarb -
-        nBean * exBean.carb;
+
+    var restProt =
+        pTarget - fixedProt - grainProt - nMeat * exMeat.prot - nBean * exBean.prot;
+    var restFat =
+        fTarget - fixedFat - grainFat - nMeat * exMeat.fat - nBean * exBean.fat;
+    var restCarb =
+        cTarget - fixedCarb - nGrain * exGrain.carb - nBean * exBean.carb;
 
     var nOil = restFat > 0 ? _roundHalf(restFat / exOil.fat) : 0.0;
     if (nOil < 0) nOil = 0;
     restFat = restFat - nOil * exOil.fat;
-
-    var nGrain = restCarb > 0 ? _roundHalf(restCarb / exGrain.carb) : 0.0;
-    if (nGrain < 0) nGrain = 0;
-    restCarb = restCarb - nGrain * exGrain.carb;
 
     final portions = <(String, double, String)>[
       ('谷薯类（主食）', nGrain, exGrain.perPortion),

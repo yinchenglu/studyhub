@@ -18,7 +18,8 @@ publish_to: 'none'
 #   v1.5.0+9 → 1009 / 2009   ← 身份证查户籍 + 文件夹同步；修 ZLibDecoder 那句 const
 #   v1.5.0+10 → 1010 / 2010  ← 地图坐标转换补反算；修 _Meta.modified 编译错
 #   v1.5.0+11 → 1011 / 2011  ← 指南针 + 后台录音录像（原生定位/前台服务）
-version: 1.5.0+11
+#   v1.5.0+12 → 1012 / 2012  ← 修营养配餐的真错：谷薯自带的蛋白/脂肪没进预算
+version: 1.5.0+12
 
 environment:
   # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps
