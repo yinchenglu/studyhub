@@ -69,10 +69,9 @@ class SettingsStore {
 
   bool get isLoggedIn => _account != null && _account!.baseUrl.isNotEmpty;
 
-  Future<SharedPreferences> get _prefs async {
-    _p ??= await SharedPreferences.getInstance();
-    return _p!;
-  }
+  // 注意：_prefs 的 getter 只在文件开头（第 41 行）声明那一次。
+  // 多账号功能合进来的时候曾经在这里又复制了一份，两个同名 getter
+  // 直接 duplicate_definition 编译失败 —— 本地检查器当时没查这类错。
 
   /// 读账号列表（不含密码，内部用）
   Future<List<DavAccount>> _rawAccounts() async {

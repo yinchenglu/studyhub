@@ -53,7 +53,9 @@ class MediaRepo {
   /// 留下个半空目录。
   Future<void> deleteEntry(String path) async {
     await dav.delete(path);
-    await _invalidateAfterDelete(const [path]);
+    // 这里不能写 const [path] —— path 是运行时才知道的参数，
+    // const 列表里只能放编译期常量，写了直接编译失败。
+    await _invalidateAfterDelete([path]);
   }
 
   /// 批量删除，返回**删失败的项**（路径 → 错误信息）。
