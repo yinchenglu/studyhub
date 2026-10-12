@@ -445,11 +445,18 @@ class _EpiStatsPageState extends State<EpiStatsPage> {
 
   double _zFor(double conf) {
     // 双侧置信水平 → 分位数。常用值直接给，其余走 normInv。
-    const table = <double, double>{
-      90: 1.6449, 95: 1.9600, 99: 2.5758, 99.9: 3.2905, 80: 1.2816,
-    };
-    final hit = table[conf];
-    if (hit != null) return hit;
+    //
+    // 这里**故意不用 map**，尤其是不能用 const map：Dart 规定常量 map 的 key
+    // 不能是重写了 == / hashCode 的类，而 double 恰好重写了，于是
+    //   const <double, double>{95: 1.96}
+    // 会直接编译报错 const_map_key_not_primitive_equality（run #19 就死在这）。
+    // 就算去掉 const 也没必要——五个值用 if 还更快，且顺带避开浮点相等的坑：
+    // 置信水平是用户从下拉框选的整数，双等号比较是安全的。
+    if (conf == 80) return 1.2816;
+    if (conf == 90) return 1.6449;
+    if (conf == 95) return 1.9600;
+    if (conf == 99) return 2.5758;
+    if (conf == 99.9) return 3.2905;
     return normInv(1 - (1 - conf / 100) / 2);
   }
 

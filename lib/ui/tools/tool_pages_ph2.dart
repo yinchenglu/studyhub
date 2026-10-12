@@ -164,6 +164,21 @@ class _LogitFit {
 ///     对策是限制迭代次数 + 每轮只走半步，并给出警告。
 ///   * **共线**（两列线性相关）→ XᵀWX 奇异。对策是加一个极小的岭参数
 ///     （1e-9）到对角线上，保证能求逆；同时把求逆失败也当不收敛处理。
+/// softplus：log(1 + e^x)，数值稳定版。
+///
+/// **dart:math 里没有 log1p，也没有任何 softplus 函数** —— run #19 的两条
+/// `undefined_function`（tool_pages_ph2.dart:189 / :191）就是直接写了
+/// `math.log1p(...)` 造成的。这里自己实现一份，并用两段近似避开溢出：
+///   * x 很大 → e^x 上溢成 Infinity；此时 log(1+e^x) ≈ x（误差 e^-x < 4e-18）
+///   * x 很小 → log(1+e^x) ≈ e^x（泰勒展开，同样在 double 精度外）
+/// 调用点传进来的 |x| ≤ 500，中间那段其实一句 math.log(1 + math.exp(x)) 就够，
+/// 但保留这两个分支，免得以后被别处复用（比如传进未截断的 η）时炸掉。
+double _softplus(double x) {
+  if (x > 40) return x;
+  if (x < -40) return math.exp(x);
+  return math.log(1 + math.exp(x));
+}
+
 _LogitFit? _fitLogistic(List<List<double>> x, List<int> y, List<String> names) {
   final n = x.length;
   final k = x.isEmpty ? 0 : x[0].length;
@@ -184,11 +199,13 @@ _LogitFit? _fitLogistic(List<List<double>> x, List<int> y, List<String> names) {
         eta += X[i][j] * b[j];
       }
       eta = eta.clamp(-500.0, 500.0);
-      // 稳定写法：log(1+e^η) 与 p 的对应关系
+      // 对数似然：y=1 时是 log σ(η) = −log(1+e^{−η})，
+      //           y=0 时是 log(1−σ(η)) = −log(1+e^{η})。
+      // 两者都归到 −softplus(∓η)，见 _softplus 上方的说明（Dart 没有 log1p）。
       if (y[i] == 1) {
-        ll -= math.log1p(math.exp(-eta));
+        ll -= _softplus(-eta);
       } else {
-        ll -= math.log1p(math.exp(eta));
+        ll -= _softplus(eta);
       }
     }
     return ll;

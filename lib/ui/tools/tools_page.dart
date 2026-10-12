@@ -15,6 +15,7 @@ import 'tool_pages_ph.dart';
 import 'tool_pages_ph2.dart';
 import 'tool_pages_translate.dart';
 import 'tool_pages_v15.dart';
+import 'tool_pages_v15b.dart';
 
 /// 工具页
 ///
@@ -46,6 +47,8 @@ class ToolsPage extends ConsumerWidget {
       _ToolDef('时间戳转换', Icons.access_time, Color(0xFF534AB7)),
       _ToolDef('提词器', Icons.vertical_align_bottom, Color(0xFF27500A)),
       _ToolDef('LED 屏幕', Icons.brightness_high, Color(0xFFEF9F27)),
+      // v1.5.0 新增：横屏大字号翻页时钟（带农历/星期/节气）
+      _ToolDef('翻页时钟', Icons.watch_later_outlined, Color(0xFF0C447C)),
       // v1.4.0 新增：多词典在线翻译（要联网）
       _ToolDef('翻译', Icons.translate, Color(0xFF185FA5), online: true),
     ]),
@@ -65,6 +68,8 @@ class ToolsPage extends ConsumerWidget {
       _ToolDef('摩斯电码', Icons.wifi_tethering, Color(0xFF0F6E56)),
       _ToolDef('加密编码', Icons.lock_outline, Color(0xFF993C1D)),
       _ToolDef('二维码生成', Icons.qr_code_2, Color(0xFF1D9E75)),
+      // v1.5.0 新增：一维条码（Code128 / Code39 / EAN-13 / EAN-8 / UPC-A）
+      _ToolDef('条码生成器', Icons.view_week, Color(0xFF72243E)),
     ]),
     // v1.5.0 新增：网络与计算（CIDR、计算器等偏工具的）
     _Category('计算与网络', Icons.calculate_outlined, [
@@ -290,6 +295,10 @@ Widget toolPageOf(String name) {
       return const LogisticPage();
     case '营养配餐':
       return const NutritionPage();
+    case '条码生成器':
+      return const BarcodePage();
+    case '翻页时钟':
+      return const FlipClockPage();
     default:
       return const Scaffold(body: Center(child: Text('这个工具还没做好')));
   }
