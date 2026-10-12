@@ -322,22 +322,33 @@ class _LoggedInView extends ConsumerWidget {
         const SizedBox(height: 16),
 
         // ---- 最近浏览（视频播放记录 + 笔记打开记录）----
-        Row(
-          children: [
-            Text('最近浏览', style: text.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
-            const Spacer(),
-            recent.maybeWhen(
-              data: (list) => list.isEmpty
-                  ? const SizedBox.shrink()
-                  : TextButton.icon(
-                      onPressed: () => _clearRecent(context, ref),
-                      icon: const Icon(Icons.delete_sweep_outlined, size: 18),
-                      label: const Text('清除'),
-                    ),
-              orElse: () => const SizedBox.shrink(),
-            ),
-          ],
-        ),
+        //
+        // v1.5.0：清除按钮从 1 个拆成 2 个 —— 一个清笔记、一个清视频。
+        // 原来那一个「清除」是把两边一起抹掉，可实际想清的时候往往是「视频那一堆
+        // 看了一半的片子看烦了想清掉，笔记的记录还要留着」。而且这个动作不可撤销，
+        // 一刀切太粗暴。
+        // 另外：哪边没有记录就不显示对应的按钮，免得出现「点了没反应」。
+        Builder(builder: (_) {
+          final list = recent.valueOrNull ?? const <MapEntry<String, PlayProgress>>[];
+          final hasNote = list.any((e) => e.key.startsWith('${AppDirs.notes}/'));
+          final hasMedia = list.any((e) => !e.key.startsWith('${AppDirs.notes}/'));
+          return Row(
+            children: [
+              Text('最近浏览', style: text.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+              const Spacer(),
+              if (hasNote)
+                TextButton(
+                  onPressed: () => _clearRecent(context, ref, note: true),
+                  child: const Text('清笔记'),
+                ),
+              if (hasMedia)
+                TextButton(
+                  onPressed: () => _clearRecent(context, ref, note: false),
+                  child: const Text('清视频'),
+                ),
+            ],
+          );
+        }),
         recent.maybeWhen(
           data: (list) => list.isEmpty
               ? Card(
@@ -463,13 +474,21 @@ class _LoggedInView extends ConsumerWidget {
     }
   }
 
-  /// 清空「最近浏览」和所有浏览 / 播放进度
-  Future<void> _clearRecent(BuildContext context, WidgetRef ref) async {
+  /// 清空「最近浏览」。
+  ///
+  /// [note] 为 true 只清笔记的记录，false 只清视频（含音频）的记录 ——
+  /// 对应右边那两个按钮。进度和记录在同一张表里（progress），
+  /// 所以清记录的同时也就把「看到哪了」一起归零了，这是符合预期的：
+  /// 记录都没了还留着进度，下次点进去接着播反而莫名其妙。
+  Future<void> _clearRecent(BuildContext context, WidgetRef ref, {required bool note}) async {
+    final what = note ? '笔记' : '视频';
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('清除浏览记录？'),
-        content: const Text('会清空「最近浏览」，笔记和视频的进度也会一起归零。'),
+        title: Text('清除$what浏览记录？'),
+        content: Text(note
+            ? '会清空「最近浏览」里的笔记记录，这些笔记的「上次看到这」提示也会一起消失。\n视频记录不受影响。'
+            : '会清空「最近浏览」里的视频记录，这些视频的播放进度也会一起归零。\n笔记记录不受影响。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('清除')),
@@ -477,7 +496,11 @@ class _LoggedInView extends ConsumerWidget {
       ),
     );
     if (ok != true) return;
-    await AppDb.instance.clearProgress();
+    if (note) {
+      await AppDb.instance.clearNoteProgress();
+    } else {
+      await AppDb.instance.clearMediaProgress();
+    }
     ref.invalidate(recentProvider);
   }
 }

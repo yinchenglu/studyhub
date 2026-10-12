@@ -61,6 +61,10 @@ class NotesPageState extends ConsumerState<NotesPage> {
   /// 当前目录里上次打开过的那篇笔记（高亮用）
   String? _lastPath;
 
+  /// 当前目录下、装着「上次看到的那篇」的子目录（v1.5.0）。
+  /// 有它才能在**目录**上也打「上次看到这儿」，不用一层层点进去找。
+  String? _lastDirPath;
+
   /// 已经为哪个目录做过自动定位。
   /// 每次 _load 都滚一遍会把用户手动滚到的位置冲掉，
   /// 只有「刚进这个目录」那一次才该定位。
@@ -152,15 +156,27 @@ class NotesPageState extends ConsumerState<NotesPage> {
   ///
   /// 为什么要在本地记这个：用户是从「学某一块内容」的角度用这个 App 的，
   /// 每次进来都要在同一个目录里重新翻找上次看到第几篇，很烦。
+  ///
+  /// v1.5.0 补上「目录也要提示」：
+  ///   原来只认**直接躺在当前目录里**的那篇笔记（`parentOf(p) == dir`），
+  ///   一旦那篇藏在子目录里，退到上一层就什么提示都没有了 ——
+  ///   用户得挨个文件夹点进去找。现在会多记一层 `_lastDirPath`：
+  ///   「当前目录下的哪个子目录里装着上次看到的那篇」，在目录上同样打标。
   Future<void> _locateLast() async {
     final dir = _dirPath;
-    String? found;
+    String? found;      // 直接躺在当前目录里的那篇
+    String? viaDir;     // 当前目录下、包着那篇的子目录
     try {
       final notes = await AppDb.instance.recentNotes();
       for (final p in notes) {
-        // recentNotes 是跨目录的，只认自己的直接子文件
+        // recentNotes 是跨目录的，只认自己这棵子树
         if (parentOf(p) == dir) {
           found = p;
+          break;
+        }
+        final deeper = _childDirOf(dir, p);
+        if (deeper != null) {
+          viaDir = deeper;
           break;
         }
       }
@@ -169,16 +185,39 @@ class NotesPageState extends ConsumerState<NotesPage> {
     }
     if (!mounted) return;
 
-    final changed = _lastPath != found;
-    if (changed) setState(() => _lastPath = found);
-    if (found == null) return;
+    final target = found ?? viaDir;
+    final changed = _lastPath != found || _lastDirPath != viaDir;
+    if (changed) {
+      setState(() {
+        _lastPath = found;
+        _lastDirPath = viaDir;
+      });
+    }
+    if (target == null) return;
 
     // 已经给这个目录定位过、而且目标没变 → 不打扰用户当前的位置
     if (_scrolledFor == dir && !changed) return;
     _scrolledFor = dir;
 
     // 等这一帧把列表布局出来，否则拿不到 viewport / maxScrollExtent
-    WidgetsBinding.instance.addPostFrameCallback((_) => _centerOn(found!));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _centerOn(target!));
+  }
+
+  /// [path] 位于 [dir] 的**某个子目录**里时，返回「dir 下面那一层目录」的完整路径。
+  ///
+  ///   dir = notes/中医, path = notes/中医/经络/任脉.md  →  notes/中医/经络
+  ///   dir = notes/中医, path = notes/中医/任脉.md      →  null（就在本层，不算子目录）
+  ///   dir = notes/中医, path = notes/西医/xxx.md       →  null（不在 dir 底下）
+  ///
+  /// 只在 dir 后面**紧跟**一段且后面还有斜杠时才算 —— 也就是只认「下一层」，
+  /// 再深的地方由用户自己点进去再定位。
+  String? _childDirOf(String dir, String path) {
+    final prefix = '$dir/';
+    if (!path.startsWith(prefix)) return null;
+    final rest = path.substring(prefix.length);
+    final i = rest.indexOf('/');
+    if (i <= 0) return null;
+    return '$prefix${rest.substring(0, i)}';
   }
 
   /// 把某一项滚到视口中间
@@ -480,7 +519,9 @@ class NotesPageState extends ConsumerState<NotesPage> {
         final isTxt = !e.isDir && !isHtml && FileTypes.isReadableText(e.name);
         final checked = _selected.contains(e.path);
         // 上次看过的那篇。多选时不显示，免得跟勾选态打架。
-        final isLast = !_selecting && e.path == _lastPath;
+        // v1.5.0：如果上次看的那篇在某个子目录里，那个**子目录**也高亮 ——
+        // 不然退到上一层就完全没有线索了。
+        final isLast = !_selecting && (e.path == _lastPath || (e.isDir && e.path == _lastDirPath));
 
         final iconColor = e.isDir
             ? const Color(0xFF185FA5)

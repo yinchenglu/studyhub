@@ -17,6 +17,9 @@ import '../../providers/providers.dart';
 /// · 双击左右两侧：快退 / 快进 10 秒
 /// · 左右滑动：拖进度（松手才跳，带预览时间）
 /// · 右半屏上下滑：音量（上滑变大）；左半屏上下滑：画面亮度（上滑变亮）
+/// · 底栏最右那个喇叭：点一下静音、再点一下恢复音量
+///   （v1.5.0 起取代了原来的音量滑条 —— 竖屏底栏放不下，滑条把音量图标挤没了。
+///    调音量没丢，右半屏上下滑照样能调）
 /// · 长按：锁定 / 解锁屏幕方向（v1.3.0 及以前这里是「临时 2 倍速」，v1.4.0 改掉）
 /// · 跟着手机方向自动翻转：竖屏 / 左横屏 / 右横屏；锁定后不再自动翻转，
 ///   而且点击屏幕也不呼出控制栏 —— 躺床上单手划着看时不会误触出一堆按钮
@@ -43,6 +46,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   bool _buffering = true;
   double _rate = 1.0;
   double _volume = 60;
+
+  /// 「静音」不单独存一个状态位，而是**从音量推出来**（`_volume <= 0` 就是静音）。
+  /// 这样右半屏上下滑音量滑到 0 时图标会自动变成静音、滑上来又自动恢复，
+  /// 不会出现「明明滑上去了图标还显示静音」的状态不一致。
+  /// 这个变量只负责记住「静音前是多少」，取消静音时还原回去。
+  double _lastVolume = 60;
+  bool get _muted => _volume <= 0;
+
   double _dim = 0; // 亮度遮罩：0 全亮，0.7 最暗
   bool _uiVisible = true;
 
@@ -207,6 +218,24 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     _toast(next ? '已锁定：点屏幕不再呼出控制栏，长按可解锁' : '已解锁：跟随手机方向自动翻转');
   }
 
+  /// 点一下静音、再点一下取消静音。
+  ///
+  /// v1.5.0 按用户要求把底栏那条音量滑块换成了这个按键：
+  /// 竖屏时底部挤了七个按钮还要塞一条 90px 的滑条，音量图标被挤得看不见。
+  /// 调音量本身没丢 —— 右半屏上下滑还是能调（那是播放器通用手势，留着更顺手）。
+  void _toggleMute() {
+    setState(() {
+      if (_muted) {
+        _volume = _lastVolume <= 0 ? 60 : _lastVolume;
+      } else {
+        _lastVolume = _volume;
+        _volume = 0;
+      }
+    });
+    _player.setVolume(_volume);
+    _toast(_muted ? '已静音（再点一下恢复音量）' : '已取消静音');
+  }
+
   /// 下载当前视频到「设置 → 下载目录」
   Future<void> _download() async {
     final client = ref.read(davClientProvider);
@@ -276,6 +305,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       if (rightSide) {
         // 右半屏：上滑变大声。这是所有播放器的习惯，保持一致。
         _volume = (_volume + delta * 100).clamp(0, 100);
+        // 顺手记下「最近一次非零音量」，取消静音时还原到这儿
+        if (_volume > 0) _lastVolume = _volume;
         _player.setVolume(_volume);
       } else {
         // 左半屏：上滑变亮。
@@ -569,73 +600,103 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                     Text(formatDuration(_duration.inMilliseconds), style: const TextStyle(color: Colors.white, fontSize: 12)),
                   ],
                 ),
-                Row(
-                  children: [
-                    TextButton.icon(
-                      onPressed: _showSpeedSheet,
-                      icon: const Icon(Icons.speed, size: 18, color: Colors.white),
-                      label: Text('${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 1 : 2)}×', style: const TextStyle(color: Colors.white)),
-                    ),
-                    // 上一集 / 快退 10 / 播放暂停 / 快进 10 / 下一集 —— 挤在一排。
-                    // v1.3.0 里「暂停 + 快进 + 快退」是浮在画面**正中**的三个大按钮，
-                    // 竖屏看视频时正好压在字幕上。用户要求挪下来和音量排一起，
-                    // 位置放在上一集与下一集之间，顺手对着看也方便。
-                    IconButton(
-                      tooltip: '上一集',
-                      icon: const Icon(Icons.skip_previous, color: Colors.white),
-                      onPressed: _prev,
-                    ),
-                    IconButton(
-                      tooltip: '快退 10 秒（也可以双击屏幕左半边）',
-                      icon: const Icon(Icons.replay_10, color: Colors.white),
-                      onPressed: _seekBy,
-                    ),
-                    IconButton(
-                      tooltip: _playing ? '暂停' : '播放',
-                      iconSize: 38,
-                      icon: Icon(_playing ? Icons.pause_circle_filled : Icons.play_circle_fill, color: Colors.white),
-                      onPressed: () => _playing ? _player.pause() : _player.play(),
-                    ),
-                    IconButton(
-                      tooltip: '快进 10 秒（也可以双击屏幕右半边）',
-                      icon: const Icon(Icons.forward_10, color: Colors.white),
-                      onPressed: () => _seekBy(forward: true),
-                    ),
-                    IconButton(
-                      tooltip: '下一集',
-                      icon: const Icon(Icons.skip_next, color: Colors.white),
-                      onPressed: _next,
-                    ),
-                    const Spacer(),
-                    Icon(
-                      _volume == 0 ? Icons.volume_off : _volume < 50 ? Icons.volume_down : Icons.volume_up,
-                      color: Colors.white70,
-                      size: 18,
-                    ),
-                    SizedBox(
-                      width: 90,
-                      child: Slider(
-                        value: _volume,
-                        min: 0,
-                        max: 100,
-                        onChanged: (v) {
-                          setState(() => _volume = v);
-                          _player.setVolume(v);
-                        },
-                      ),
-                    ),
-                  ],
+                // 七个按钮排成一行，**左右严格对称**：
+                //   倍速 · 上一集 · 快退 10 · 播放/暂停 · 快进 10 · 下一集 · 静音
+                // 「倍速」和「静音」一个在最左、一个在最右，尺寸完全一样，
+                // 所以整排看起来是对称的（v1.4.0 时倍速是带图标的 TextButton、
+                // 音量那边是图标 + 90px 滑条，两边宽度差一大截，歪得厉害）。
+                //
+                // 宽度用 LayoutBuilder 按可用空间均分，不再写死：
+                // 竖屏窄机上 7 个 48px 是放不下的（336 > 可用宽度），
+                // 写死就会溢出成黄黑斜纹。这里按 (可用宽 / 7) 算，并夹在 34~52 之间 ——
+                // 34 是手指还能点准的下限，52 是避免平板上一排按钮散得太开。
+                LayoutBuilder(
+                  builder: (context, c) {
+                    final bw = ((c.maxWidth - 4) / 7).clamp(34.0, 52.0);
+                    return Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _barButton(
+                          width: bw,
+                          tooltip: '播放速度',
+                          onTap: _showSpeedSheet,
+                          child: Text(
+                            '${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 1 : 2)}×',
+                            style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        _barButton(
+                          width: bw,
+                          tooltip: '上一集',
+                          onTap: _prev,
+                          child: const Icon(Icons.skip_previous, color: Colors.white, size: 24),
+                        ),
+                        _barButton(
+                          width: bw,
+                          tooltip: '快退 10 秒（也可以双击屏幕左半边）',
+                          onTap: _seekBy,
+                          child: const Icon(Icons.replay_10, color: Colors.white, size: 24),
+                        ),
+                        // 播放/暂停是这一排的视觉中心，图标给大一号
+                        _barButton(
+                          width: bw,
+                          tooltip: _playing ? '暂停' : '播放',
+                          onTap: () => _playing ? _player.pause() : _player.play(),
+                          child: Icon(
+                            _playing ? Icons.pause_circle_filled : Icons.play_circle_fill,
+                            color: Colors.white,
+                            size: 34,
+                          ),
+                        ),
+                        _barButton(
+                          width: bw,
+                          tooltip: '快进 10 秒（也可以双击屏幕右半边）',
+                          onTap: () => _seekBy(forward: true),
+                          child: const Icon(Icons.forward_10, color: Colors.white, size: 24),
+                        ),
+                        _barButton(
+                          width: bw,
+                          tooltip: '下一集',
+                          onTap: _next,
+                          child: const Icon(Icons.skip_next, color: Colors.white, size: 24),
+                        ),
+                        _barButton(
+                          width: bw,
+                          tooltip: _muted ? '取消静音' : '静音',
+                          onTap: _toggleMute,
+                          child: Icon(_muted ? Icons.volume_off : Icons.volume_up, color: Colors.white, size: 24),
+                        ),
+                      ],
+                    );
+                  },
                 ),
-                if (_uiVisible)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 2),
-                    child: Text(
-                      '双击左右快进快退 · 左右滑拖进度 · 右半屏上下滑音量 · 左半屏上下滑亮度 · 长按锁定',
-                      style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 10.5),
-                    ),
-                  ),
               ],
             ),
+          ),
+        ),
+      );
+
+  /// 底栏通用小按钮。
+  ///
+  /// 为什么不用 `IconButton`：它自带 48×48 的**最小点击区**约束，
+  /// 塞进比 48 窄的 SizedBox 里会被自己的约束顶开、照样溢出。
+  /// 自己用 InkWell + SizedBox 搭一个反而最好控制，顺带能塞任意 child
+  /// （倍速键要显示文字、播放键要放大图标，都不是纯图标按钮）。
+  Widget _barButton({
+    required double width,
+    required String tooltip,
+    required VoidCallback onTap,
+    required Widget child,
+  }) =>
+      Tooltip(
+        message: tooltip,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(width / 2),
+          child: SizedBox(
+            width: width,
+            height: 42,
+            child: Center(child: child),
           ),
         ),
       );

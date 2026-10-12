@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -41,6 +43,13 @@ class MediaPageState extends ConsumerState<MediaPage> {
 
   /// 排序方式
   SortPref _sort = const SortPref();
+
+  /// 本机记下的**播放进度**（完整服务器路径 → 进度）。
+  ///
+  /// v1.5.0 新增：用户要求「视频也和笔记一样，目录和文件都要标出看到哪了」。
+  /// 一次把媒体类的进度全取出来，文件行和目录行都靠它渲染，
+  /// 不在 itemBuilder 里查数据库（那样列表一滚就是一串异步查询）。
+  Map<String, PlayProgress> _progress = const {};
 
   /// 上传中（显示进度用）
   bool _uploading = false;
@@ -103,6 +112,8 @@ class MediaPageState extends ConsumerState<MediaPage> {
       _loading = true;
       _error = null;
     });
+    // 进度是纯本地读取，和「拉目录列表」互不依赖 —— 一起发出去，别串行等
+    unawaited(_loadProgress());
     try {
       final entries = await repo.listDir(_sub);
       if (!mounted) return;
@@ -117,6 +128,69 @@ class MediaPageState extends ConsumerState<MediaPage> {
         _loading = false;
       });
     }
+  }
+
+  /// 重新读一遍本地播放进度（进目录、看完视频回来时都要刷）
+  Future<void> _loadProgress() async {
+    try {
+      final m = await AppDb.instance.videoProgress();
+      if (mounted) setState(() => _progress = m);
+    } catch (_) {
+      // 本地库读不出来只影响「看到哪了」标记，不该让整个媒体页报错
+    }
+  }
+
+  /// 当前所在目录的完整服务器路径（media 或其子目录）
+  String get _dirPath => _sub.isEmpty ? AppDirs.media : '${AppDirs.media}/$_sub';
+
+  /// 「看到 12:34 / 45:00 · 27%」这样的标记；没看过返回 null。
+  ///
+  /// 分档是为了别让列表里全是数字：
+  ///   * 刚点开还没看（<10 秒）→ 「刚开始看」，说百分比没意义
+  ///   * 看了 98% 以上 → 「已看完」，比「看到 44:30 / 45:00 · 99%」好读
+  ///   * duration 为 0（老记录 / 直播流）→ 只说「看过」
+  String? _watchHint(String path) {
+    final p = _progress[path];
+    if (p == null) return null;
+    if (p.durationMs <= 0) return '看过';
+    final pct = (p.positionMs / p.durationMs * 100).clamp(0, 100).round();
+    if (pct >= 98) return '已看完';
+    if (p.positionMs < 10000) return '刚开始看';
+    return '看到 ${formatDuration(p.positionMs)} / ${formatDuration(p.durationMs)} · $pct%';
+  }
+
+  /// 这个目录（含子目录）里有没有看过的东西 → 返回「看过的有几个」。
+  ///
+  /// 0 表示这个目录还没碰过。路径前缀匹配是安全的：服务器路径里不会出现
+  /// 别的分隔符，`dir/` 不会误伤同前缀的兄弟目录（`中医` 不会匹配到 `中医基础`，
+  /// 因为比的是 `中医/` 带斜杠）。
+  int _watchedUnder(String dirPath) {
+    final prefix = '$dirPath/';
+    var n = 0;
+    for (final k in _progress.keys) {
+      if (k.startsWith(prefix)) n++;
+    }
+    return n;
+  }
+
+  /// 最近看过的那个文件落在**当前目录的哪个子目录**里（对不上就返回 null）。
+  ///
+  /// 和笔记页的「上次看到这儿」一个思路：光是子目录里有东西还不够，
+  /// 得把**最近**看的那条对应的目录高亮出来，用户才知道该点哪个进去。
+  String? get _lastDirPath {
+    final dir = _dirPath;
+    final prefix = '$dir/';
+    // 找出最近更新的那条记录
+    MapEntry<String, PlayProgress>? best;
+    for (final e in _progress.entries) {
+      if (!e.key.startsWith(prefix)) continue;
+      if (best == null || e.value.updatedAt.isAfter(best.value.updatedAt)) best = e;
+    }
+    if (best == null) return null;
+    final rest = best.key.substring(prefix.length);
+    final i = rest.indexOf('/');
+    if (i <= 0) return null; // 就在当前目录里，不涉及子目录
+    return '$prefix${rest.substring(0, i)}';
   }
 
   List<DavEntry> get _shown => sortEntries(_dirEntries, _sort);
@@ -350,6 +424,9 @@ class MediaPageState extends ConsumerState<MediaPage> {
     }
     final shown = _shown;
     final sel = _selected;
+    // 「最近看的那条在哪个子目录」整个列表只算一次 —— 它是全表扫的 getter，
+    // 放在 itemBuilder 里就是「每个目录行都把所有记录扫一遍」，列表长了白费劲。
+    final lastDir = _lastDirPath;
     return ListView.separated(
       padding: const EdgeInsets.only(bottom: 24),
       itemCount: shown.length,
@@ -363,6 +440,8 @@ class MediaPageState extends ConsumerState<MediaPage> {
         // 勾选框放右边而不是左边，是为了让左侧的图标 / 缩略图留在原位 ——
         // 选东西的时候眼睛是靠左边那列认人的。
         if (e.isDir) {
+          // 这个目录里看过几个
+          final watched = _watchedUnder(e.path);
           return ListTile(
             leading: Container(
               width: 44,
@@ -373,12 +452,36 @@ class MediaPageState extends ConsumerState<MediaPage> {
               child: const Icon(Icons.folder_rounded, color: Color(0xFF7F77DD)),
             ),
             title: Text(e.name),
-            subtitle: e.modified == null
-                ? null
-                : Text(formatTime(e.modified), style: const TextStyle(fontSize: 12)),
+            subtitle: Text(
+              <String>[
+                if (e.modified != null) formatTime(e.modified),
+                if (watched > 0) '里面有 $watched 个看过',
+              ].join(' · '),
+              style: const TextStyle(fontSize: 12),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
             trailing: sel != null
                 ? Checkbox(value: checked, onChanged: (_) => _toggleSelect(e.path))
-                : const Icon(Icons.chevron_right),
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // v1.5.0：和笔记页一样，把「最近看的那条在哪个目录里」标出来，
+                      // 免得每次都要一层层点进去找
+                      if (e.path == lastDir)
+                        Container(
+                          margin: const EdgeInsets.only(right: 6),
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: scheme.primary.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text('看到这儿了',
+                              style: TextStyle(fontSize: 10.5, color: scheme.primary)),
+                        ),
+                      const Icon(Icons.chevron_right),
+                    ],
+                  ),
             onTap: () {
               if (sel != null) {
                 _toggleSelect(e.path);
@@ -390,12 +493,20 @@ class MediaPageState extends ConsumerState<MediaPage> {
           );
         }
         final isVideo = FileTypes.isPlayable(e.name);
+        final hint = _watchHint(e.path);
         return ListTile(
           leading: _thumbFromPath(e.path, isVideo),
           title: Text(e.name, maxLines: 1, overflow: TextOverflow.ellipsis),
           subtitle: Text(
-            '${formatBytes(e.size)}${e.modified == null ? '' : ' · ${formatTime(e.modified)}'}',
+            <String>[
+              formatBytes(e.size),
+              if (e.modified != null) formatTime(e.modified),
+              // 看过的才加这一截；没看过就跟原来一样，不给列表添噪音
+              if (hint != null) hint,
+            ].join(' · '),
             style: const TextStyle(fontSize: 12),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
           trailing: sel != null
               ? Checkbox(value: checked, onChanged: (_) => _toggleSelect(e.path))
@@ -789,7 +900,11 @@ class MediaPageState extends ConsumerState<MediaPage> {
       await Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => PlayerPage(playlist: list, initialIndex: index),
       ));
-      if (mounted) ref.invalidate(recentProvider);
+      if (mounted) {
+        ref.invalidate(recentProvider);
+        // 刚从播放器回来 → 进度肯定变了，把列表上的「看到 12:34」刷新一下
+        await _loadProgress();
+      }
     } else {
       List<MediaItem> imgs;
       try {

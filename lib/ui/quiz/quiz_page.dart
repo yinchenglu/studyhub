@@ -464,6 +464,10 @@ class QuizPageState extends ConsumerState<QuizPage> {
               _mode(Icons.auto_awesome, '智能复习', '错题优先 + 没做过的题优先', () => _startSingle(ref0, _Mode.smart)),
               _mode(Icons.fiber_new_outlined, '只刷没刷过的', '跳过已经刷过的题目', () => _startSingle(ref0, _Mode.fresh)),
               _mode(Icons.replay, '只练错题', '把这一套的错题重做一遍', () => _startSingle(ref0, _Mode.wrongOnly)),
+              // v1.5.0 新增：刷题模式。放在「只练错题」之后、「模拟考试」之前 ——
+              // 前五个都是「做题」，这个是「不作曲只看」，用图标和措辞隔开。
+              _mode(Icons.menu_book_outlined, '刷题模式（只看不做）',
+                  '题目、正确答案、解析一起摊开，像看书一样一页页翻', () => _startBrowse(ref0)),
               _mode(Icons.timer_outlined, '模拟考试', '${ref.read(quizPrefsProvider).examCount} 题 / ${ref.read(quizPrefsProvider).examMinutes} 分钟', () => _setupExam(ref0)),
               if (_banks.length > 1) ...[
                 const Divider(height: 18),
@@ -514,6 +518,8 @@ class QuizPageState extends ConsumerState<QuizPage> {
             _mode(Icons.auto_awesome, '智能复习', '错题优先 + 没做过的题优先', () => _startDir(_Mode.smart)),
             _mode(Icons.fiber_new_outlined, '只刷没刷过的', '跳过已经刷过的题目', () => _startDir(_Mode.fresh)),
             _mode(Icons.replay, '只练错题', '该目录下所有题库的错题', () => _startDir(_Mode.wrongOnly)),
+            _mode(Icons.menu_book_outlined, '刷题模式（只看不做）',
+                '该目录下所有题目、答案、解析一起摊开', () => _startBrowseDir()),
             _mode(Icons.timer_outlined, '模拟考试', '${ref.read(quizPrefsProvider).examCount} 题 / ${ref.read(quizPrefsProvider).examMinutes} 分钟', () => _setupExamDir()),
             const Divider(height: 18),
             _mode(Icons.restart_alt, '重置整个目录的进度', '把这 ${_banks.length} 套题库的「已刷」清零', () => _resetProgress(paths), danger: true),
@@ -583,6 +589,68 @@ class QuizPageState extends ConsumerState<QuizPage> {
       if (!mounted) return;
       await Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => AnswerPage(questions: list, title: bank.name),
+      ));
+    } catch (e) {
+      _toast('读取题库失败：$e');
+    } finally {
+      _busy(false);
+      _load();
+    }
+  }
+
+  /// v1.5.0 新增：刷题模式 ——「只看不做」。
+  ///
+  /// 和另外几种刷法最大的不同：**整套题全带上，不分轮**。
+  /// 「顺序练」那种一次只给 perRound 题（默认 20）是做题的节奏；
+  /// 而刷题模式是把题当书看，看到一半被切成 20 题一段反而碍事，
+  /// 所以这里不裁剪，翻到哪算哪、随时退出。
+  ///
+  /// 也不记录任何东西：不会写「已刷」，更不会往错题本里塞
+  /// （做题页那边是靠 `_revealedHere` 恒为 true 让作答逻辑整体失效的）。
+  Future<void> _startBrowse(QuizBankRef ref0) async {
+    final repo = ref.read(quizRepoProvider);
+    if (repo == null) return;
+    _busy(true);
+    try {
+      final bank = await repo.loadBankFile(ref0.path);
+      if (bank.count == 0) {
+        _toast('这套题库没有题目，或者文件格式不对');
+        return;
+      }
+      if (!mounted) return;
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => AnswerPage(
+          questions: bank.allQuestions(),
+          title: '${bank.name} · 刷题模式',
+          mode: QuizMode.browse,
+        ),
+      ));
+    } catch (e) {
+      _toast('读取题库失败：$e');
+    } finally {
+      _busy(false);
+      _load();
+    }
+  }
+
+  /// 整个目录合并起来进刷题模式
+  Future<void> _startBrowseDir() async {
+    final repo = ref.read(quizRepoProvider);
+    if (repo == null) return;
+    _busy(true);
+    try {
+      final merged = await repo.mergeDir(_curDirPath);
+      if (merged.count == 0) {
+        _toast('这个目录里没有题目');
+        return;
+      }
+      if (!mounted) return;
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => AnswerPage(
+          questions: merged.allQuestions(),
+          title: '${merged.name} · 刷题模式',
+          mode: QuizMode.browse,
+        ),
       ));
     } catch (e) {
       _toast('读取题库失败：$e');

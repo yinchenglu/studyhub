@@ -13,12 +13,15 @@ import 'package:flutter/services.dart';
 /// 官方定义就一句话：「Screen is locked to its current rotation, whatever that is.」
 /// —— 交给系统去记「当前是哪个方向」，我们不需要知道，也就不会算错。
 ///
-/// ── 自动跟随为什么不用原生 ─────────────────────────────
-/// 反过来，允许「竖屏 + 左横屏 + 右横屏」时，Android 侧会落到
-/// `SCREEN_ORIENTATION_USER`：**由系统的传感器逻辑决定左右**，
-/// 它的映射天生自洽。我们自己算反而容易错。
+/// ── 自动跟随：v1.5.0 起也走原生 ─────────────────────────
+/// 原来这里是「跟随交给 Flutter、锁定交给原生」，理由是 Flutter 的三方向集合
+/// 正好对应 Android 的 `SCREEN_ORIENTATION_USER`，映射天生自洽。
+/// **但 USER 是「用户当前首选方向」，会尊重系统里的「自动旋转」开关** ——
+/// 用户关掉自动旋转之后，视频就不会跟着手机转了（真机上被反馈过）。
+/// 现在跟随也交给原生的 `SCREEN_ORIENTATION_SENSOR`（忽略用户的旋转锁），
+/// Flutter 那条路只留作原生方法不可用时的降级。
 ///
-/// 两侧合起来：**跟随交给 Flutter，锁定交给原生**，各用最不容易出错的那条路。
+/// 两侧合起来：**锁定和跟随都交给原生**，各用语义最准的那个常量。
 class ScreenOrientation {
   ScreenOrientation._();
 
@@ -38,9 +41,25 @@ class ScreenOrientation {
 
   /// 打开「跟随手机方向自动翻转」。
   ///
-  /// 同时也承担**解锁**的职责：先前的 `SCREEN_ORIENTATION_LOCKED` 会被
-  /// 这里新的 `SCREEN_ORIENTATION_USER` 覆盖掉。
+  /// ★ v1.5.0 修的真 bug：这条**必须优先走原生** `SCREEN_ORIENTATION_SENSOR`。
+  ///
+  /// Flutter 的 `setPreferredOrientations(autoSet)` 在 Android 侧映射到
+  /// `SCREEN_ORIENTATION_USER`，而 USER 的定义是「用户当前的首选方向」——
+  /// **用户在系统里关掉「自动旋转」后，它就不转了**。
+  /// 现实里绝大多数人常年关着自动旋转，于是「视频跟着手机横竖屏切换」
+  /// 看起来就跟没做一样（用户反馈的正是这句）。
+  ///
+  /// `SCREEN_ORIENTATION_SENSOR` 的官方说明是「即使用户锁定基于传感器的旋转，
+  /// 系统仍可使用传感器」，这才是我们要的语义。
+  ///
+  /// 同时也承担**解锁**的职责：先前的 `SCREEN_ORIENTATION_LOCKED` 会被覆盖掉。
   static Future<void> followDevice() async {
+    try {
+      final ok = await _ch.invokeMethod<bool>('followOrientation');
+      if (ok == true) return;
+    } catch (_) {
+      // 原生侧没有这个方法（非 Android、或 MainActivity 没跟上），走下面的降级。
+    }
     try {
       await SystemChrome.setPreferredOrientations(autoSet);
     } catch (_) {

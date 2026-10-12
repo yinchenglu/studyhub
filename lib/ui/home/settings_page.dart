@@ -238,25 +238,40 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           _section('播放'),
           Card(
             margin: const EdgeInsets.symmetric(horizontal: 16),
-            child: ListTile(
-              leading: const Icon(Icons.speed),
-              title: const Text('默认播放倍速'),
-              subtitle: Text('${_speed.toStringAsFixed(1)}×'),
-              trailing: SizedBox(
-                width: 120,
-                child: Slider(
-                  value: _speed,
-                  min: 0.5,
-                  max: 3.0,
-                  divisions: 25,
-                  onChanged: (v) => setState(() => _speed = v),
-                  onChangeEnd: (v) async {
-                    final fixed = (v * 10).round() / 10;
-                    await SettingsStore.instance.setPlaybackSpeed(fixed);
-                    if (mounted) setState(() => _speed = fixed);
-                  },
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.speed),
+                  title: const Text('默认播放倍速'),
+                  subtitle: Text('${_speed.toStringAsFixed(1)}×'),
+                  trailing: SizedBox(
+                    width: 120,
+                    child: Slider(
+                      value: _speed,
+                      min: 0.5,
+                      max: 3.0,
+                      divisions: 25,
+                      onChanged: (v) => setState(() => _speed = v),
+                      onChangeEnd: (v) async {
+                        final fixed = (v * 10).round() / 10;
+                        await SettingsStore.instance.setPlaybackSpeed(fixed);
+                        if (mounted) setState(() => _speed = fixed);
+                      },
+                    ),
+                  ),
                 ),
-              ),
+                const Divider(height: 1),
+                // v1.5.0 起，播放器底栏那行小字（手势说明）挪到了这里。
+                // 底栏本来就挤，那行字长期占着一行、又小又看不清，
+                // 放在设置里想看的时候再点开，内容还能写得更全。
+                ListTile(
+                  leading: const Icon(Icons.touch_app_outlined),
+                  title: const Text('播放器手势说明'),
+                  subtitle: const Text('双击快进快退、左右滑拖进度、长按锁定方向……'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _showGestureHelp,
+                ),
+              ],
             ),
           ),
 
@@ -319,7 +334,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 SwitchListTile(
                   secondary: const Icon(Icons.flash_on_outlined),
                   title: const Text('答完自动下一题'),
-                  subtitle: const Text('不开「显示答案」时生效：答对立刻跳，答错停留一会儿'),
+                  // v1.5.0：这个开关现在也管「刷题模式」的自动翻页，说明补上
+                  subtitle: const Text('不开「显示答案」时生效：答对立刻跳，答错停留一会儿。'
+                      '刷题模式也认这个开关'),
                   value: prefs.autoNext,
                   onChanged: (v) => ref.read(quizPrefsProvider.notifier).setAutoNext(v),
                 ),
@@ -337,8 +354,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   leading: const Icon(Icons.timelapse),
                   title: const Text('自动跳题秒数'),
                   subtitle: Text(prefs.autoNextSec == 0
-                      ? '不自动跳（只对「显示答案」模式生效）'
-                      : '显示答案后 ${prefs.autoNextSec} 秒自动跳下一题'),
+                      ? '不自动跳（刷题模式 / 显示答案模式都不跳）'
+                      : '显示答案 / 刷题模式下 ${prefs.autoNextSec} 秒自动跳下一题'),
                   trailing: DropdownButton<int>(
                     value: prefs.autoNextSec,
                     underline: const SizedBox.shrink(),
@@ -355,7 +372,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ListTile(
                   leading: const Icon(Icons.timer_off_outlined),
                   title: const Text('答错后停留'),
-                  subtitle: Text('答错后 ${prefs.wrongStaySec} 秒再自动跳到下一题，方便看解析'),
+                  // v1.5.0：这行小字原来只写「答错后 N 秒再自动跳到下一题」，
+                  // 但代码里只有「不显示答案」那种模式才读它，默认配置
+                  // （选择后立即显示答案 = 开）下点了等于没点 —— 已经修掉了，
+                  // 顺手把说明补全，免得再有人以为它失灵。
+                  subtitle: Text('答错后至少停留 ${prefs.wrongStaySec} 秒再跳，方便看完解析'
+                      '（两种作答模式都生效）'),
                   trailing: DropdownButton<int>(
                     value: prefs.wrongStaySec,
                     underline: const SizedBox.shrink(),
@@ -607,6 +629,71 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载目录已改为 $target')));
     }
+  }
+
+  /// 播放器手势说明。
+  ///
+  /// 这段文字原来是直接印在播放器底栏上的（一行 10.5 号小字），
+  /// v1.5.0 按用户要求从底栏撤掉、内容搬到这里 —— 底栏留给按钮，
+  /// 说明放在设置里反而能写得更细，也不占播放画面。
+  void _showGestureHelp() {
+    // 故意**不写 const**：这是一张 record 列表，写成 const 就是把
+    // 「const 集合里放东西」的几类坑（F/G/H 三道网管的那些）主动往身上引，
+    // 而这个对话框一辈子也开不了几次，那点分配开销不值一提。
+    // 图标也都挑的是 Flutter 里最老最稳的那几个，不拿构建轮次去赌新图标。
+    final rows = <(IconData, String, String)>[
+      (Icons.touch_app, '双击屏幕左半边', '快退 10 秒'),
+      (Icons.touch_app, '双击屏幕右半边', '快进 10 秒'),
+      (Icons.touch_app, '双击屏幕中间', '播放 / 暂停'),
+      (Icons.swap_horiz, '左右滑动', '拖动进度（松手才真正跳转，拖动时中间有预览时间）'),
+      (Icons.volume_up, '右半屏上下滑', '调音量，上滑变大声'),
+      (Icons.brightness_6, '左半屏上下滑', '调画面亮度，上滑变亮'),
+      (Icons.touch_app, '点一下屏幕', '呼出或收起控制栏'),
+      (Icons.lock_outline, '长按屏幕', '锁定 / 解锁屏幕方向；锁定后点屏幕不再呼出控制栏'),
+      (Icons.volume_off, '底栏最右的喇叭', '点一下静音，再点一下恢复音量'),
+      (Icons.speed, '底栏最左的倍速', '选 0.5× ~ 3.0×'),
+    ];
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('播放器手势说明'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final r in rows)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(r.$1, size: 17),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(r.$2, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                            Text(r.$3, style: TextStyle(fontSize: 12, height: 1.4, color: Theme.of(ctx).colorScheme.onSurfaceVariant)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              Text(
+                '横竖屏是跟着手机自动转的，不用点开关。想固定住长按屏幕锁定即可。',
+                style: TextStyle(fontSize: 12, height: 1.5, color: Theme.of(ctx).colorScheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
+        ],
+      ),
+    );
   }
 
   /// 把错题本导出成 markdown 写到服务器的 backup 目录

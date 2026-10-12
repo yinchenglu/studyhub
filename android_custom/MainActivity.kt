@@ -40,6 +40,20 @@ import io.flutter.plugin.common.MethodChannel
  *        「Screen is locked to its current rotation, whatever that is.」
  *        —— 交给系统去记，我们不需要知道，也就不会算错。API 18+。
  *
+ *   3. `followOrientation` —— 打开「跟着手机转」（v1.5.0 新增，修一个真 bug）。
+ *
+ *      ⚠️ 这个也必须走原生，原因和 2 是同一类问题：
+ *        Flutter 的 `setPreferredOrientations([portraitUp, landscapeLeft,
+ *        landscapeRight])` 在 Android 侧映射到 `SCREEN_ORIENTATION_USER`，
+ *        而 `USER` 的官方定义是「用户当前的首选方向」——
+ *        也就是说**用户在系统里关掉「自动旋转」之后，这个方法就不转了**。
+ *        手机上绝大多数人是常年关着自动旋转的，于是视频「跟着手机横竖屏切换」
+ *        看起来就跟没做一样。
+ *        `SCREEN_ORIENTATION_SENSOR` 的官方说明是
+ *        「即使用户锁定基于传感器的旋转，系统仍可使用传感器」，
+ *        正好是我们要的语义。而且 `SENSOR` 本身就不含反向竖屏
+ *        （和 Flutter 那套「竖屏 + 左右横屏」的意图一致），不用额外排除。
+ *
  *      解锁不需要加方法：
  *        Dart 侧再调一次 `SystemChrome.setPreferredOrientations(...)`，
  *        会把 requestedOrientation 覆盖成 `SCREEN_ORIENTATION_USER`。
@@ -53,6 +67,7 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "physicalDpi" -> result.success(readPhysicalDpi())
                     "lockOrientation" -> result.success(lockCurrentOrientation())
+                    "followOrientation" -> result.success(followOrientation())
                     else -> result.notImplemented()
                 }
             }
@@ -88,6 +103,28 @@ class MainActivity : FlutterActivity() {
     private fun lockCurrentOrientation(): Boolean {
         return try {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
+            true
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * 打开「跟着手机方向自动翻转」。返回 true 表示原生这条路走通了。
+     *
+     * 用 `SCREEN_ORIENTATION_SENSOR` 而不是 `USER`：只有 SENSOR 才不管用户
+     * 有没有在系统设置里关掉「自动旋转」。详见文件顶部第 3 点的说明。
+     *
+     * 为什么不用 `FULL_SENSOR`：那玩意连「倒着拿手机」（反向竖屏）也认，
+     * 用户躺着看视频时画面会莫名其妙上下颠倒，体验很差。SENSOR 不含反向竖屏，
+     * 正好对应 Flutter 那套「竖屏 + 左横屏 + 右横屏」。
+     *
+     * 抛异常时返回 false，Dart 侧会退到 `setPreferredOrientations` 的老路
+     * （在系统自动旋转开着的时候仍然好用）。
+     */
+    private fun followOrientation(): Boolean {
+        return try {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
             true
         } catch (t: Throwable) {
             false

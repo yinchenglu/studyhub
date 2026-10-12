@@ -387,6 +387,35 @@ class AppDb {
     return rows.map((r) => r['path'].toString()).toList();
   }
 
+  /// 所有**视频 / 音频**的播放进度（path → 进度）。
+  ///
+  /// 媒体页拿它给文件列表和目录列表打「看到哪了」标记（v1.5.0）。
+  /// 一次全取出来、而不是逐个文件查一遍：一个目录里几十个视频，
+  /// 逐个查就是几十次 SQLite 往返，列表滚起来一顿一顿的。
+  /// 而且这张表天然很小 —— 看过才有记录，没看过的一行都不占。
+  ///
+  /// 口径和 clearMediaProgress 保持一致：**不是** notes/ 开头的都算媒体，
+  /// 这样从「下载站」直接播的视频也能标上。
+  Future<Map<String, PlayProgress>> videoProgress() async {
+    final d = await db;
+    final rows = await d.query(
+      'progress',
+      where: 'path NOT LIKE ?',
+      whereArgs: ['${AppDirs.notes}/%'],
+    );
+    final out = <String, PlayProgress>{};
+    for (final m in rows) {
+      final p = m['path'].toString();
+      out[p] = PlayProgress(
+        path: p,
+        positionMs: (m['position_ms'] as int?) ?? 0,
+        durationMs: (m['duration_ms'] as int?) ?? 0,
+        updatedAt: DateTime.fromMillisecondsSinceEpoch((m['updated_at'] as int?) ?? 0),
+      );
+    }
+    return out;
+  }
+
   /// 清空进度。
   ///
   /// [prefix] 为空 → 全清（老行为）；

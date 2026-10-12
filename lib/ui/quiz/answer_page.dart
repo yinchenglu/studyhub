@@ -10,7 +10,17 @@ import '../../data/local/db.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
 
-enum QuizMode { practice, exam }
+/// 答题页的三种模式。
+///
+/// v1.5.0 新增 [browse]「刷题模式」：
+///   题目、选项、**正确答案和解析全都直接摊开**，不需要作答，
+///   就是拿着一页页往下看。勾了「答完自动下一题」就按设置的秒数自动翻，
+///   没勾就自己点「下一题」/左右滑。
+///   和另外两种的区别：
+///     * [practice] 要作答、会判对错、会写错题本
+///     * [exam] 限时、不显示答案、最后统一交卷
+///     * [browse] 不记录任何东西 —— 只是看。想「背题」而不是「做题」时用
+enum QuizMode { practice, exam, browse }
 
 /// 答题页。
 ///
@@ -83,8 +93,11 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
   Question get _q => _list[_i];
   List<int> get _myChoice => _choices[_i] ?? const [];
   String get _myText => _texts[_i] ?? '';
-  bool get _revealedHere => _revealed.contains(_i);
+  bool get _revealedHere => _isBrowse || _revealed.contains(_i);
   bool get _isExam => widget.mode == QuizMode.exam;
+
+  /// 刷题模式：答案和解析一直摊开着，不用作答（v1.5.0）
+  bool get _isBrowse => widget.mode == QuizMode.browse;
 
   @override
   void initState() {
@@ -130,7 +143,9 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
 
   /// 排一次「N 秒后自动跳下一题」。
   ///
-  /// 两种模式取的时间完全不同：
+  /// 三种模式取的时间完全不同：
+  ///   * 刷题模式 → 只看「答完自动下一题」这个开关和它下面的秒数。
+  ///     没勾就完全不自动跳（手动翻）；勾了但秒数是 0 也不跳
   ///   * 显示答案模式 → 用设置里选的固定秒数（3/5/8…），0 表示不自动跳
   ///   * 不带答案模式 → 答对几乎立刻跳；答错停留用户设置的秒数，好让人看完解析
   void _scheduleAutoNext(int idx, bool correct) {
@@ -139,9 +154,19 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     final prefs = ref.read(quizPrefsProvider);
 
     int ms;
-    if (_showAnswerNow) {
-      if (prefs.autoNextSec <= 0) return;
+    if (_isBrowse) {
+      if (!prefs.autoNext || prefs.autoNextSec <= 0) return;
       ms = prefs.autoNextSec * 1000;
+    } else if (_showAnswerNow) {
+      // ★ v1.5.0 修的真 bug：原来这一支只认 autoNextSec，
+      //   **完全不看 wrongStaySec**。而 showAnswerNow 默认就是 true，
+      //   于是设置里那个「答错后停留 N 秒」在默认配置下点了等于没点
+      //   （用户反馈的正是「这个设置没起作用」）。
+      //   现在答错按「答错后停留」走，而且取两者的**较大值**：
+      //   万一用户把自动跳题设成 8 秒、答错停留设成 2 秒，
+      //   答错反而比答对跳得更快，那就荒唐了。
+      if (prefs.autoNextSec <= 0) return;
+      ms = (correct ? prefs.autoNextSec : max(prefs.autoNextSec, prefs.wrongStaySec)) * 1000;
     } else {
       if (!prefs.autoNext) return;
       ms = correct ? 600 : prefs.wrongStaySec * 1000;
@@ -325,6 +350,10 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     _cancelAuto();
     setState(() => _i = idx);
     _syncInput();
+    // 刷题模式的自动翻页不是「答完才排」，而是「翻到这一页就排」——
+    // 因为没有作答这个动作。手动翻（按钮 / 左右滑 / 答题卡）都会走到这里，
+    // 所以在这儿排一次就够了。
+    if (_isBrowse) _scheduleAutoNext(idx, true);
   }
 
   void _next() {
@@ -333,6 +362,11 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     } else {
       if (_isExam) {
         _submitExam();
+      } else if (_isBrowse) {
+        // 刷题模式一题都没答，没有「小结」可看 —— 翻到最后一题就是看完了，
+        // 直接退出。硬要弹个「答对 0/50」的小结只会让人一脸问号。
+        _cancelAuto();
+        Navigator.of(context).maybePop();
       } else {
         _cancelAuto();
         setState(() => _finished = true);
@@ -415,6 +449,16 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
         body: const Center(child: Text('这套题库里没有题目')),
       );
     }
+    // 刷题模式的自动翻页**完全**由设置里的「答完自动下一题」决定，
+    // 而那个开关是异步从磁盘读回来的 —— 页面先建、prefs 后到是常态。
+    // 所以在这儿盯着 prefs：一旦它到货（或用户在设置里改了）就重排倒计时。
+    // 不这么干的话，进刷题模式时 prefs 还是默认值 autoNext=false，
+    // 用户明明勾了自动跳却一动不动。
+    ref.listen(quizPrefsProvider, (prev, next) {
+      if (!_isBrowse || _finished) return;
+      if (prev?.autoNext == next.autoNext && prev?.autoNextSec == next.autoNextSec) return;
+      _scheduleAutoNext(_i, true);
+    });
     return Scaffold(
       appBar: _appBar(),
       body: _finished ? _resultView() : _questionView(),
@@ -795,13 +839,19 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
                 icon: const Icon(Icons.grid_view_outlined, size: 18),
                 label: Text('答题卡 $_answeredCount/${_list.length}'),
               )
+            else if (_isBrowse)
+              // 刷题模式没有「已答」这个概念 —— 一个字都没答。
+              // 显示「已答 0/50」只会让人以为出了问题，改成页码。
+              Text('第 ${_i + 1} / ${_list.length} 题', style: const TextStyle(fontSize: 12.5))
             else
               Text('已答 $_answeredCount/${_list.length}', style: const TextStyle(fontSize: 12.5)),
             const Spacer(),
             FilledButton.icon(
               onPressed: _next,
               icon: const Icon(Icons.chevron_right, size: 18),
-              label: Text(_i == _list.length - 1 ? (_isExam ? '交卷' : '看小结') : '下一题'),
+              label: Text(_i == _list.length - 1
+                  ? (_isExam ? '交卷' : (_isBrowse ? '退出' : '看小结'))
+                  : '下一题'),
             ),
           ],
         ),
