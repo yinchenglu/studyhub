@@ -31,6 +31,10 @@ import '../../core/downloader.dart';
 import '../../core/permissions.dart';
 import '../../core/utils.dart';
 import '../../data/local/db.dart';
+// v1.5.0：配色助手里要跳「传统色卡」页。
+// 这个 import 是**双向**的（tool_pages_colors.dart 反过来要本文件的
+// ToolScaffold / copyText），Dart 允许 import 成环，不是笔误。
+import 'tool_pages_colors.dart';
 
 // ============================================================ 公共小工具
 
@@ -1167,6 +1171,24 @@ class _ColorSchemeHelperPageState extends State<ColorSchemeHelperPage> {
     });
   }
 
+  /// v1.5.0：去传统色卡挑一个色，回来直接当主色。
+  ///
+  /// 挑不到（用户返回了）就什么都不做 —— 别把滑块重置了，
+  /// 那会让人以为自己手滑把颜色弄丢了。
+  Future<void> _pickTraditional(String tab) async {
+    final c = await Navigator.of(context).push<Color>(
+      MaterialPageRoute(builder: (_) => TraditionalColorsPage(initialTab: tab)),
+    );
+    if (c == null || !mounted) return;
+    final hsl = HSLColor.fromColor(c);
+    setState(() {
+      _h = hsl.hue;
+      _s = hsl.saturation;
+      _l = hsl.lightness.clamp(0.05, 0.95);
+    });
+    toast(context, '主色已换成 ${_hex(c)}');
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1244,6 +1266,31 @@ class _ColorSchemeHelperPageState extends State<ColorSchemeHelperPage> {
           _slider('色相', _h, 0, 360, (v) => setState(() => _h = v)),
           _slider('饱和度', _s, 0, 1, (v) => setState(() => _s = v)),
           _slider('明度', _l, 0.05, 0.95, (v) => setState(() => _l = v)),
+
+          // ---------- 传统色卡（v1.5.0）----------
+          const ToolSection('传统色卡（挑一个直接当主色）'),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _pickTraditional('cn'),
+                  icon: const Icon(Icons.palette, size: 18),
+                  label: const Text('中国传统色'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _pickTraditional('jp'),
+                  icon: const Icon(Icons.palette, size: 18),
+                  label: const Text('日本传统色'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text('中国 161 色 / 日本 250 色，可按色系筛、按名字搜；选中后回到本页就自动配出整套色板。',
+              style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
 
           const ToolSection('明暗阶梯（做主色 / 背景 / 边框都好用）'),
           _row(_tints(8)),

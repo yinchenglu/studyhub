@@ -403,6 +403,13 @@ class WrongRecord {
     this.lastText = '',
   });
 
+  /// 通用的浅拷贝。`mastered` 和 `myNote` 都在里面 ——
+  /// 错题详情页（v1.5.0 改成可以左右滑动切题）就地更新当前这条记录时用它。
+  ///
+  /// ⚠️ 别再写第二个 copyWith：这里原来已经有一个了，我加重复的那次
+  /// 被本地检查器 E 类（duplicate_definition）当场拦下 ——
+  /// 这种错在云端就是一句 non_abstract_class_inherits_abstract_member 般的
+  /// 重复定义报错，白烧一轮构建。
   WrongRecord copyWith({int? id, int? wrongCount, bool? mastered, List<int>? lastChoice, DateTime? lastWrongAt, String? myNote}) =>
       WrongRecord(
         id: id ?? this.id,
