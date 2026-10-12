@@ -768,7 +768,8 @@ List<_Kv> _cidrCalc(String raw) {
   var bits = maxBits;
   if (prefixPart != null && prefixPart.isNotEmpty) {
     final n = int.tryParse(prefixPart);
-    if (n == null) throw const FormatException('“/$prefixPart”里的前缀长度不是数字');
+    // 这条不能写 const：字符串里有 $prefixPart 插值，const 要求编译期常量
+    if (n == null) throw FormatException('“/$prefixPart”里的前缀长度不是数字');
     bits = n;
   }
   if (bits < 0 || bits > maxBits) {
