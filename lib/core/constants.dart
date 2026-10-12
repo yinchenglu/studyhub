@@ -127,6 +127,14 @@ class Defaults {
 
   /// 自动翻页间隔可选项（0 = 关闭）
   static const List<int> readAutoSecOptions = [0, 5, 10, 15, 20, 30, 60];
+
+  // ---------------------------------------------------------- 文件夹同步（v1.5.0）
+
+  /// 默认每 5 分钟对一次（用户原话是「每几分钟识别一次，直至同步完成」）
+  static const int syncIntervalMin = 5;
+
+  /// 可选的同步间隔（分钟）
+  static const List<int> syncIntervalOptions = [1, 2, 5, 10, 15, 30, 60];
 }
 
 /// App 版本（设置页「关于」里显示）。

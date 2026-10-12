@@ -4,6 +4,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'app.dart';
+import 'core/sync_service.dart';
 import 'data/local/db.dart';
 import 'data/local/settings_store.dart';
 
@@ -12,11 +13,15 @@ import 'data/local/settings_store.dart';
 /// 2. 初始化本地设置与本地数据库（错题本、播放进度）
 /// 3. 加载中文日期数据 —— intl 默认只带 en_US，
 ///    不调这一句的话，日期计算等工具里 DateFormat(..., 'zh_CN') 会直接抛异常
+/// 4. v1.5.0：把「文件夹同步」服务的配置读回来。上次开着的话这里就会
+///    把定时器接上 —— 它挂在单例上，跟任何页面都没关系，
+///    这样用户切到别的页面、甚至退到后台都不会停。
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
   await initializeDateFormatting('zh_CN');
   await SettingsStore.instance.init();
   await AppDb.instance.init();
+  await SyncService.instance.boot();
   runApp(const ProviderScope(child: StudyHubApp()));
 }

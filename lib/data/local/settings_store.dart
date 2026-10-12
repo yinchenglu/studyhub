@@ -44,6 +44,14 @@ class SettingsStore {
   /// 每本书读到哪了：key = read_pos:<笔记路径>，value = "章序号|页序号|滚动位置"
   static const _kReadPosPrefix = 'read_pos:';
 
+  // v1.5.0 新增：文件夹同步（本地目录 ↔ 服务器目录）
+  static const _kSyncOn = 'sync_on';
+  static const _kSyncLocal = 'sync_local_dir';
+  static const _kSyncRemote = 'sync_remote_dir';
+  static const _kSyncDir = 'sync_direction';
+  static const _kSyncMin = 'sync_interval_min';
+  static const _kSyncDelete = 'sync_delete_extra';
+
   final _secure = const FlutterSecureStorage();
   SharedPreferences? _p;
 
@@ -476,5 +484,68 @@ class SettingsStore {
   Future<void> clearReadPos(String notePath) async {
     final p = await _prefs;
     await p.remove('$_kReadPosPrefix$notePath');
+  }
+
+  // ----------------------------------------------------------- 文件夹同步（v1.5.0）
+
+  Future<bool> syncOn() async {
+    final p = await _prefs;
+    return p.getBool(_kSyncOn) ?? false;
+  }
+
+  Future<void> setSyncOn(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kSyncOn, v);
+  }
+
+  Future<String> syncLocalDir() async {
+    final p = await _prefs;
+    return p.getString(_kSyncLocal) ?? '';
+  }
+
+  Future<void> setSyncLocalDir(String v) async {
+    final p = await _prefs;
+    await p.setString(_kSyncLocal, v.trim());
+  }
+
+  Future<String> syncRemoteDir() async {
+    final p = await _prefs;
+    return p.getString(_kSyncRemote) ?? '';
+  }
+
+  Future<void> setSyncRemoteDir(String v) async {
+    final p = await _prefs;
+    await p.setString(_kSyncRemote, v.trim());
+  }
+
+  /// 0 = 双向，1 = 本地 → 服务器，2 = 服务器 → 本地
+  Future<int> syncDirection() async {
+    final p = await _prefs;
+    return p.getInt(_kSyncDir) ?? 0;
+  }
+
+  Future<void> setSyncDirection(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kSyncDir, v);
+  }
+
+  Future<int> syncIntervalMin() async {
+    final p = await _prefs;
+    return p.getInt(_kSyncMin) ?? Defaults.syncIntervalMin;
+  }
+
+  Future<void> setSyncIntervalMin(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kSyncMin, v);
+  }
+
+  Future<bool> syncDeleteExtra() async {
+    final p = await _prefs;
+    return p.getBool(_kSyncDelete) ?? false;
+  }
+
+  Future<void> setSyncDeleteExtra(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kSyncDelete, v);
   }
 }

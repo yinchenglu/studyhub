@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/constants.dart';
+import '../core/sync_service.dart';
 import '../data/dav/webdav_client.dart';
 import '../data/local/db.dart';
 import '../data/local/settings_store.dart';
@@ -432,6 +433,24 @@ class ReadPrefsNotifier extends StateNotifier<ReadPrefs> {
 }
 
 final readPrefsProvider = StateNotifierProvider<ReadPrefsNotifier, ReadPrefs>((ref) => ReadPrefsNotifier());
+
+// ------------------------------------------------------------- 文件夹同步（v1.5.0）
+
+/// 文件夹同步服务。
+///
+/// 它是**单例常驻**的（SyncService.instance），不随页面销毁 ——
+/// 用户要的是「只要 App 还活着就每隔几分钟对一次」，
+/// 所以不能在页面里 new，也不能挂在页面生命周期上。
+///
+/// 这个 Provider 的作用只是两件小事：
+///   1. 账号变化（登录 / 换服务器）时把新的 WebDAV 客户端塞给服务
+///   2. 让根组件 watch 一下，保证 App 一起来服务就被接上
+final syncServiceProvider = Provider<SyncService>((ref) {
+  final c = ref.watch(davClientProvider);
+  final svc = SyncService.instance;
+  svc.attach(c);
+  return svc;
+});
 
 // ------------------------------------------------------------- 错题本
 

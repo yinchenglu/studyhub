@@ -11,8 +11,10 @@ import 'server_html_tools.dart';
 import 'tool_pages.dart';
 import 'tool_pages_calc.dart';
 import 'tool_pages_ext.dart';
+import 'tool_pages_id.dart';
 import 'tool_pages_ph.dart';
 import 'tool_pages_ph2.dart';
+import 'tool_pages_sync.dart';
 import 'tool_pages_translate.dart';
 import 'tool_pages_v15.dart';
 import 'tool_pages_v15b.dart';
@@ -79,6 +81,8 @@ class ToolsPage extends ConsumerWidget {
     // v1.5.0 新增：地理与定位
     _Category('地理与定位', Icons.explore_outlined, [
       _ToolDef('地图坐标转换', Icons.swap_horiz, Color(0xFF1D9E75)),
+      // v1.5.0 新增：身份证前 6 位查户籍地（自带 2978 个区划码，不用联网）
+      _ToolDef('身份证查户籍', Icons.badge_outlined, Color(0xFFB8860B)),
     ]),
     // v1.5.0 新增：公卫数据（消杀计算器从「时间与效率」移到这一类，
     // 用户要求把这个类别做成类似 Epi Info StatCalc 的一组工具）
@@ -90,6 +94,11 @@ class ToolsPage extends ConsumerWidget {
       _ToolDef('食物中毒分析', Icons.restaurant_menu, Color(0xFFD4537E)),
       _ToolDef('Logistic 回归', Icons.insights, Color(0xFF0C447C)),
       _ToolDef('营养配餐', Icons.local_dining, Color(0xFF1D9E75)),
+    ]),
+    // v1.5.0 新增：同步与备份
+    _Category('同步与备份', Icons.sync_outlined, [
+      // 用户第 1 条第 ⑷ 项：本地文件夹 ↔ 服务器文件夹，后台每隔几分钟对一次
+      _ToolDef('文件夹同步', Icons.sync_alt, Color(0xFF0F7B6C)),
     ]),
     _Category('设备与应用', Icons.phone_android, [
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
@@ -297,6 +306,10 @@ Widget toolPageOf(String name) {
       return const NutritionPage();
     case '条码生成器':
       return const BarcodePage();
+    case '身份证查户籍':
+      return const IdCardPage();
+    case '文件夹同步':
+      return const FolderSyncPage();
     case '翻页时钟':
       return const FlipClockPage();
     default:

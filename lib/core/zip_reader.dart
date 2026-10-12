@@ -173,7 +173,9 @@ class ZipReader {
     if (start < 0 || end > _d.length) throw const FormatException('zip 条目数据越界');
     final raw = Uint8List.sublistView(_d, start, end);
     if (e.method == 0) return Uint8List.fromList(raw);
-    return Uint8List.fromList(const ZLibDecoder(raw: true).convert(raw));
+    // 注意：ZLibDecoder 的构造函数**不是 const**（run #23 就死在这句上），
+    // 别手贱加 const。
+    return Uint8List.fromList(ZLibDecoder(raw: true).convert(raw));
   }
 
   // ---------------------------------------------------------------- 小工具

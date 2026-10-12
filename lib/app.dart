@@ -72,6 +72,9 @@ class _RootShellState extends ConsumerState<RootShell> {
     // 启动时恢复上次登录的 WebDAV 账号
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(accountProvider.notifier).restore();
+      // v1.5.0：把文件夹同步服务接上（它自己有定时器，常驻在单例上）。
+      // 这里读一下 provider 就够了 —— 登录状态一变它会自动拿到新客户端。
+      ref.read(syncServiceProvider);
     });
   }
 
@@ -127,6 +130,9 @@ class _RootShellState extends ConsumerState<RootShell> {
   @override
   Widget build(BuildContext context) {
     final index = ref.watch(tabIndexProvider);
+    // v1.5.0：整个 App 的生命周期里都盯着文件夹同步服务。
+    // 它内部 watch 了 WebDAV 客户端，所以登录 / 换服务器后会自动重新拿到新客户端。
+    ref.watch(syncServiceProvider);
     // 菜单一变，就让它回到根目录并刷新一次（这样点菜单进去就有内容）
     ref.listen(tabIndexProvider, (prev, next) {
       if (prev != next) _reloadTab(next);
