@@ -26,10 +26,19 @@ class SettingsStore {
   //   _kWrongStaySec —— 「不带答案」模式下，答错后停留几秒再自动跳下一题
   static const _kAutoNextSec = 'quiz_auto_next_sec';
   static const _kWrongStaySec = 'quiz_wrong_stay_sec';
+  static const _kBrowseNextSec = 'quiz_browse_next_sec';
   static const _kLastServerCheck = 'last_server_check';
   static const _kSaveHistory = 'save_view_history';
   static const _kDownloadDir = 'download_dir';
   static const _kRecentServers = 'recent_servers';
+
+  // 后台录音录像（v1.6.0）
+  static const _kRecDir = 'recorder_dir';
+  static const _kAudioMaxMin = 'recorder_audio_max_min';
+  static const _kVideoMaxMin = 'recorder_video_max_min';
+  static const _kRecLens = 'recorder_lens';
+  static const _kVideoAudio = 'recorder_video_audio';
+  static const _kVideoBg = 'recorder_video_background';
 
   // v1.5.0 新增：笔记「阅读模式」的外观与行为。
   // 全部走 SharedPreferences，不再单开表 —— 这几项都是「全局一套」的偏好，
@@ -367,6 +376,20 @@ class SettingsStore {
     await p.setInt(_kWrongStaySec, v);
   }
 
+  /// 「刷题模式（只看不做）」下自动翻页的秒数。0 表示不自动跳。
+  ///
+  /// v1.6.0 新增：原来是跟 `autoNextSec` 共用同一个值的，
+  /// 用户要求三种模式各自独立设置。
+  Future<int> browseNextSec() async {
+    final p = await _prefs;
+    return p.getInt(_kBrowseNextSec) ?? Defaults.browseNextSec;
+  }
+
+  Future<void> setBrowseNextSec(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kBrowseNextSec, v);
+  }
+
   Future<void> setLastServerCheck(String text) async {
     final p = await _prefs;
     await p.setString(_kLastServerCheck, text);
@@ -404,6 +427,85 @@ class SettingsStore {
     } else {
       await p.setString(_kDownloadDir, path.trim());
     }
+  }
+
+  // ----------------------------------------------------------- 后台录音录像（v1.6.0）
+
+  /// 录音 / 录像的保存目录。null / 空串 = 应用私有目录 `文档/recordings/`。
+  ///
+  /// 为什么不直接用系统的 SAF 目录选择器：原生前台服务是拿一个**绝对路径**
+  /// 直接交给 MediaRecorder 去写的，而 SAF 给的是 `content://` URI，
+  /// MediaRecorder 根本不认。所以这里只接受真实路径（页面上有文件夹浏览器）。
+  Future<String?> recorderDirPath() async {
+    final p = await _prefs;
+    final v = p.getString(_kRecDir);
+    return (v == null || v.trim().isEmpty) ? null : v.trim();
+  }
+
+  Future<void> setRecorderDirPath(String? path) async {
+    final p = await _prefs;
+    if (path == null || path.trim().isEmpty) {
+      await p.remove(_kRecDir);
+    } else {
+      await p.setString(_kRecDir, path.trim());
+    }
+  }
+
+  /// 录音最长录多少分钟。0 表示不限。
+  Future<int> audioMaxMinutes() async {
+    final p = await _prefs;
+    return p.getInt(_kAudioMaxMin) ?? Defaults.audioMaxMinutes;
+  }
+
+  Future<void> setAudioMaxMinutes(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kAudioMaxMin, v);
+  }
+
+  /// 录像最长录多少分钟。0 表示不限。
+  Future<int> videoMaxMinutes() async {
+    final p = await _prefs;
+    return p.getInt(_kVideoMaxMin) ?? Defaults.videoMaxMinutes;
+  }
+
+  Future<void> setVideoMaxMinutes(int v) async {
+    final p = await _prefs;
+    await p.setInt(_kVideoMaxMin, v);
+  }
+
+  /// 录像用哪一侧摄像头：'back' / 'front'。
+  Future<String> recorderLens() async {
+    final p = await _prefs;
+    final v = p.getString(_kRecLens);
+    return (v == 'front') ? 'front' : 'back';
+  }
+
+  Future<void> setRecorderLens(String v) async {
+    final p = await _prefs;
+    await p.setString(_kRecLens, v == 'front' ? 'front' : 'back');
+  }
+
+  /// 录像要不要录音。
+  Future<bool> videoWithAudio() async {
+    final p = await _prefs;
+    return p.getBool(_kVideoAudio) ?? true;
+  }
+
+  Future<void> setVideoWithAudio(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kVideoAudio, v);
+  }
+
+  /// 录像方式：true = 后台录像（相机交给前台服务，能息屏）；
+  /// false = 前台录像（页面里有实时画面，退到后台就停）。
+  Future<bool> videoBackground() async {
+    final p = await _prefs;
+    return p.getBool(_kVideoBg) ?? true;
+  }
+
+  Future<void> setVideoBackground(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kVideoBg, v);
   }
 
   // ----------------------------------------------------------- 阅读模式（v1.5.0）

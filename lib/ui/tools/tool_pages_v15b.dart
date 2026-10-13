@@ -13,9 +13,13 @@
 import 'dart:async';
 // FontFeature 是 dart:ui 的类。material.dart 不一定把它带出来
 // （tool_pages_v15.dart 里就吃过这个亏），显式 import 一次最稳。
-import 'dart:ui' show FontFeature;
+// ImageByteFormat 同理：条码「保存 / 分享」要把预览截成 PNG 得用它。
+import 'dart:ui' show FontFeature, ImageByteFormat;
 
 import 'package:flutter/material.dart';
+// RenderRepaintBoundary 在 rendering 里，widgets/material 不保证导出它
+// （tool_pages_ext.dart 的二维码页也是单独 import 的）
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/lunar.dart';
@@ -192,12 +196,27 @@ BarcodeResult encodeCode39(String data) {
   return BarcodeResult(bits: sb.toString(), human: upper);
 }
 
-/// 求 EAN / UPC 的校验位：从左往右，奇数位 ×1、偶数位 ×3
+/// 求 EAN / UPC 的校验位。
+///
+/// 规则就一句 GS1 原文：**从右往左数，紧邻校验位的那一位乘 3，再交替乘 1**。
+/// 这一句对三种长度都成立（右起第 1、3、5… 位 ×3）：
+///   12 位前缀（EAN-13）、7 位前缀（EAN-8）、11 位前缀（UPC-A）。
+///
+/// ★ v1.5.0 修的真 bug：原来写的是「左起奇数位 ×1、偶数位 ×3」，
+///   这条**只在 12 位前缀上**和 GS1 规则等价，7 位 / 11 位前缀一用就奇偶反了：
+///     · EAN-8 '1234567' 正确校验位是 0（→ '12345670'），旧写法算出 8
+///       —— 输 7 位时会静默生成一个**扫不出来的条码**；
+///     · UPC-A '03600029145' 正确是 2，旧写法算出 8，而算完还要丢给
+///       encodeEan13 再校验一次 → 必然失败 —— 于是**用户输合法的 12 位 UPC-A
+///       会被判「校验位不对」**，输 11 位则拿到一个错的校验位。
+///   经典例子 9638507 → 4 两种写法碰巧一样（66 和 86 同余 mod 10），
+///   所以这个坑藏得很深，是网页版的独立测试拿公开算例扫出来的。
 int _eanCheckDigit(String digits) {
   var sum = 0;
   for (var i = 0; i < digits.length; i++) {
     final d = int.parse(digits[i]);
-    sum += (i.isEven) ? d : d * 3;
+    final fromRight = digits.length - i; // 最右一位是 1
+    sum += fromRight.isOdd ? d * 3 : d;
   }
   return (10 - sum % 10) % 10;
 }
@@ -378,6 +397,10 @@ class _BarcodePageState extends State<BarcodePage> {
   bool _showText = true;
   bool _highRes = false; // 高对比（更粗的条，防打印失真）
 
+  /// 圈住「条码预览」那一块，「保存 / 分享」要靠它截图。
+  /// 没有它 toImage 抓到的是整个屏幕。
+  final _boundary = GlobalKey();
+
   @override
   void initState() {
     super.initState();
@@ -528,38 +551,41 @@ class _BarcodePageState extends State<BarcodePage> {
 
           if (r.ok) ...[
             const ToolSection('条码预览'),
-            Container(
-              // 白底黑条：不跟随主题
-              color: Colors.white,
-              padding: const EdgeInsets.fromLTRB(6, 16, 6, 6),
-              child: Column(
-                children: [
-                  SizedBox(
-                    height: _highRes ? 150 : 110,
-                    width: double.infinity,
-                    child: CustomPaint(
-                      painter: _BarcodePainter(
-                        bits: r.bits,
-                        guard: r.guard,
-                        showText: _showText,
-                        human: r.human,
-                      ),
-                    ),
-                  ),
-                  if (_showText)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4, bottom: 6),
-                      child: Text(
-                        r.human,
-                        style: const TextStyle(
-                          color: Colors.black,
-                          fontSize: 14,
-                          letterSpacing: 2.4,
-                          fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
+            RepaintBoundary(
+              key: _boundary,
+              child: Container(
+                // 白底黑条：不跟随主题
+                color: Colors.white,
+                padding: const EdgeInsets.fromLTRB(6, 16, 6, 6),
+                child: Column(
+                  children: [
+                    SizedBox(
+                      height: _highRes ? 150 : 110,
+                      width: double.infinity,
+                      child: CustomPaint(
+                        painter: _BarcodePainter(
+                          bits: r.bits,
+                          guard: r.guard,
+                          showText: _showText,
+                          human: r.human,
                         ),
                       ),
                     ),
-                ],
+                    if (_showText)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4, bottom: 6),
+                        child: Text(
+                          r.human,
+                          style: const TextStyle(
+                            color: Colors.black,
+                            fontSize: 14,
+                            letterSpacing: 2.4,
+                            fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 8),
@@ -569,23 +595,80 @@ class _BarcodePageState extends State<BarcodePage> {
               style: TextStyle(fontSize: 11.5, height: 1.65, color: scheme.onSurfaceVariant),
             ),
             const SizedBox(height: 10),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: r.human));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('已复制条码内容'), duration: Duration(seconds: 1)),
-                  );
-                },
-                icon: const Icon(Icons.copy, size: 18),
-                label: const Text('复制条码内容'),
-              ),
+            // v1.6.0：原来这里只有一颗「复制条码内容」，
+            // 用户要求拆成「保存」和「分享」两颗。
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _saveBarcode,
+                    icon: const Icon(Icons.download_outlined, size: 18),
+                    label: const Text('保存'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _shareBarcode,
+                    icon: const Icon(Icons.ios_share, size: 18),
+                    label: const Text('分享'),
+                  ),
+                ),
+              ],
             ),
           ],
         ],
       ),
     );
+  }
+
+  /// 把条码预览整块截成 PNG 字节。截不出来返回 null。
+  ///
+  /// 返回 `List<int>?` 而不是 `Uint8List?`：这个文件没 import `dart:typed_data`，
+  /// 用 `List<int>`（Uint8List 本来就是它的子类型）就完全绕开了「符号从哪来」的问题，
+  /// 而 `saveToDownload` 收的也正是 `List<int>`。
+  Future<List<int>?> _barcodePng() async {
+    final b = _boundary.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+    if (b == null) return null;
+    final img = await b.toImage(pixelRatio: 3);
+    final data = await img.toByteData(format: ImageByteFormat.png);
+    return data?.buffer.asUint8List();
+  }
+
+  /// 「保存」：安静地存到下载目录，不拉分享面板。
+  Future<void> _saveBarcode() async {
+    try {
+      final bytes = await _barcodePng();
+      if (bytes == null || !mounted) return;
+      final f = await saveToDownload(
+          '条码_${DateTime.now().millisecondsSinceEpoch}.png', bytes);
+      if (!mounted) return;
+      if (f == null) {
+        toast(context, '保存失败，检查存储权限');
+        return;
+      }
+      toast(context, '已保存到 ${f.path}');
+    } catch (e) {
+      if (mounted) toast(context, '保存失败：$e');
+    }
+  }
+
+  /// 「分享」：分享得先有文件，所以还是先落盘再拉分享面板。
+  Future<void> _shareBarcode() async {
+    try {
+      final bytes = await _barcodePng();
+      if (bytes == null || !mounted) return;
+      final f = await saveToDownload(
+          '条码_${DateTime.now().millisecondsSinceEpoch}.png', bytes);
+      if (!mounted) return;
+      if (f == null) {
+        toast(context, '保存失败，检查存储权限');
+        return;
+      }
+      await shareFiles(context, [f], text: _input.text.trim());
+    } catch (e) {
+      if (mounted) toast(context, '保存失败：$e');
+    }
   }
 }
 
@@ -691,50 +774,61 @@ class _FlipClockPageState extends State<FlipClockPage> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 // ---- 主时间 ----
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      _timeText,
-                      style: TextStyle(
-                        color: fg,
-                        fontSize: 132,
-                        height: 1.0,
-                        fontWeight: FontWeight.w200,
-                        letterSpacing: 2,
-                        fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
-                      ),
+                // v1.6.0：用户要求「时间的字体加粗加大」。
+                //   加粗：FontWeight.w200 → w700
+                //   加大：132 → 176
+                // 外面套 FittedBox(scaleDown) 兜底：窄屏放不下时自动缩，
+                // 不会溢出；宽屏就按 176 铺开。左右各留 20 不贴边。
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _timeText,
+                          style: TextStyle(
+                            color: fg,
+                            fontSize: 176,
+                            height: 1.0,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 2,
+                            fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 26),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // 秒刻意做小：不至于喧宾夺主，又能看出表在走
+                              if (_showSecond)
+                                Text(
+                                  _secondText,
+                                  style: TextStyle(
+                                    color: fg.withValues(alpha: 0.8),
+                                    fontSize: 44,
+                                    height: 1.0,
+                                    fontWeight: FontWeight.w600,
+                                    fontFeatures: const <FontFeature>[
+                                      FontFeature.tabularFigures()
+                                    ],
+                                  ),
+                                ),
+                              if (!_use24h)
+                                Text(_ampm,
+                                    style: TextStyle(
+                                        color: fg.withValues(alpha: 0.6), fontSize: 15)),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 6),
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 18),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // 秒刻意做小：不至于喧宾夺主，又能看出表在走
-                          if (_showSecond)
-                            Text(
-                              _secondText,
-                              style: TextStyle(
-                                color: fg.withValues(alpha: 0.75),
-                                fontSize: 34,
-                                height: 1.0,
-                                fontWeight: FontWeight.w300,
-                                fontFeatures: const <FontFeature>[
-                                  FontFeature.tabularFigures()
-                                ],
-                              ),
-                            ),
-                          if (!_use24h)
-                            Text(_ampm,
-                                style: TextStyle(
-                                    color: fg.withValues(alpha: 0.6), fontSize: 15)),
-                        ],
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
                 const SizedBox(height: 14),
                 Text(dateLine,

@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../data/local/settings_store.dart';
+
 /// 录音服务的当前状态。对应 `MainActivity.kt` 里 `status` 方法返回的那个 map。
 class RecorderStatus {
   /// 服务是不是在录。
@@ -62,8 +64,30 @@ class AudioRecorder {
   /// 录音文件所在的子目录名（相对应用文档目录）。
   static const String folderName = 'recordings';
 
-  /// 录音输出目录，不存在就建。
+  /// 录音 / 录像输出目录，不存在就建。
+  ///
+  /// v1.6.0：可以在设置里指定一个自定义目录（见「设置 → 录音录像保存位置」）。
+  /// 自定目录建不出来（路径没权限、外置卡拔了）就**静默退回**应用私有目录 ——
+  /// 录音这种「点一下就该开始」的东西，不能因为目录问题直接失败。
   static Future<Directory> outputDir() async {
+    final custom = await SettingsStore.instance.recorderDirPath();
+    if (custom != null && custom.isNotEmpty) {
+      try {
+        final dir = Directory(custom);
+        if (!await dir.exists()) await dir.create(recursive: true);
+        return dir;
+      } catch (_) {
+        // 落回默认目录
+      }
+    }
+    return defaultDir();
+  }
+
+  /// 应用私有目录下的默认输出目录 `文档/recordings/`。
+  ///
+  /// 单独留一个公开方法，是为了让设置页 / 工具页能把这个路径显示给用户看
+  /// （「当前保存到哪」这件事必须写清楚，否则用户根本不知道文件去哪了）。
+  static Future<Directory> defaultDir() async {
     final docs = await getApplicationDocumentsDirectory();
     final dir = Directory(p.join(docs.path, folderName));
     if (!await dir.exists()) {
@@ -100,11 +124,18 @@ class AudioRecorder {
 
   /// 开始后台录音。[file] 必须是 [nextFile] 给的那个（路径由原生写）。
   ///
+  /// [maxDurationMs] 是「最长录多久」，0 = 不限。
+  /// 计时和收尾都在**原生服务**里做（见 MainActivity.kt 的 scheduleAutoStop）——
+  /// Dart 的 Timer 在 App 被冻结之后是停的，拿它来限时会直接失控。
+  ///
   /// 这里会**真的**把异常抛出去（唯一一个这么做的接口）：
   /// 如果连服务都拉不起来（比如 manifest 里忘了声明、或系统拒绝了
   /// 前台服务），用户必须立刻知道，不能傻等一个永远不涨的计时器。
-  static Future<void> start(File file) async {
-    await _ch.invokeMethod<bool>('start', <String, Object?>{'path': file.path});
+  static Future<void> start(File file, {int maxDurationMs = 0}) async {
+    await _ch.invokeMethod<bool>('start', <String, Object?>{
+      'path': file.path,
+      'maxDurationMs': maxDurationMs,
+    });
   }
 
   /// 停止录音并收尾（原生侧会 `stop()` + `release()` 并撤掉前台通知）。

@@ -193,6 +193,37 @@ class MediaPageState extends ConsumerState<MediaPage> {
     return '$prefix${rest.substring(0, i)}';
   }
 
+  /// 当前目录里**最近看过的那一个文件**（不含子目录里的）。
+  ///
+  /// v1.6.0 用户要求「视频的浏览记录要跟笔记一样，文件夹、单个视频都改变底色」——
+  /// 原来只在 trailing 上挂个小标签「看到这儿了」，太不显眼。
+  /// 取法跟 `_lastDirPath` 同源：都是「最近更新时间最大的那条」。
+  String? get _lastFilePath {
+    final dir = _dirPath;
+    final prefix = '$dir/';
+    MapEntry<String, PlayProgress>? best;
+    for (final e in _progress.entries) {
+      if (!e.key.startsWith(prefix)) continue;
+      if (e.key.substring(prefix.length).contains('/')) continue; // 在子目录里，不算
+      if (best == null || e.value.updatedAt.isAfter(best.value.updatedAt)) best = e;
+    }
+    return best?.key;
+  }
+
+  /// 给「最近看过的那一行」加整行底色 + 左侧竖线。
+  ///
+  /// 抄的是笔记页 `notes_page.dart` 的写法（用户要求两边一致）：
+  /// 整行变色比一个小标签容易一眼扫到，左侧竖线在浅色底上也能看见。
+  Widget _watchTint(bool on, Widget child, ColorScheme scheme) => DecoratedBox(
+        decoration: BoxDecoration(
+          color: on ? scheme.primaryContainer.withValues(alpha: 0.32) : null,
+          border: Border(
+            left: BorderSide(color: on ? scheme.primary : Colors.transparent, width: 3),
+          ),
+        ),
+        child: child,
+      );
+
   List<DavEntry> get _shown => sortEntries(_dirEntries, _sort);
 
   @override
@@ -427,6 +458,8 @@ class MediaPageState extends ConsumerState<MediaPage> {
     // 「最近看的那条在哪个子目录」整个列表只算一次 —— 它是全表扫的 getter，
     // 放在 itemBuilder 里就是「每个目录行都把所有记录扫一遍」，列表长了白费劲。
     final lastDir = _lastDirPath;
+    // 同理，只算一次：本目录里最近看过的那个文件（整行变色用）
+    final lastFile = _lastFilePath;
     return ListView.separated(
       padding: const EdgeInsets.only(bottom: 24),
       itemCount: shown.length,
@@ -442,7 +475,7 @@ class MediaPageState extends ConsumerState<MediaPage> {
         if (e.isDir) {
           // 这个目录里看过几个
           final watched = _watchedUnder(e.path);
-          return ListTile(
+          final tile = ListTile(
             leading: Container(
               width: 44,
               height: 44,
@@ -491,10 +524,12 @@ class MediaPageState extends ConsumerState<MediaPage> {
             },
             onLongPress: sel != null ? null : () => _showDirActions(e),
           );
+          // v1.6.0：目录也整行变色（原来只有 trailing 上那个小标签）
+          return _watchTint(e.path == lastDir, tile, scheme);
         }
         final isVideo = FileTypes.isPlayable(e.name);
         final hint = _watchHint(e.path);
-        return ListTile(
+        final tile = ListTile(
           leading: _thumbFromPath(e.path, isVideo),
           title: Text(e.name, maxLines: 1, overflow: TextOverflow.ellipsis),
           subtitle: Text(
@@ -523,6 +558,8 @@ class MediaPageState extends ConsumerState<MediaPage> {
           },
           onLongPress: sel != null ? null : () => _showActions(e),
         );
+        // v1.6.0：单个视频也整行变色
+        return _watchTint(e.path == lastFile, tile, scheme);
       },
     );
   }

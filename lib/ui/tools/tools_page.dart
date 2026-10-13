@@ -15,6 +15,7 @@ import 'tool_pages_ext.dart';
 import 'tool_pages_id.dart';
 import 'tool_pages_ph.dart';
 import 'tool_pages_ph2.dart';
+import 'tool_pages_ph3.dart';
 import 'tool_pages_recorder.dart';
 import 'tool_pages_sync.dart';
 import 'tool_pages_translate.dart';
@@ -25,101 +26,108 @@ import 'tool_pages_v15b.dart';
 ///
 /// 布局约定：
 ///   * 最上面单独一行是「服务器下载站」—— 直接进，不折叠、不藏在菜单里
-///   * 下面按用途分成 11 类，一共 37 个离线小工具
+///   * 下面按用途分成 6 类，一共 41 个离线小工具
 ///   * 最后再挂一个「服务器小工具」，识别服务器 tools 目录里的 html 小工具
 ///
 /// 分类的由来（每次加工具都要重申一遍，否则很容易按「技术实现」分类、
 /// 而不是按「用户想干什么」分类）：
-///   测量与感官 ← 挂画助手（要对着实物比水平线，本质是测量）
-///   时间与效率 ← LED 屏幕 / 翻页时钟（都是消耗时间的效率工具）
-///   生活与娱乐 第 3 位，SOS 手电筒放它第一个（用户点名的顺序）
-///   颜色与设计 ← 简易画板（画画就是配色调色的事）
-///   计算与网络 ← CIDR、高级计算器（偏工程计算）
-///   地理与定位 ← 坐标转换、身份证查户籍、指南针
-///   公卫数据   ← 消杀计算器从这里起家，扩成一组类 Epi Info StatCalc 的工具
-///   同步与备份 ← 文件夹同步（本地 ↔ WebDAV，后台对着跑）
-///   音频与录制 ← 后台录音录像（v1.5.0 新增，只有一个工具但独立成类：
-///                它是唯一一个「会一直在后台跑」的工具，混在别类里不好找）
-///   设备与应用 ← 应用管理
+///   时间与效率 ← 用户点名放第一位；翻页时钟排这类第一个（v1.6.0）
+///   测量与设计 ← 原「测量与感官」。用户要求排第二位，并把
+///                SOS 手电筒 / 地图坐标转换 / 指南针 / 配色助手 /
+///                颜色码转换 / 简易画板 / 高级计算器 一并挪进来 ——
+///                这些的共性都是「对着实物或屏幕比划、调参数」，算设计与测量
+///   网络与编码 ← 原「文字与编码」。用户要求把 CIDR 子网计算并进来
+///   生活与娱乐 ← 用户点名放第四位，并把 文件夹同步 / 后台录音录像 /
+///                应用管理 挪进来
+///   地理与定位 ← 只剩身份证查户籍（坐标转换和指南针已挪去「测量与设计」）
+///   公卫小工具 ← 原「公卫数据」（v1.6.0 改名）。消杀计算器从这里起家，
+///                扩成一组类 Epi Info StatCalc 的工具
+///
+/// v1.6.0 起分类由 11 类压到 6 类 —— 用户反馈「类似一个木函」，
+/// 类别太多反而不好找，宁可每类工具多一点。
 class ToolsPage extends ConsumerWidget {
   const ToolsPage({super.key});
 
   /// 全部离线小工具，按用途分类
   static const categories = <_Category>[
-    _Category('测量与感官', Icons.straighten, [
-      _ToolDef('直尺', Icons.straighten, Color(0xFF185FA5)),
-      _ToolDef('量角器', Icons.architecture, Color(0xFF7F77DD)),
-      _ToolDef('噪声测量', Icons.graphic_eq, Color(0xFF1D9E75)),
-      _ToolDef('屏幕坏点检测', Icons.grid_on, Color(0xFFD4537E)),
-      _ToolDef('挂画助手', Icons.straighten_outlined, Color(0xFF72243E)),
-    ]),
+    // ① 时间与效率 —— 用户要求挪到第一位；翻页时钟排这类第一个
     _Category('时间与效率', Icons.schedule, [
+      // v1.5.0 新增的横屏大字号翻页时钟（带农历/星期/节气）。v1.6.0 提到第一个
+      _ToolDef('翻页时钟', Icons.watch_later_outlined, Color(0xFF0C447C)),
       _ToolDef('番茄时钟', Icons.timer_outlined, Color(0xFFD85A30)),
       _ToolDef('日期计算', Icons.calendar_month_outlined, Color(0xFFEF9F27)),
       _ToolDef('时间戳转换', Icons.access_time, Color(0xFF534AB7)),
       _ToolDef('提词器', Icons.vertical_align_bottom, Color(0xFF27500A)),
       _ToolDef('LED 屏幕', Icons.brightness_high, Color(0xFFEF9F27)),
-      // v1.5.0 新增：横屏大字号翻页时钟（带农历/星期/节气）
-      _ToolDef('翻页时钟', Icons.watch_later_outlined, Color(0xFF0C447C)),
       // v1.4.0 新增：多词典在线翻译（要联网）
       _ToolDef('翻译', Icons.translate, Color(0xFF185FA5), online: true),
     ]),
-    // 用户要求：生活与娱乐排第 3。它原来在最后一位。
-    _Category('生活与娱乐', Icons.sports_esports_outlined, [
+
+    // ② 测量与设计 —— 原「测量与感官」，v1.6.0 起并入 7 个工具（用户点名）
+    _Category('测量与设计', Icons.straighten, [
+      _ToolDef('直尺', Icons.straighten, Color(0xFF185FA5)),
+      _ToolDef('量角器', Icons.architecture, Color(0xFF7F77DD)),
+      _ToolDef('噪声测量', Icons.graphic_eq, Color(0xFF1D9E75)),
+      _ToolDef('屏幕坏点检测', Icons.grid_on, Color(0xFFD4537E)),
+      _ToolDef('挂画助手', Icons.straighten_outlined, Color(0xFF72243E)),
+      // ↓ v1.6.0 从「生活与娱乐 / 地理与定位 / 颜色与设计 / 计算与网络」挪进来
       _ToolDef('SOS 手电筒', Icons.flashlight_on, Color(0xFFB8860B)),
-      _ToolDef('抛硬币', Icons.casino_outlined, Color(0xFFE0A020)),
-      // 快递查询要访问快递 100 的接口，是联网工具
-      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
-    ]),
-    _Category('颜色与设计', Icons.palette_outlined, [
+      _ToolDef('地图坐标转换', Icons.swap_horiz, Color(0xFF1D9E75)),
+      // 指南针：地磁方向 + 经纬度 + 海拔。
+      // 方向靠磁力计（离线、不要权限），经纬度/海拔靠定位（要权限）。
+      _ToolDef('指南针', Icons.explore, Color(0xFF0F7B6C)),
       _ToolDef('配色助手', Icons.auto_awesome, Color(0xFFD4537E)),
       _ToolDef('颜色码转换', Icons.colorize_outlined, Color(0xFF0C447C)),
       _ToolDef('简易画板', Icons.brush_outlined, Color(0xFF7F77DD)),
+      _ToolDef('高级计算器', Icons.functions, Color(0xFF534AB7)),
     ]),
-    _Category('文字与编码', Icons.text_fields, [
+
+    // ③ 网络与编码 —— 原「文字与编码」，v1.6.0 起并入 CIDR 子网计算
+    _Category('网络与编码', Icons.text_fields, [
       _ToolDef('摩斯电码', Icons.wifi_tethering, Color(0xFF0F6E56)),
       _ToolDef('加密编码', Icons.lock_outline, Color(0xFF993C1D)),
       _ToolDef('二维码生成', Icons.qr_code_2, Color(0xFF1D9E75)),
       // v1.5.0 新增：一维条码（Code128 / Code39 / EAN-13 / EAN-8 / UPC-A）
       _ToolDef('条码生成器', Icons.view_week, Color(0xFF72243E)),
-    ]),
-    // v1.5.0 新增：网络与计算（CIDR、计算器等偏工具的）
-    _Category('计算与网络', Icons.calculate_outlined, [
-      _ToolDef('高级计算器', Icons.functions, Color(0xFF534AB7)),
+      // v1.6.0 从「计算与网络」挪进来
       _ToolDef('CIDR 子网计算', Icons.hub_outlined, Color(0xFF0C447C)),
     ]),
-    // v1.5.0 新增：地理与定位
-    _Category('地理与定位', Icons.explore_outlined, [
-      _ToolDef('地图坐标转换', Icons.swap_horiz, Color(0xFF1D9E75)),
-      // v1.5.0 新增：身份证前 6 位查户籍地（自带 2978 个区划码，不用联网）
-      _ToolDef('身份证查户籍', Icons.badge_outlined, Color(0xFFB8860B)),
-      // v1.5.0 新增（用户第 1 条第 ⑤ 项）：地磁方向 + 经纬度 + 海拔。
-      // 方向靠磁力计（离线、不要权限），经纬度/海拔靠定位（要权限）。
-      _ToolDef('指南针', Icons.explore, Color(0xFF0F7B6C)),
+
+    // ④ 生活与娱乐 —— 用户要求排第四，并并入 3 个工具
+    _Category('生活与娱乐', Icons.sports_esports_outlined, [
+      _ToolDef('抛硬币', Icons.casino_outlined, Color(0xFFE0A020)),
+      // 快递查询要访问快递 100 的接口，是联网工具
+      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
+      // ↓ v1.6.0 从「同步与备份 / 音频与录制 / 设备与应用」挪进来
+      // 文件夹同步：本地文件夹 ↔ 服务器文件夹，后台每隔几分钟对一次
+      _ToolDef('文件夹同步', Icons.sync_alt, Color(0xFF0F7B6C)),
+      // 后台录音录像：类似 Alibi
+      _ToolDef('后台录音录像', Icons.fiber_manual_record, Color(0xFFD4537E)),
+      _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
     ]),
-    // v1.5.0 新增：公卫数据（消杀计算器从「时间与效率」移到这一类，
-    // 用户要求把这个类别做成类似 Epi Info StatCalc 的一组工具）
-    _Category('公卫数据', Icons.local_hospital_outlined, [
+
+    // ⑤ 地理与定位 —— 坐标转换和指南针挪走后只剩这一个
+    _Category('地理与定位', Icons.explore_outlined, [
+      // 身份证前 6 位查户籍地（自带 2978 个区划码，不用联网）
+      _ToolDef('身份证查户籍', Icons.badge_outlined, Color(0xFFB8860B)),
+    ]),
+
+    // ⑥ 公卫小工具 —— 原「公卫数据」，v1.6.0 改名并扩容
+    _Category('公卫小工具', Icons.local_hospital_outlined, [
       _ToolDef('消杀计算器', Icons.science_outlined, Color(0xFF0F7B6C)),
+      // v1.6.0 新增：现场配药时设备该开多大流量
+      _ToolDef('杀虫剂流量计算', Icons.opacity_outlined, Color(0xFF1D9E75)),
       _ToolDef('公共卫生统计', Icons.pie_chart_outline, Color(0xFF185FA5)),
       _ToolDef('病例对照研究', Icons.compare_arrows, Color(0xFF993C1D)),
       _ToolDef('队列研究', Icons.timeline, Color(0xFF534AB7)),
+      // v1.6.0 新增的两个高级统计分析
+      _ToolDef('分层分析', Icons.layers_outlined, Color(0xFF0C447C)),
+      _ToolDef('交互作用', Icons.hub_outlined, Color(0xFF72243E)),
       _ToolDef('食物中毒分析', Icons.restaurant_menu, Color(0xFFD4537E)),
       _ToolDef('Logistic 回归', Icons.insights, Color(0xFF0C447C)),
       _ToolDef('营养配餐', Icons.local_dining, Color(0xFF1D9E75)),
-    ]),
-    // v1.5.0 新增：同步与备份
-    _Category('同步与备份', Icons.sync_outlined, [
-      // 用户第 1 条第 ⑷ 项：本地文件夹 ↔ 服务器文件夹，后台每隔几分钟对一次
-      _ToolDef('文件夹同步', Icons.sync_alt, Color(0xFF0F7B6C)),
-    ]),
-    // v1.5.0 新增：音频与录制
-    // 用户第 1 条第 ① 项：后台录音录像（类似 Alibi）
-    _Category('音频与录制', Icons.mic_none, [
-      _ToolDef('后台录音录像', Icons.fiber_manual_record, Color(0xFFD4537E)),
-    ]),
-    _Category('设备与应用', Icons.phone_android, [
-      _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
+      // v1.6.0 新增：逐日估计传染速度
+      _ToolDef('实时再生指数 Rt', Icons.ssid_chart, Color(0xFFD93025)),
     ]),
   ];
 
@@ -143,7 +151,7 @@ class ToolsPage extends ConsumerWidget {
           // ---------- 离线小工具 ----------
           for (final c in categories) ...[
             Padding(
-              padding: const EdgeInsets.fromLTRB(4, 20, 4, 10),
+              padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
               child: Row(
                 children: [
                   Icon(c.icon, size: 16, color: scheme.primary),
@@ -161,9 +169,11 @@ class ToolsPage extends ConsumerWidget {
               crossAxisCount: 3,
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              mainAxisSpacing: 11,
-              crossAxisSpacing: 11,
-              childAspectRatio: 0.98,
+              // v1.6.0：用户要求「把行距压缩一下」——
+              // 格子间距 11 → 8，宽高比 0.98（近正方）→ 1.9（扁条），一行矮一大截
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+              childAspectRatio: 1.9,
               children: [
                 for (final t in c.tools) _toolCard(context, t),
               ],
@@ -184,8 +194,8 @@ class ToolsPage extends ConsumerWidget {
                 const SizedBox(width: 9),
                 Expanded(
                   child: Text(
-                    '图标右上角带蓝色小 Wi-Fi 的，是需要联网的工具；'
-                    '没有标记的都能离线用。\n'
+                    '卡片右上角带蓝色小点的，是需要联网的工具；'
+                    '没有小点的都能离线用。\n'
                     '上面两个按钮需要连上你的 WebDAV 服务器：'
                     '「下载站」读 /${AppDirs.download}，「小工具」读 /${AppDirs.tools}。',
                     style: TextStyle(fontSize: 11.5, height: 1.7, color: scheme.onSurfaceVariant),
@@ -204,52 +214,47 @@ class ToolsPage extends ConsumerWidget {
     return Card(
       margin: EdgeInsets.zero,
       child: InkWell(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => toolPageOf(t.name)),
         ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // 图标右上角挂个「联网」小标：一眼能看出哪些工具要网络
-              Stack(
-                clipBehavior: Clip.none,
+        child: Stack(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: t.color.withValues(alpha: 0.13),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(t.icon, color: t.color, size: 22),
+                  // v1.6.0：图标改成「文字大小的小图标」——
+                  // 去掉原来那圈 40×40 的底色方块，只留一个 17px 的裸图标
+                  Icon(t.icon, color: t.color, size: 17),
+                  const SizedBox(height: 3),
+                  Text(
+                    t.name,
+                    textAlign: TextAlign.center,
+                    // 名称压缩成单行、字号降到 11.5
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11.5, height: 1.15, color: scheme.onSurface),
                   ),
-                  if (t.online)
-                    Positioned(
-                      right: -5,
-                      top: -5,
-                      child: Container(
-                        padding: const EdgeInsets.all(2.5),
-                        decoration: const BoxDecoration(
-                          color: Color(0xFF185FA5),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.wifi, size: 10, color: Colors.white),
-                      ),
-                    ),
                 ],
               ),
-              const SizedBox(height: 9),
-              Text(
-                t.name,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12.5, color: scheme.onSurface),
+            ),
+            // 联网工具：卡片右上角一个小圆点（用户要求「加一个网络的小点」）
+            if (t.online)
+              Positioned(
+                right: 7,
+                top: 7,
+                child: Container(
+                  width: 7,
+                  height: 7,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF185FA5),
+                    shape: BoxShape.circle,
+                  ),
+                ),
               ),
-            ],
-          ),
+          ],
         ),
       ),
     );
@@ -322,6 +327,15 @@ Widget toolPageOf(String name) {
       return const LogisticPage();
     case '营养配餐':
       return const NutritionPage();
+    // ---- v1.6.0 新增的四个公卫工具 ----
+    case '杀虫剂流量计算':
+      return const SprayFlowPage();
+    case '实时再生指数 Rt':
+      return const RtPage();
+    case '分层分析':
+      return const StratifiedPage();
+    case '交互作用':
+      return const InteractionPage();
     case '条码生成器':
       return const BarcodePage();
     case '身份证查户籍':

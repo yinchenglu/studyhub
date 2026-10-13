@@ -7,6 +7,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../core/downloader.dart';
 import '../../core/screen_orientation.dart';
+import '../../core/system_volume.dart';
 import '../../core/utils.dart';
 import '../../data/local/db.dart';
 import '../../data/local/settings_store.dart';
@@ -45,6 +46,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   bool _playing = false;
   bool _buffering = true;
   double _rate = 1.0;
+
+  /// 当前音量（0~100）。
+  ///
+  /// v1.6.0 起这**不再是播放器自己的系数，而是系统媒体音量**：
+  /// 用户要求「视频要能直接调用系统的音量，在不按音量键的情况也能把音量开到最大」。
+  /// media_kit 的 `setVolume` 是乘在系统音量之上的，只调它永远到不了手机的最大声 ——
+  /// 必须去动 `AudioManager.STREAM_MUSIC`。见 `core/system_volume.dart`。
   double _volume = 60;
 
   /// 「静音」不单独存一个状态位，而是**从音量推出来**（`_volume <= 0` 就是静音）。
@@ -53,6 +61,19 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   /// 这个变量只负责记住「静音前是多少」，取消静音时还原回去。
   double _lastVolume = 60;
   bool get _muted => _volume <= 0;
+
+  /// 系统音量通道能不能用。不能用（非 Android、或原生没编进去）就退回
+  /// `Player.setVolume` 的老路子，顶多是「最大就到系统音量」，
+  /// 不至于整个功能坏掉。
+  bool _sysVolume = false;
+
+  /// 拖动音量的写入去抖：一次滑动会来几十次 drag update，
+  /// 每次都发一个 MethodChannel 调用会卡手。
+  Timer? _volPushTimer;
+
+  /// 反向同步：用户按了手机侧面音量键时，这边的 `_volume` 是旧的。
+  /// 定时读一次系统音量补上，免得图标显示和实际响度对不上。
+  Timer? _volPollTimer;
 
   double _dim = 0; // 亮度遮罩：0 全亮，0.7 最暗
   bool _uiVisible = true;
@@ -87,9 +108,20 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   Future<void> _init() async {
     _rate = await SettingsStore.instance.playbackSpeed();
+
+    // 先问一次系统媒体音量，拿到就用它当初始音量。
+    // 播放器自己的系数固定拉满 —— 音量完全交给系统，
+    // 免得「系统 60% × 播放器 60%」两道衰减相乘，怎么划都嫌小。
+    final sys = await SystemVolume.getPercent();
+    if (sys != null) {
+      _sysVolume = true;
+      _volume = sys;
+      _lastVolume = sys <= 0 ? 60 : sys;
+    }
+
     try {
       await _player.setRate(_rate);
-      await _player.setVolume(_volume);
+      await _player.setVolume(_sysVolume ? 100 : _volume);
     } catch (_) {}
 
     _subs.add(_player.stream.position.listen((p) {
@@ -117,6 +149,38 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     await _open(_index);
     _scheduleHide();
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveProgress());
+    if (_sysVolume) {
+      // 每 2 秒跟系统音量对一次：用户按了手机侧面音量键时这边能跟上
+      _volPollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _syncVolumeFromSystem());
+    }
+  }
+
+  /// 把 `_volume` 写进系统媒体音量；通道不可用时退回播放器系数。
+  void _pushVolume() {
+    if (_sysVolume) {
+      SystemVolume.setPercent(_volume);
+    } else {
+      _player.setVolume(_volume);
+    }
+  }
+
+  /// 拖动过程中的去抖写入（拖动结束会直接 `_pushVolume` 兜一次）。
+  void _pushVolumeSoon() {
+    _volPushTimer?.cancel();
+    _volPushTimer = Timer(const Duration(milliseconds: 80), _pushVolume);
+  }
+
+  /// 反向同步：读系统音量，跟自己记的不一样就更新 UI。
+  /// 正在拖动时不读（否则会把用户刚拖到的值覆盖回去）。
+  Future<void> _syncVolumeFromSystem() async {
+    if (_volPushTimer?.isActive ?? false) return;
+    final v = await SystemVolume.getPercent();
+    if (!mounted || v == null) return;
+    if ((v - _volume).abs() < 1) return;
+    setState(() {
+      _volume = v;
+      if (v > 0) _lastVolume = v;
+    });
   }
 
   /// 打开某一集：先按本地记录的时间点续播，再开始播放
@@ -232,8 +296,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         _volume = 0;
       }
     });
-    _player.setVolume(_volume);
-    _toast(_muted ? '已静音（再点一下恢复音量）' : '已取消静音');
+    _pushVolume();
+    // v1.6.0：用户要求把点静音时弹出的那两条提示（「已静音」/「已取消静音」）
+    // 都去掉 —— 图标本身已经变了，再弹一条反而挡画面。
   }
 
   /// 下载当前视频到「设置 → 下载目录」
@@ -257,6 +322,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   void dispose() {
     _hideTimer?.cancel();
     _saveTimer?.cancel();
+    _volPushTimer?.cancel();
+    _volPollTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -307,7 +374,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         _volume = (_volume + delta * 100).clamp(0, 100);
         // 顺手记下「最近一次非零音量」，取消静音时还原到这儿
         if (_volume > 0) _lastVolume = _volume;
-        _player.setVolume(_volume);
+        _pushVolumeSoon();
       } else {
         // 左半屏：上滑变亮。
         // v1.3.0 这里是 `_dim + delta`，也就是上滑反而更暗 —— 用户明确要求反过来。
@@ -425,7 +492,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
           onHorizontalDragEnd: _onHorizontalEnd,
           onVerticalDragStart: (d) => _hideTimer?.cancel(),
           onVerticalDragUpdate: (d) => _onVerticalUpdate(d, d.localPosition.dx > constraints.maxWidth / 2, constraints.maxHeight),
-          onVerticalDragEnd: (_) => _scheduleHide(),
+          onVerticalDragEnd: (_) {
+            // 松手立刻把最终音量落下去，不等去抖那 80ms
+            _volPushTimer?.cancel();
+            _pushVolume();
+            _scheduleHide();
+          },
           child: Stack(
             children: [
               Positioned.fill(

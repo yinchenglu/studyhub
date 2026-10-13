@@ -21,7 +21,29 @@ import 'tool_pages.dart';
 ///   * 百度 `fanyi.baidu.com/sug`（POST kw=）—— 通。返回若干条 k→v，
 ///     中英双向都能用，胜在快、结果短。
 ///   * MyMemory `api.mymemory.translated.net/get` —— 通。纯翻译，长句子表现最好。
-///   * 谷歌 `translate.googleapis.com` —— **实测超时**，而且国内本来就访问不了，不做。
+///
+/// v1.6.0 又实测了一轮、新加两个**免 key**的整句翻译源：
+///   * 腾讯交互翻译 `transmart.qq.com/api/imt`（POST JSON）—— 通，质量最好。
+///     `header.fn = auto_translation`、`source.lang = auto` 能自动判别语种
+///     （返回里的 `src_lang` 就是判出来的），译文在 `auto_translation[0]`。
+///     实测 zh/en/ja/ko/fr/de/es/ru 互译都行，200 字的句子也没截断。
+///     必须带 `Referer: https://transmart.qq.com/` 和 `Content-Type: application/json`，
+///     少一个就 4xx。
+///   * 有道 `aidemo.youdao.com/trans`（POST q=/from=/to=）—— 通。判定语种的老
+///     公开接口，`errorCode == "0"` 才算成功（102 = 不支持这对语种，113 = 没译出）。
+///     实测 zh-CHS→en、en→zh-CHS、auto→zh-CHS 都好使。
+///
+/// **这一轮试过但不可用的**（别再往回加）：
+///   * 谷歌 `translate.googleapis.com` —— 实测超时，国内本来就访问不了。
+///   * 金山词霸 `fy.iciba.com/ajax.php` —— 老接口已下线，现在返回整页 HTML。
+///   * 搜狗 `fanyi.sogou.com/reventondc/translateV2` —— 同样返回 HTML 了。
+///   * 有道 `fanyi.youdao.com/translate` —— 返回 HTML，说明老 GET 接口也下线了。
+///   * 必应 `cn.bing.com/ttranslatev3` —— 能抓到 IG/IID，但 body 里还要一个
+///     从页面脚本里算出来的 token，拿不到 → `statusCode: 205`。
+///   * 彩云小译 `api.interpreter.caiyunai.com` —— 401 Invalid token，要 key。
+///   * LibreTranslate 系（libretranslate.com / .de / argosopentech / terraprint /
+///     lt.vern.cc）、Lingva（Google 代理）系、simplytranslate、Yandex —— 全部
+///     连不通（Cloudflare 拦截 / 部署暂停 / 502），不可靠，不做。
 ///   * 百度 `fanyi.baidu.com/transapi` —— 返回 errno 1022（要 token），不做。
 ///   * vvhan / oioweb 那两个「免费 API」—— 一个 DNS 解析不了、一个 404，不做。
 ///
@@ -35,8 +57,10 @@ class TranslatePage extends StatefulWidget {
   State<TranslatePage> createState() => _TranslatePageState();
 }
 
-/// 数据源
-enum _Src { youdao, baidu, mymemory }
+/// 数据源。顺序就是界面上 Chip 的顺序：
+/// 先词典（有道词典最全）、再整句翻译（有道翻译 / 腾讯翻译）、
+/// 最后是「快而简」的百度词典和 MyMemory。
+enum _Src { youdao, youdaoTx, transmart, baidu, mymemory }
 
 class _TranslatePageState extends State<TranslatePage> {
   final _input = TextEditingController();
@@ -58,6 +82,13 @@ class _TranslatePageState extends State<TranslatePage> {
   _Youdao? _youdao;
   List<(String, String)> _baidu = const [];
   String? _mymemory;
+
+  /// 有道 `aidemo` 的整句译文
+  String? _youdaoTx;
+
+  /// 腾讯交互翻译的整句译文 + 它自己判出来的原文语种
+  String? _tmart;
+  String _tmartFrom = '';
 
   Player? _player;
 
@@ -92,6 +123,9 @@ class _TranslatePageState extends State<TranslatePage> {
         _youdao = null;
         _baidu = const [];
         _mymemory = null;
+        _youdaoTx = null;
+        _tmart = null;
+        _tmartFrom = '';
         _query = '';
       });
       return;
@@ -148,13 +182,111 @@ class _TranslatePageState extends State<TranslatePage> {
           } else {
             setState(() => _mymemory = text);
           }
-      }
+        case _Src.youdaoTx:
+          // 这个接口的 from 不接受 auto 配英/日当目标（实测 102），
+          // 所以自己按「有没有汉字」判方向，判法跟 MyMemory 那条一致。
+          final r = await _dio.post<String>(
+            'https://aidemo.youdao.com/trans',
+            data: {
+              'q': q,
+              'from': _hasCjk ? 'zh-CHS' : 'en',
+              'to': _hasCjk ? 'en' : 'zh-CHS',
+            },
+            options: Options(
+              contentType: Headers.formUrlEncodedContentType,
+              responseType: ResponseType.plain,
+            ),
+          );
+          final j = _decode(r.data);
+          if (!mounted) return;
+          final ec = '${j['errorCode'] ?? ''}';
+          final list = (j['translation'] as List?) ?? const [];
+          final text = list.isEmpty ? '' : '${list.first}';
+          if (ec != '0') {
+            setState(() => _error = _youdaoTxErr(ec));
+          } else if (text.trim().isEmpty) {
+            setState(() => _error = '有道翻译没有译出结果');
+          } else {
+            setState(() => _youdaoTx = text);
+          }
+        case _Src.transmart:
+          // 腾讯交互翻译：一个 POST 打天下，source.lang=auto 让它自己判。
+          // Referer / Content-Type 少一个就 4xx，别删。
+          final payload = jsonEncode({
+            'header': {'fn': 'auto_translation', 'client_key': _tmClientKey},
+            'type': 'plain',
+            'model_category': 'normal',
+            'source': {
+              'lang': 'auto',
+              'text_list': [q],
+            },
+            'target': {'lang': _hasCjk ? 'en' : 'zh'},
+          });
+          final r = await _dio.post<String>(
+            'https://transmart.qq.com/api/imt',
+            data: payload,
+            options: Options(
+              contentType: Headers.jsonContentType,
+              responseType: ResponseType.plain,
+              headers: const {'Referer': 'https://transmart.qq.com/zh-CN/index'},
+            ),
+          );
+          final j = _decode(r.data);
+          if (!mounted) return;
+          final code = '${_m(j['header'])['ret_code'] ?? ''}';
+          final list = (j['auto_translation'] as List?) ?? const [];
+          final text = list.isEmpty ? '' : '${list.first}';
+          if (code != 'succ') {
+            setState(() => _error = '腾讯翻译返回 ${code.isEmpty ? '未知状态' : code}');
+          } else if (text.trim().isEmpty) {
+            setState(() => _error = '腾讯翻译没有译出结果');
+          } else {
+            setState(() {
+              _tmart = text;
+              _tmartFrom = '${j['src_lang'] ?? ''}';
+            });
+          }
+        }
     } catch (e) {
       if (mounted) setState(() => _error = '网络请求失败：${_short(e)}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
+
+  /// 腾讯交互翻译认的一个固定的浏览器指纹，官方网页版就发这个。
+  /// 它只是用来区分调用方，不带任何账号信息。
+  static const _tmClientKey =
+      'browser-chrome-110.0.0-Mac OS-df4bd4c5-a65d-44b2-a40f-42f34f3535f2-1677486696487';
+
+  /// 有道 aidemo 的错误码 → 人话（实测过的三个，其余兜底）
+  static String _youdaoTxErr(String code) => switch (code) {
+        '102' => '有道翻译不支持这对语种',
+        '113' => '有道翻译没拿到可译的内容',
+        '108' => '有道翻译暂时不可用（服务器侧限流）',
+        _ => '有道翻译返回错误码 $code',
+      };
+
+  /// transmart 回来的 `src_lang` 是短码，翻成中文给人看
+  static String _langName(String code) => switch (code) {
+        '' || 'auto' => '自动识别',
+        'zh' || 'zh-CHS' || 'zh-Hans' => '中文',
+        'en' => '英语',
+        'ja' => '日语',
+        'ko' => '韩语',
+        'fr' => '法语',
+        'de' => '德语',
+        'es' => '西班牙语',
+        'pt' => '葡萄牙语',
+        'it' => '意大利语',
+        'ru' => '俄语',
+        'th' => '泰语',
+        'vi' => '越南语',
+        'id' => '印尼语',
+        'ar' => '阿拉伯语',
+        'nl' => '荷兰语',
+        _ => code,
+      };
 
   static String _short(Object e) {
     if (e is DioException) {
@@ -365,6 +497,9 @@ class _TranslatePageState extends State<TranslatePage> {
                                 _youdao = null;
                                 _baidu = const [];
                                 _mymemory = null;
+                                _youdaoTx = null;
+                                _tmart = null;
+                                _tmartFrom = '';
                                 _query = '';
                               }),
                             ),
@@ -420,6 +555,8 @@ class _TranslatePageState extends State<TranslatePage> {
 
   static String _srcName(_Src s) => switch (s) {
         _Src.youdao => '有道词典',
+        _Src.youdaoTx => '有道翻译',
+        _Src.transmart => '腾讯翻译',
         _Src.baidu => '百度词典',
         _Src.mymemory => 'MyMemory',
       };
@@ -595,8 +732,66 @@ class _TranslatePageState extends State<TranslatePage> {
             ),
           ),
         ];
+
+      case _Src.youdaoTx:
+        final tx = _youdaoTx;
+        if (tx == null) return const [];
+        return [
+          _sentenceCard(
+            scheme,
+            text: tx,
+            tip: '有道翻译 · ${_hasCjk ? '中 → 英' : '英 → 中'}',
+          ),
+        ];
+
+      case _Src.transmart:
+        final tm = _tmart;
+        if (tm == null) return const [];
+        return [
+          _sentenceCard(
+            scheme,
+            text: tm,
+            tip: '腾讯交互翻译 · 识别为 ${_langName(_tmartFrom)} → '
+                '${_hasCjk ? '英语' : '中文'}',
+          ),
+        ];
     }
   }
+
+  /// 整句翻译的通用结果卡（有道翻译 / 腾讯翻译共用一套版式）
+  Widget _sentenceCard(ColorScheme scheme,
+          {required String text, required String tip}) =>
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_query, style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
+              const SizedBox(height: 6),
+              SelectableText(text, style: const TextStyle(fontSize: 17, height: 1.6)),
+              const SizedBox(height: 6),
+              Text(tip, style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () => copyText(context, text),
+                    icon: const Icon(Icons.copy, size: 17),
+                    label: const Text('复制'),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton.icon(
+                    onPressed: () => _speak(_query, 2),
+                    icon: const Icon(Icons.volume_up_outlined, size: 17),
+                    label: const Text('读原文'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
 
   Widget _speakBtn(String label, VoidCallback onTap) => ActionChip(
         avatar: const Icon(Icons.volume_up_outlined, size: 15),
@@ -688,11 +883,13 @@ class _TranslatePageState extends State<TranslatePage> {
             const SizedBox(width: 9),
             Expanded(
               child: Text(
-                '三个数据源都是公开的免 key 接口，用的同一个网络，'
+                '五个数据源都是公开的免 key 接口，用的同一个网络，'
                 '哪个不通就换一个再试。\n'
-                '· 有道：最全，有音标 / 词形变化 / 短语 / 同近义词 / 双语例句\n'
-                '· 百度：最简，给几条「词 → 译」的对照\n'
-                '· MyMemory：长句子翻得最顺，词条信息少\n'
+                '· 有道词典：最全，有音标 / 词形变化 / 短语 / 同近义词 / 双语例句\n'
+                '· 有道翻译：整句翻译，自动判中英方向，短句快\n'
+                '· 腾讯翻译：整句翻译，长句最顺，能自动认语种（日 / 韩 / 法 / 德…都行）\n'
+                '· 百度词典：最简，给几条「词 → 译」的对照\n'
+                '· MyMemory：长句子翻得也顺，词条信息少\n'
                 '发音来自有道，一个词读一次就会存到本地，之后点了马上响。',
                 style: TextStyle(fontSize: 11.5, height: 1.75, color: scheme.onSurfaceVariant),
               ),

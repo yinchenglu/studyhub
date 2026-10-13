@@ -10,6 +10,7 @@ import '../../data/local/db.dart';
 import '../../data/local/settings_store.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
+import '../widgets/folder_picker.dart';
 import 'login_page.dart';
 
 /// 设置页：账号、缓存、播放、刷题、外观、关于
@@ -334,9 +335,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 SwitchListTile(
                   secondary: const Icon(Icons.flash_on_outlined),
                   title: const Text('答完自动下一题'),
-                  // v1.5.0：这个开关现在也管「刷题模式」的自动翻页，说明补上
-                  subtitle: const Text('不开「显示答案」时生效：答对立刻跳，答错停留一会儿。'
-                      '刷题模式也认这个开关'),
+                  // v1.6.0：这已经是个「总开关」—— 三种模式都归它管，
+                  // 下面三个秒数分别决定各自跳多快。
+                  subtitle: const Text('总开关：不勾就完全手动翻。'
+                      '勾上之后，下面三个秒数分别管「普通模式答对」「普通模式答错」「只看不做」'),
                   value: prefs.autoNext,
                   onChanged: (v) => ref.read(quizPrefsProvider.notifier).setAutoNext(v),
                 ),
@@ -353,9 +355,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ListTile(
                   leading: const Icon(Icons.timelapse),
                   title: const Text('自动跳题秒数'),
+                  // v1.6.0：这里原来写「显示答案 / 刷题模式」共用，现在拆成三个独立设置
                   subtitle: Text(prefs.autoNextSec == 0
-                      ? '不自动跳（刷题模式 / 显示答案模式都不跳）'
-                      : '显示答案 / 刷题模式下 ${prefs.autoNextSec} 秒自动跳下一题'),
+                      ? '普通刷题：不自动跳'
+                      : '普通刷题：答完 ${prefs.autoNextSec} 秒自动跳下一题'),
                   trailing: DropdownButton<int>(
                     value: prefs.autoNextSec,
                     underline: const SizedBox.shrink(),
@@ -372,12 +375,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ListTile(
                   leading: const Icon(Icons.timer_off_outlined),
                   title: const Text('答错后停留'),
-                  // v1.5.0：这行小字原来只写「答错后 N 秒再自动跳到下一题」，
-                  // 但代码里只有「不显示答案」那种模式才读它，默认配置
-                  // （选择后立即显示答案 = 开）下点了等于没点 —— 已经修掉了，
-                  // 顺手把说明补全，免得再有人以为它失灵。
-                  subtitle: Text('答错后至少停留 ${prefs.wrongStaySec} 秒再跳，方便看完解析'
-                      '（两种作答模式都生效）'),
+                  subtitle: Text('普通刷题：答错至少停留 ${prefs.wrongStaySec} 秒再跳，方便看完解析'),
                   trailing: DropdownButton<int>(
                     value: prefs.wrongStaySec,
                     underline: const SizedBox.shrink(),
@@ -387,6 +385,28 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     ],
                     onChanged: (v) {
                       if (v != null) ref.read(quizPrefsProvider.notifier).setWrongStaySec(v);
+                    },
+                  ),
+                ),
+                const Divider(height: 1),
+                // v1.6.0 新增：第三个时间 —— 「刷题模式（只看不做）」自己的翻页间隔。
+                // 用户要的是三个互不干扰的时间设置。
+                ListTile(
+                  leading: const Icon(Icons.menu_book_outlined),
+                  title: const Text('只看不做跳题秒数'),
+                  subtitle: Text(prefs.browseNextSec == 0
+                      ? '刷题模式（只看不做）：不自动跳'
+                      : '刷题模式（只看不做）：每 ${prefs.browseNextSec} 秒翻一页'
+                          '（还要勾上上面的「答完自动下一题」）'),
+                  trailing: DropdownButton<int>(
+                    value: prefs.browseNextSec,
+                    underline: const SizedBox.shrink(),
+                    items: [
+                      for (final s in Defaults.browseNextSecOptions)
+                        DropdownMenuItem(value: s, child: Text(s == 0 ? '关闭' : '$s 秒')),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) ref.read(quizPrefsProvider.notifier).setBrowseNextSec(v);
                     },
                   ),
                 ),
@@ -575,6 +595,21 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
+                  // v1.6.0：用户要求「下载目录要能自定义文件夹」——
+                  // 光能手填路径太费劲，给一个能一层层点进去的文件夹选择器
+                  ActionChip(
+                    avatar: const Icon(Icons.folder_open_outlined, size: 16),
+                    label: const Text('浏览文件夹…'),
+                    onPressed: () async {
+                      final picked = await showDialog<String>(
+                        context: ctx,
+                        builder: (_) => FolderPicker(
+                          initial: ctrl.text.trim().isEmpty ? sysPath : ctrl.text.trim(),
+                        ),
+                      );
+                      if (picked != null && picked.isNotEmpty) ctrl.text = picked;
+                    },
+                  ),
                   ActionChip(
                     avatar: const Icon(Icons.download_outlined, size: 16),
                     label: const Text('系统下载目录'),

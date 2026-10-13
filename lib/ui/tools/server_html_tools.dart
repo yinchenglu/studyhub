@@ -210,7 +210,7 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
         ),
         for (final k in keys) ...[
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: Row(
               children: [
                 Icon(Icons.folder_rounded, size: 16, color: scheme.primary),
@@ -224,50 +224,66 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
               ],
             ),
           ),
-          for (final t in _groups[k]!) _tile(t, scheme),
+          // v1.6.0：用户要求跟工具箱一样「类似一个木函」——
+          // 从一行一个大 ListTile 改成一行 3 个小卡片，图标缩到文字大小
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: GridView.count(
+              crossAxisCount: 3,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+              childAspectRatio: 1.9,
+              children: [for (final t in _groups[k]!) _tile(t, scheme)],
+            ),
+          ),
         ],
       ],
     );
   }
 
-  Widget _tile(ServerToolEntry t, ColorScheme scheme) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-        child: Card(
-          child: ListTile(
-            leading: Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: t.category == '独立小工具'
-                    ? const Color(0xFFEF9F27).withValues(alpha: 0.15)
-                    : const Color(0xFF7F77DD).withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(10),
+  Widget _tile(ServerToolEntry t, ColorScheme scheme) {
+    final loose = t.category == '独立小工具';
+    final accent = loose ? const Color(0xFFEF9F27) : const Color(0xFF7F77DD);
+    return Tooltip(
+      // 卡片太小放不下文件名，用 tooltip 补上（鼠标/长按能看到）
+      message: baseName(t.path),
+      child: Card(
+        margin: EdgeInsets.zero,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () async {
+            final client = ref.read(davClientProvider);
+            if (client == null) return;
+            await Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => HtmlViewPage(
+                title: t.name,
+                url: client.urlFor(t.path),
+                headers: client.headers,
+                errorHint: '如果是 http 明文站点，确认清单里已允许明文流量',
               ),
-              child: Icon(
-                t.category == '独立小工具' ? Icons.html : Icons.web_asset,
-                size: 21,
-                color: t.category == '独立小工具'
-                    ? const Color(0xFFEF9F27)
-                    : const Color(0xFF7F77DD),
-              ),
-            ),
-            title: Text(t.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: Text(baseName(t.path),
-                style: const TextStyle(fontSize: 11.5), maxLines: 1),
-            trailing: const Icon(Icons.play_circle_outline),
-            onTap: () async {
-              final client = ref.read(davClientProvider);
-              if (client == null) return;
-              await Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => HtmlViewPage(
-                  title: t.name,
-                  url: client.urlFor(t.path),
-                  headers: client.headers,
-                  errorHint: '如果是 http 明文站点，确认清单里已允许明文流量',
+            ));
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(loose ? Icons.html : Icons.web_asset, size: 17, color: accent),
+                const SizedBox(height: 3),
+                Text(
+                  t.name,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11.5, height: 1.15, color: scheme.onSurface),
                 ),
-              ));
-            },
+              ],
+            ),
           ),
         ),
-      );
+      ),
+    );
+  }
 }

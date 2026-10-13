@@ -155,8 +155,11 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
 
     int ms;
     if (_isBrowse) {
-      if (!prefs.autoNext || prefs.autoNextSec <= 0) return;
-      ms = prefs.autoNextSec * 1000;
+      // v1.6.0：只看不做模式改用**自己的**秒数 `browseNextSec`。
+      // 原来跟普通模式共用 autoNextSec，用户要的是三个时间各管各的。
+      // 开关仍然是「答完自动下一题」—— 不勾就完全手动翻。
+      if (!prefs.autoNext || prefs.browseNextSec <= 0) return;
+      ms = prefs.browseNextSec * 1000;
     } else if (_showAnswerNow) {
       // ★ v1.5.0 修的真 bug：原来这一支只认 autoNextSec，
       //   **完全不看 wrongStaySec**。而 showAnswerNow 默认就是 true，
@@ -456,7 +459,11 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     // 用户明明勾了自动跳却一动不动。
     ref.listen(quizPrefsProvider, (prev, next) {
       if (!_isBrowse || _finished) return;
-      if (prev?.autoNext == next.autoNext && prev?.autoNextSec == next.autoNextSec) return;
+      if (prev?.autoNext == next.autoNext &&
+          prev?.autoNextSec == next.autoNextSec &&
+          prev?.browseNextSec == next.browseNextSec) {
+        return;
+      }
       _scheduleAutoNext(_i, true);
     });
     return Scaffold(
@@ -537,6 +544,9 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
                 n.setAutoNext(v.split(':')[1] == '1');
               } else if (v.startsWith('stay:')) {
                 n.setWrongStaySec(int.parse(v.split(':')[1]));
+              } else if (v.startsWith('browse:')) {
+                // v1.6.0：只看不做模式自己的翻页秒数
+                n.setBrowseNextSec(int.parse(v.split(':')[1]));
               }
             },
             itemBuilder: (_) {
@@ -568,6 +578,20 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
                     checked: p.wrongStaySec == s,
                     child: Text('$s 秒'),
                   ),
+                // v1.6.0：只看不做模式有自己的翻页秒数，就地也能改
+                if (_isBrowse) ...[
+                  const PopupMenuDivider(),
+                  const PopupMenuItem<String>(
+                      enabled: false,
+                      height: 32,
+                      child: Text('只看不做翻页秒数', style: TextStyle(fontSize: 11.5))),
+                  for (final s in Defaults.browseNextSecOptions)
+                    CheckedPopupMenuItem<String>(
+                      value: 'browse:$s',
+                      checked: p.browseNextSec == s,
+                      child: Text(s == 0 ? '不自动跳' : '$s 秒'),
+                    ),
+                ],
                 const PopupMenuDivider(),
                 const PopupMenuItem<String>(
                     value: 'end',

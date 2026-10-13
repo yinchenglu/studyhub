@@ -249,6 +249,10 @@ class QuizPrefs {
   /// 「不带答案」模式下答错后停留几秒再跳下一题（答对立刻跳）
   final int wrongStaySec;
 
+  /// 「刷题模式（只看不做）」下自动翻页的秒数（0 = 不自动跳）。
+  /// v1.6.0 从 autoNextSec 里独立出来，三种模式各管各的。
+  final int browseNextSec;
+
   const QuizPrefs({
     this.perRound = 20,
     this.examCount = 30,
@@ -257,6 +261,7 @@ class QuizPrefs {
     this.showAnswerNow = true,
     this.autoNextSec = 3,
     this.wrongStaySec = 6,
+    this.browseNextSec = 5,
   });
 
   QuizPrefs copy({
@@ -267,6 +272,7 @@ class QuizPrefs {
     bool? showAnswerNow,
     int? autoNextSec,
     int? wrongStaySec,
+    int? browseNextSec,
   }) =>
       QuizPrefs(
         perRound: perRound ?? this.perRound,
@@ -276,6 +282,7 @@ class QuizPrefs {
         showAnswerNow: showAnswerNow ?? this.showAnswerNow,
         autoNextSec: autoNextSec ?? this.autoNextSec,
         wrongStaySec: wrongStaySec ?? this.wrongStaySec,
+        browseNextSec: browseNextSec ?? this.browseNextSec,
       );
 }
 
@@ -294,6 +301,7 @@ class QuizPrefsNotifier extends StateNotifier<QuizPrefs> {
       showAnswerNow: await s.showAnswerNow(),
       autoNextSec: await s.autoNextSec(),
       wrongStaySec: await s.wrongStaySec(),
+      browseNextSec: await s.browseNextSec(),
     );
   }
 
@@ -330,6 +338,11 @@ class QuizPrefsNotifier extends StateNotifier<QuizPrefs> {
   Future<void> setWrongStaySec(int v) async {
     await SettingsStore.instance.setWrongStaySec(v);
     state = state.copy(wrongStaySec: v);
+  }
+
+  Future<void> setBrowseNextSec(int v) async {
+    await SettingsStore.instance.setBrowseNextSec(v);
+    state = state.copy(browseNextSec: v);
   }
 }
 

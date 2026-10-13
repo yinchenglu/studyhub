@@ -12,33 +12,42 @@ import 'package:media_kit/media_kit.dart';
 import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../core/constants.dart';
 import '../../core/recorder.dart';
 import '../../core/utils.dart';
+import '../../core/video_recorder.dart';
+import '../../data/local/settings_store.dart';
+import '../widgets/folder_picker.dart';
 import 'tool_pages.dart';
 
 /// 后台录音录像
 ///
 /// 用户第 1 条第 ① 项：「后台录音录像工具，类似 Alibi，可以参考他的源码。」
 ///
-/// ── 为什么分成「真后台的录音」和「只能前台录的录像」两件事 ──────
-/// Alibi 是那种「放兜里一直在录」的工具。它在老 Android 上能做到音视频一起录，
-/// 但现在的 Android 不允许了：
+/// ── 录音和录像走的是两条完全不同的路 ────────────────────
+/// Alibi 是那种「放兜里一直在录」的工具。它能做到音视频一起后台录，
+/// 靠的是**前台服务**。这个工具也照这个思路做，但两条路难度不一样：
 ///
-///   * **录音**可以真后台 —— 申请一个前台服务（`foregroundServiceType="microphone"`，
-///     Android 14 起是硬要求），挂上常驻通知，息屏、切到别的 App、清空最近任务
-///     都还在录。这部分在原生 `RecorderService` 里做（见 MainActivity.kt）。
+///   * **录音**：原生前台服务（`foregroundServiceType="microphone"`，
+///     Android 14 起是硬要求）+ 部分唤醒锁，息屏、切到别的 App、
+///     清空最近任务都还在录。见 `MainActivity.kt` 的 `RecorderService`。
 ///
-///   * **录像**做不到后台上。Android 9 起就**禁止后台应用访问摄像头**，
-///     前台服务的 `camera` 类型也只能在前台用（一退到后台系统就掐画面）。
-///     硬做只能靠一个常驻的悬浮窗 hack，代价是用户得一直看着那个窗。
-///     所以这里的录像就是**老老实实的前台录像**（屏幕亮着、App 在前台），
-///     音频一起录进去。页面上写得明明白白，不骗用户。
+///   * **录像**：v1.6.0 之前这里写的是「做不到，系统不让」—— 那个结论是错的。
+///     正确的做法和 Alibi 一样：把相机交给一个 `foregroundServiceType="camera"`
+///     的前台服务（见 `MainActivity.kt` 的 `VideoRecorderService`），
+///     只要**在前台启动**这个服务，之后退到后台相机依然是我们的。
+///     代价是相机被服务独占，页面上就没有实时画面了 ——
+///     所以这里留了两种模式给用户挑：
+///       · 后台录像：能息屏、能切后台，没画面；
+///       · 前台录像：页面里能看到画面（`camera` 插件），退到后台就停。
 ///
 /// ── 文件存在哪儿 ────────────────────────────────────────
-/// 应用私有目录 `文档/recordings/`，文件名 `录音_20261012_153000.m4a` /
-/// `录像_20261012_153000.mp4`。这个位置**不需要任何存储权限**，
-/// 服务启动时不用先弹权限框（少一步就少一处「点开始没反应」）。
-/// 要拿出来有两条路：共享给别人，或者导出到手机的「下载」目录。
+/// 默认是应用私有目录 `文档/recordings/`，文件名
+/// `录音_20261012_153000.m4a` / `录像_20261012_153000.mp4`。
+/// v1.6.0 起可以在页面上改成别的文件夹（比如系统「下载」目录）——
+/// 原生服务需要一个**真实路径**，所以用的是自己写的文件夹浏览器，
+/// 不是系统的 SAF 选择器（那个给的是 content:// URI，MediaRecorder 不认）。
+/// 要拿出来还有两条路：共享给别人，或者导出到手机的「下载」目录。
 class AudioRecorderPage extends StatefulWidget {
   const AudioRecorderPage({super.key});
 
@@ -60,11 +69,38 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
   String? _audioErr;
 
   // ---------------- 录像 ----------------
+  /// 后台录像（走原生前台服务）的当前状态。
+  RecorderStatus _vst = const RecorderStatus();
+  File? _vPending;
+
+  /// 前台录像（走 camera 插件）的控制器。只有「前台录像」模式才非空。
   CameraController? _cam;
   bool _camInit = false;
   bool _recording = false;
   bool _videoBusy = false;
   String? _videoErr;
+
+  // ---------------- 设置（v1.6.0）----------------
+  /// 录像方式：true = 后台录像（能息屏、无画面），false = 前台录像（有画面）。
+  bool _bgVideo = true;
+
+  /// 摄像头：'back' / 'front'。
+  ///
+  /// v1.6.0 修的真 bug：以前这个页面**只能**用后置 —— 那个看着像「切换摄像头」
+  /// 的按钮其实只是重新 `_initCam()` 一次，选的还是后置。用户反馈的
+  /// 「只能调用后摄像头，前摄失败」说的就是这事。
+  String _lens = 'back';
+
+  /// 录像要不要录声音。
+  bool _vAudio = true;
+
+  /// 录音 / 录像的最长时长（分钟，0 = 不限）
+  int _audioMaxMin = Defaults.audioMaxMinutes;
+  int _videoMaxMin = Defaults.videoMaxMinutes;
+
+  /// 自定义保存目录（null = 应用私有目录 `文档/recordings/`）
+  String? _saveDir;
+  String _defaultSaveDir = '';
 
   // ---------------- 文件列表 ----------------
   List<File> _files = const <File>[];
@@ -76,9 +112,13 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
   Duration _pos = Duration.zero;
   Duration _dur = Duration.zero;
 
+  /// 录像是否在跑（两种模式合一，界面上一处判断就够）。
+  bool get _anyVideoRunning => _bgVideo ? _vst.running : _recording;
+
   @override
   void initState() {
     super.initState();
+    _loadSettings();
     _refreshStatus();
     _reloadFiles();
     // 每秒问一次原生服务。为什么不用 Dart 自己数秒：
@@ -86,6 +126,32 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
     // 而原生服务在跑前台通知，时间一直在走。以原生为准才不会「用户切回来
     // 发现计时少了 40 秒」。
     _tick = Timer.periodic(const Duration(seconds: 1), (_) => _refreshStatus());
+  }
+
+  Future<void> _loadSettings() async {
+    final s = SettingsStore.instance;
+    final bg = await s.videoBackground();
+    final lens = await s.recorderLens();
+    final va = await s.videoWithAudio();
+    final am = await s.audioMaxMinutes();
+    final vm = await s.videoMaxMinutes();
+    final dir = await s.recorderDirPath();
+    // 默认目录（应用私有）也先算出来，好在界面上显示完整路径
+    String defDir = '';
+    try {
+      final d = await AudioRecorder.defaultDir();
+      defDir = d.path;
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _bgVideo = bg;
+      _lens = lens;
+      _vAudio = va;
+      _audioMaxMin = am;
+      _videoMaxMin = vm;
+      _saveDir = dir;
+      _defaultSaveDir = defDir;
+    });
   }
 
   @override
@@ -106,19 +172,35 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
 
   Future<void> _refreshStatus() async {
     final s = await AudioRecorder.status();
+    final v = await VideoRecorder.status();
     if (!mounted) return;
     // 只在值真变了的时候 setState：每秒无脑重画整个页面没必要
     final changed = s.running != _st.running ||
         s.elapsedMs != _st.elapsedMs ||
-        s.error != _st.error;
-    if (changed) {
-      setState(() => _st = s);
-      // 从「在录」变成「不在录」——那段文件已经落盘了，刷新列表
-      if (_st.running == false && _pending != null) {
-        _pending = null;
-        _reloadFiles();
-      }
+        s.error != _st.error ||
+        v.running != _vst.running ||
+        v.elapsedMs != _vst.elapsedMs ||
+        v.error != _vst.error;
+    if (!changed) return;
+    setState(() {
+      _st = s;
+      _vst = v;
+    });
+    // 从「在录」变成「不在录」——那段文件已经落盘了，刷新列表
+    var needReload = false;
+    if (!s.running && _pending != null) {
+      _pending = null;
+      needReload = true;
     }
+    if (!v.running && _vPending != null) {
+      // 后台录像停下来时，顺手把「只建了文件、一个字节都没写」的空壳删掉，
+      // 免得列表里挂着一条点不开的 0 B 录像
+      final f = _vPending;
+      _vPending = null;
+      if (f != null) await VideoRecorder.removeIfEmpty(f);
+      needReload = true;
+    }
+    if (needReload) await _reloadFiles();
   }
 
   Future<void> _reloadFiles() async {
@@ -141,7 +223,7 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
         return;
       }
       final f = await AudioRecorder.nextFile(prefix: '录音', ext: '.m4a');
-      await AudioRecorder.start(f);
+      await AudioRecorder.start(f, maxDurationMs: _audioMaxMin * 60 * 1000);
       if (mounted) setState(() => _pending = f);
       // 服务是异步起来的，给它一点时间再把状态拉回来
       await Future<void>.delayed(const Duration(milliseconds: 600));
@@ -182,6 +264,16 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
 
   // ==================================================== 录像
 
+  /// 把当前选的那一侧摄像头翻译成 camera 插件要的枚举。
+  CameraLensDirection get _wantLens => _lens == 'front'
+      ? CameraLensDirection.front
+      : CameraLensDirection.back;
+
+  /// 打开前台录像用的摄像头（有画面那条路）。
+  ///
+  /// v1.6.0 修：以前这里写死了 `lensDirection == back`，那个像「切换摄像头」
+  /// 的按钮也只是重开一次后摄 —— 用户说「只能调用后摄像头，前摄失败」就是这个。
+  /// 现在按 [_lens] 挑，找不到想要的那一侧才退回第一个。
   Future<void> _initCam() async {
     setState(() {
       _videoBusy = true;
@@ -206,11 +298,15 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
         if (mounted) setState(() => _videoErr = '这台设备上没有找到可用的摄像头。');
         return;
       }
-      // 优先后置；没有后置（少见）就用第一个
-      final back = cams.where((d) => d.lensDirection == CameraLensDirection.back);
-      final desc = back.isNotEmpty ? back.first : cams.first;
+      final want = _wantLens;
+      final hit = cams.where((d) => d.lensDirection == want);
+      final desc = hit.isNotEmpty ? hit.first : cams.first;
+      if (hit.isEmpty && mounted && want == CameraLensDirection.front) {
+        // 明确告诉用户「这台机器没有前摄」，不要静默给个后摄画面
+        toast(context, '这台设备没有前置摄像头，先用后置的');
+      }
 
-      c = CameraController(desc, ResolutionPreset.high, enableAudio: true);
+      c = CameraController(desc, ResolutionPreset.high, enableAudio: _vAudio);
       await c.initialize();
       if (!mounted) {
         await c.dispose();
@@ -234,6 +330,134 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
       if (mounted) setState(() => _videoBusy = false);
     }
   }
+
+  /// 换摄像头（两种模式共用）。
+  ///
+  /// 后台模式要先把服务停掉再换 —— 相机在同一时刻只能有一个持有者。
+  Future<void> _switchLens() async {
+    final next = _lens == 'front' ? 'back' : 'front';
+    if (_anyVideoRunning) {
+      toast(context, '正在录像，先停下来再换摄像头');
+      return;
+    }
+    if (!_bgVideo) {
+      // 前台模式：重开一次控制器就行
+      final c = _cam;
+      _cam = null;
+      _camInit = false;
+      await c?.dispose();
+    }
+    if (!mounted) return;
+    setState(() => _lens = next);
+    await SettingsStore.instance.setRecorderLens(next);
+    if (!_bgVideo && mounted) await _initCam();
+  }
+
+  Future<void> _setBgVideo(bool v) async {
+    if (_anyVideoRunning) {
+      toast(context, '正在录像，先停下来再切换方式');
+      return;
+    }
+    // 换方式前把旧那条路的相机关掉，免得两个客户端抢相机
+    if (v && _cam != null) {
+      final c = _cam;
+      _cam = null;
+      _camInit = false;
+      await c?.dispose();
+      keepScreenOn(false);
+    }
+    if (!mounted) return;
+    setState(() => _bgVideo = v);
+    await SettingsStore.instance.setVideoBackground(v);
+    if (!v && mounted) await _initCam();
+  }
+
+  Future<void> _setVAudio(bool v) async {
+    if (_anyVideoRunning) {
+      toast(context, '正在录像，先停下来再改这个');
+      return;
+    }
+    setState(() => _vAudio = v);
+    await SettingsStore.instance.setVideoWithAudio(v);
+    if (!_bgVideo && mounted) await _initCam();
+  }
+
+  // ---------------- 后台录像（原生前台服务，能息屏）----------------
+
+  Future<void> _startBgVideo() async {
+    setState(() {
+      _videoBusy = true;
+      _videoErr = null;
+    });
+    try {
+      final cs = await Permission.camera.request();
+      if (!cs.isGranted) {
+        if (mounted) setState(() => _videoErr = '没有相机权限，录不了像。');
+        return;
+      }
+      if (_vAudio) {
+        final ms = await Permission.microphone.request();
+        if (!ms.isGranted && mounted) {
+          setState(() => _videoErr = '没有麦克风权限，录出来的视频会没声音。（画面正常录）');
+        }
+      }
+      // 相机在同一时刻只能有一个持有者 —— 把前台预览那条路先让开
+      final c = _cam;
+      if (c != null) {
+        _cam = null;
+        _camInit = false;
+        try {
+          await c.dispose();
+        } catch (_) {}
+      }
+      // 后台录像要真能息屏，就不能再靠 keepScreenOn 撑着了
+      keepScreenOn(false);
+
+      final f = await AudioRecorder.nextFile(prefix: '录像', ext: '.mp4');
+      await VideoRecorder.start(
+        file: f,
+        lens: _lens,
+        audio: _vAudio,
+        maxDurationMs: _videoMaxMin * 60 * 1000,
+      );
+      if (mounted) setState(() => _vPending = f);
+      // 服务是异步起来的（要先 startForeground 再开相机），给它点时间
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      await _refreshStatus();
+      if (mounted && !_vst.running && !_vst.hasError) {
+        setState(() => _videoErr = '录像服务没起来。若是第一次用，'
+            '请检查是否允许了「相机」「录音」权限和通知权限。');
+      }
+    } catch (e) {
+      if (mounted) setState(() => _videoErr = '启动录像失败：$e');
+    } finally {
+      if (mounted) setState(() => _videoBusy = false);
+    }
+  }
+
+  Future<void> _stopBgVideo() async {
+    setState(() {
+      _videoBusy = true;
+      _videoErr = null;
+    });
+    try {
+      await VideoRecorder.stop();
+      // 服务收尾（关会话、关相机、写 moov）不是瞬时的，最多等 6 秒
+      for (var i = 0; i < 30; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        final s = await VideoRecorder.status();
+        if (!s.running) break;
+      }
+      await _refreshStatus();
+      await _reloadFiles();
+    } catch (e) {
+      if (mounted) setState(() => _videoErr = '停止录像失败：$e');
+    } finally {
+      if (mounted) setState(() => _videoBusy = false);
+    }
+  }
+
+  // ---------------- 前台录像（camera 插件，有画面）----------------
 
   Future<void> _startVideo() async {
     final c = _cam;
@@ -297,7 +521,7 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
       if (_st.running) {
         toast(context, '后台录音还在进行，录像可能收不到声音');
       }
-      _initCam();
+      if (!_bgVideo) _initCam();
     } else {
       if (_recording) _stopVideo();
       final c = _cam;
@@ -399,9 +623,12 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
 
+    final running = _mode == _Mode.audio ? _st.running : _anyVideoRunning;
     return ToolScaffold(
       title: '后台录音录像',
-      subtitle: _mode == _Mode.audio ? '息屏 / 切后台都继续录' : '录像需要保持前台',
+      subtitle: _mode == _Mode.audio
+          ? '息屏 / 切后台都继续录'
+          : (_bgVideo ? '息屏 / 切后台都继续录（无画面）' : '有画面，但需要保持前台'),
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 32),
         children: [
@@ -414,13 +641,27 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
                 onSelected: (_) => _switchMode(_Mode.audio),
               ),
               ChoiceChip(
-                label: const Text('录像（前台）'),
+                label: const Text('录像'),
                 selected: _mode == _Mode.video,
                 onSelected: (_) => _switchMode(_Mode.video),
               ),
+              if (running)
+                Chip(
+                  avatar: Icon(Icons.fiber_manual_record,
+                      size: 13, color: Theme.of(context).colorScheme.error),
+                  label: const Text('录制中'),
+                  labelStyle: TextStyle(
+                      fontSize: 11.5, color: Theme.of(context).colorScheme.error),
+                  visualDensity: VisualDensity.compact,
+                ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
+
+          // ---------------- 保存位置（录音 / 录像共用，v1.6.0 新增）----------------
+          _saveDirRow(scheme),
+          const SizedBox(height: 10),
+
           if (_mode == _Mode.audio) _audioCard(scheme) else _videoCard(scheme),
 
           // ---------------- 回放条 ----------------
@@ -458,6 +699,104 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
         ],
       ),
     );
+  }
+
+  // ---------------- 保存位置（v1.6.0）----------------
+
+  /// 当前实际生效的保存目录：自定义优先，没设就用应用私有目录。
+  String get _effectiveDir =>
+      (_saveDir != null && _saveDir!.isNotEmpty) ? _saveDir! : _defaultSaveDir;
+
+  Widget _saveDirRow(ColorScheme scheme) {
+    final custom = _saveDir != null && _saveDir!.isNotEmpty;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        child: Row(
+          children: [
+            Icon(Icons.folder_outlined, size: 18, color: scheme.primary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(custom ? '保存位置：自定义文件夹' : '保存位置：应用私有目录',
+                      style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 2),
+                  Text(
+                    _effectiveDir.isEmpty ? '（正在读取…）' : _effectiveDir,
+                    maxLines: 2,
+                    style: TextStyle(fontSize: 10.5, height: 1.45, color: scheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            ),
+            PopupMenuButton<String>(
+              tooltip: '保存位置',
+              icon: const Icon(Icons.more_vert, size: 20),
+              onSelected: (v) {
+                if (v == 'browse') _pickSaveDir();
+                if (v == 'reset') _resetSaveDir();
+              },
+              itemBuilder: (_) => const <PopupMenuEntry<String>>[
+                PopupMenuItem<String>(value: 'browse', child: Text('选择文件夹…')),
+                PopupMenuItem<String>(value: 'reset', child: Text('恢复成应用私有目录')),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickSaveDir() async {
+    // 起点优先用「现在的目录」，它不存在的话退到应用私有目录
+    var start = _effectiveDir;
+    if (start.isEmpty) {
+      try {
+        start = (await AudioRecorder.defaultDir()).path;
+      } catch (_) {
+        start = '/storage/emulated/0';
+      }
+    }
+    if (!mounted) return;
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (_) => FolderPicker(
+        initial: start,
+        title: '录音录像存到哪儿',
+        confirmText: '就存这儿',
+      ),
+    );
+    if (picked == null || picked.isEmpty) return;
+    await SettingsStore.instance.setRecorderDirPath(picked);
+    if (!mounted) return;
+    setState(() => _saveDir = picked);
+    // 立刻验一下能不能写：选了「下载」这类公共目录又没给
+    // 「所有文件访问权限」的话，这里就该报出来，而不是等用户录了半小时才发现
+    await _probeDir(picked);
+  }
+
+  Future<void> _resetSaveDir() async {
+    await SettingsStore.instance.setRecorderDirPath(null);
+    if (!mounted) return;
+    setState(() => _saveDir = null);
+    toast(context, '已恢复成应用私有目录');
+  }
+
+  /// 试写一个小文件，验证目录真的能写。
+  Future<void> _probeDir(String dir) async {
+    try {
+      final d = Directory(dir);
+      if (!await d.exists()) await d.create(recursive: true);
+      final probe = File(p.join(d.path, '.studyhub_probe'));
+      await probe.writeAsString('ok');
+      await probe.delete();
+      if (mounted) toast(context, '这个文件夹可以写，就用它了');
+    } catch (e) {
+      if (!mounted) return;
+      toast(context, '写不进去（多半是没有「所有文件访问」权限）：$e');
+    }
   }
 
   // ---------------- 录音卡片 ----------------
@@ -553,6 +892,21 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
                 ),
               ],
             ),
+            const SizedBox(height: 6),
+            // v1.6.0：最长录多久。到点由**原生服务**自己停（Dart 的 Timer
+            // 在 App 被冻结后是停的，拿它限时会直接失控）。
+            _maxDurRow(
+              scheme,
+              icon: Icons.timer_outlined,
+              label: '最长录音时长',
+              value: _audioMaxMin,
+              options: Defaults.audioMaxOptions,
+              enabled: !running,
+              onChanged: (v) async {
+                setState(() => _audioMaxMin = v);
+                await SettingsStore.instance.setAudioMaxMinutes(v);
+              },
+            ),
             if (err != null) ...[
               const SizedBox(height: 10),
               _errBox(scheme, err),
@@ -563,106 +917,283 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
     );
   }
 
+  // ---------------- 通用小行：时长上限 ----------------
+
+  /// 一行「名字 + 下拉框」的时长上限设置。
+  ///
+  /// 0 显示成「不限」。用下拉而不是滑块：时长的档位本来就是几个整数，
+  /// 滑块反而拖不准（想要整整 30 分钟，滑出来是 29.8）。
+  Widget _maxDurRow(
+    ColorScheme scheme, {
+    required IconData icon,
+    required String label,
+    required int value,
+    required List<int> options,
+    required bool enabled,
+    required ValueChanged<int> onChanged,
+  }) =>
+      Row(
+        children: [
+          Icon(icon, size: 17, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(label, style: const TextStyle(fontSize: 12.5)),
+          ),
+          DropdownButton<int>(
+            value: value,
+            isDense: true,
+            underline: const SizedBox.shrink(),
+            style: TextStyle(
+                fontSize: 12.5,
+                color: enabled ? scheme.onSurface : scheme.onSurfaceVariant),
+            items: [
+              for (final m in options)
+                DropdownMenuItem<int>(
+                    value: m, child: Text(m == 0 ? '不限' : '$m 分钟')),
+            ],
+            // 正在录的时候不让改：改了也来不及生效，还会让人以为设置生效了
+            onChanged: enabled ? (v) {
+              if (v != null) onChanged(v);
+            } : null,
+          ),
+        ],
+      );
+
   // ---------------- 录像卡片 ----------------
 
   Widget _videoCard(ColorScheme scheme) {
+    final running = _anyVideoRunning;
     final c = _cam;
     final ready = _camInit && c != null && c.value.isInitialized;
+    final err = _videoErr ?? (_bgVideo ? (_vst.hasError ? _vst.error : null) : null);
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ---------- 录制方式 ----------
+            const Text('录制方式', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ChoiceChip(
+                  label: const Text('后台录像（能息屏）'),
+                  selected: _bgVideo,
+                  onSelected: running ? null : (_) => _setBgVideo(true),
+                ),
+                ChoiceChip(
+                  label: const Text('前台录像（有画面）'),
+                  selected: !_bgVideo,
+                  onSelected: running ? null : (_) => _setBgVideo(false),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _bgVideo
+                  ? '相机交给原生前台服务持有，**页面上没有画面**，但锁屏、切到别的 App 都继续录。'
+                  : '页面里有实时画面，但**必须让 App 停在前台**，退出去就会停。',
+              style: TextStyle(fontSize: 11, height: 1.5, color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 12),
+
+            // ---------- 取景区 / 状态区 ----------
             SizedBox(
-              height: 230,
+              height: 210,
               width: double.infinity,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: ready
-                    ? Center(child: CameraPreview(c))
-                    : Container(
-                        color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
-                        alignment: Alignment.center,
-                        child: _videoBusy
-                            ? Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(
-                                    width: 22,
-                                    height: 22,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2, color: scheme.primary),
+                child: _bgVideo
+                    ? _bgPanel(scheme, running)
+                    : (ready
+                        ? Center(child: CameraPreview(c))
+                        : Container(
+                            color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+                            alignment: Alignment.center,
+                            child: _videoBusy
+                                ? Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SizedBox(
+                                        width: 22,
+                                        height: 22,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2, color: scheme.primary),
+                                      ),
+                                      const SizedBox(height: 10),
+                                      Text('正在打开摄像头…',
+                                          style: TextStyle(
+                                              fontSize: 12, color: scheme.onSurfaceVariant)),
+                                    ],
+                                  )
+                                : Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.videocam_off_outlined,
+                                          size: 34, color: scheme.onSurfaceVariant),
+                                      const SizedBox(height: 8),
+                                      Text('摄像头还没打开',
+                                          style: TextStyle(
+                                              fontSize: 12, color: scheme.onSurfaceVariant)),
+                                      const SizedBox(height: 10),
+                                      OutlinedButton.icon(
+                                        onPressed: _videoBusy ? null : _initCam,
+                                        icon: const Icon(Icons.videocam, size: 18),
+                                        label: const Text('打开摄像头'),
+                                      ),
+                                    ],
                                   ),
-                                  const SizedBox(height: 10),
-                                  Text('正在打开摄像头…',
-                                      style: TextStyle(
-                                          fontSize: 12, color: scheme.onSurfaceVariant)),
-                                ],
-                              )
-                            : Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.videocam_off_outlined,
-                                      size: 34, color: scheme.onSurfaceVariant),
-                                  const SizedBox(height: 8),
-                                  Text('摄像头还没打开',
-                                      style: TextStyle(
-                                          fontSize: 12, color: scheme.onSurfaceVariant)),
-                                  const SizedBox(height: 10),
-                                  OutlinedButton.icon(
-                                    onPressed: _videoBusy ? null : _initCam,
-                                    icon: const Icon(Icons.videocam, size: 18),
-                                    label: const Text('打开摄像头'),
-                                  ),
-                                ],
-                              ),
-                      ),
+                          )),
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
+
+            // ---------- 摄像头 / 声音 ----------
+            Row(
+              children: [
+                Icon(Icons.cameraswitch_outlined, size: 17, color: scheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _lens == 'front' ? '摄像头：前置' : '摄像头：后置',
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+                ),
+                TextButton(
+                  onPressed: running ? null : _switchLens,
+                  child: const Text('切换'),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Icon(Icons.mic_none, size: 17, color: scheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('录制声音', style: TextStyle(fontSize: 12.5)),
+                ),
+                Switch(
+                  value: _vAudio,
+                  onChanged: running ? null : (v) => _setVAudio(v),
+                ),
+              ],
+            ),
+            _maxDurRow(
+              scheme,
+              icon: Icons.timer_outlined,
+              label: '最长录像时长',
+              value: _videoMaxMin,
+              options: Defaults.videoMaxOptions,
+              enabled: !running,
+              onChanged: (v) async {
+                setState(() => _videoMaxMin = v);
+                await SettingsStore.instance.setVideoMaxMinutes(v);
+              },
+            ),
+            const SizedBox(height: 12),
+
+            // ---------- 开始 / 停止 ----------
             Row(
               children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: (_videoBusy || (!ready && !_recording))
+                    onPressed: _videoBusy || (!_bgVideo && !ready && !_recording)
                         ? null
-                        : (_recording ? _stopVideo : _startVideo),
-                    icon: Icon(_recording ? Icons.stop : Icons.videocam, size: 20),
-                    label: Text(_recording ? '停止并保存' : '开始录像'),
+                        : (running
+                            ? (_bgVideo ? _stopBgVideo : _stopVideo)
+                            : (_bgVideo ? _startBgVideo : _startVideo)),
+                    icon: Icon(running ? Icons.stop : Icons.videocam, size: 20),
+                    label: Text(running ? '停止并保存' : '开始录像'),
                     style: FilledButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 13),
-                      backgroundColor: _recording ? scheme.error : null,
+                      backgroundColor: running ? scheme.error : null,
                     ),
                   ),
                 ),
-                if (ready && !_recording) ...[
-                  const SizedBox(width: 10),
-                  IconButton.filledTonal(
-                    tooltip: '重置摄像头',
-                    onPressed: _videoBusy ? null : _initCam,
-                    icon: const Icon(Icons.cameraswitch_outlined, size: 20),
-                  ),
-                ],
               ],
             ),
-            if (_recording) ...[
+            if (err != null) ...[
               const SizedBox(height: 10),
-              Row(
-                children: [
-                  Icon(Icons.fiber_manual_record, size: 13, color: scheme.error),
-                  const SizedBox(width: 6),
-                  Text('正在录像（请保持 App 在前台）',
-                      style: TextStyle(fontSize: 12, color: scheme.error)),
-                ],
-              ),
-            ],
-            if (_videoErr != null) ...[
-              const SizedBox(height: 10),
-              _errBox(scheme, _videoErr!),
+              _errBox(scheme, err),
             ],
           ],
         ),
+      ),
+    );
+  }
+
+  /// 后台录像时替掉取景框的那块状态面板。
+  ///
+  /// 为什么不做个小预览：相机同一时刻只能有一个持有者。画面被前台服务拿走了，
+  /// Activity 这边就什么都看不到 —— 与其画个假的，不如老实说清楚，
+  /// 并把「录了多久」这个真正有用的信息放大给用户。
+  Widget _bgPanel(ColorScheme scheme, bool running) {
+    final name = _vPending == null ? '' : p.basename(_vPending!.path);
+    return Container(
+      color: const Color(0xFF14110F),
+      alignment: Alignment.center,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (running) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 9,
+                  height: 9,
+                  decoration: const BoxDecoration(
+                      shape: BoxShape.circle, color: Color(0xFFE5484D)),
+                ),
+                const SizedBox(width: 8),
+                const Text('正在录像',
+                    style: TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFFE5484D))),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              AudioRecorder.elapsedText(_vst.elapsedMs),
+              style: const TextStyle(
+                fontSize: 42,
+                height: 1.1,
+                fontWeight: FontWeight.w300,
+                letterSpacing: 1,
+                color: Colors.white,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text('可以锁屏、可以切到别的 App\n回来点「停止并保存」',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, height: 1.6, color: Colors.white70)),
+            if (name.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 10, color: Colors.white38)),
+            ],
+          ] else ...[
+            const Icon(Icons.videocam_outlined, size: 34, color: Colors.white38),
+            const SizedBox(height: 10),
+            const Text('后台录像没有预览画面',
+                style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white70)),
+            const SizedBox(height: 6),
+            Text(
+              '相机被后台服务独占，换取的是「锁屏也继续录」。\n'
+              '想看画面就切到「前台录像」。',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, height: 1.6, color: Colors.white.withValues(alpha: 0.5)),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -807,16 +1338,25 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
             _note(scheme, '**录音是真后台**：靠一个前台服务在跑（通知栏会有一条常驻通知），'
                 '息屏、切到别的 App、清掉最近任务都还在录。这也是 Android 对麦克风的硬性要求 —— '
                 '没有前台服务，后台一秒钟都录不到。'),
-            _note(scheme, '**录像做不到后台**：Android 9 起禁止后台访问摄像头，'
-                '所以录像必须让 App 停在屏幕上。这点和 Alibi 在老系统上的体验不一样，'
-                '不是没做，是系统不让。'),
-            _note(scheme, '文件存在**应用私有目录**（`文档/recordings/`），不需要存储权限。'
-                '想拿到手机公共目录里，用行末菜单的「导出到「下载」目录」，'
-                '或者直接「分享」给别人。'),
+            _note(scheme, '**录像也能后台**（v1.6.0 新加）：同样是前台服务，只不过类型声明成 `camera`。'
+                'Android 9 起的限制是「后台应用不能碰相机」，而一条 camera 类型的前台服务**不算后台** —— '
+                '这也是 Alibi 的做法。唯一的规矩是必须**在前台把服务启动起来**（也就是你点「开始录像」的时候），'
+                '之后锁屏、切走都继续录。'),
+            _note(scheme, '**两种录像方式的取舍**：后台录像没有画面（相机被服务独占了），'
+                '换来的是能息屏；前台录像有实时画面，但退到后台就停。按需要挑。'),
+            _note(scheme, '**录像时可以去忙别的**：切到后台之后系统会用相机/麦克风指示灯'
+                '和那条常驻通知提醒你——这是 Android 的硬性规定，任何 App 都关不掉，'
+                '所以录之前想清楚合不合适。'),
+            _note(scheme, '文件默认存在**应用私有目录**（`文档/recordings/`），不需要存储权限；'
+                '页面顶部可以改成别的文件夹（比如系统「下载」目录，那种目录要先给「所有文件访问」权限）。'
+                '拿到别处还有两条路：行末菜单「导出到「下载」目录」，或者直接「分享」。'),
             _note(scheme, '录音格式是 `m4a`（AAC 96 kbps 单声道 44.1 kHz），'
-                '一个小时约 43 MB，手机和电脑都能直接播；录像格式是 `mp4`。'),
+                '一个小时约 43 MB，手机和电脑都能直接播；录像格式是 `mp4`（H.264，约 1080p，'
+                '一分钟 40~60 MB）。'),
             _note(scheme, '录音和录像**不要同时开** —— 两个都在抢麦克风，'
                 '后开的那个大概率录不到声音。'),
+            _note(scheme, '**时长上限**到点由服务自己停并保存，不依赖 App 在前台 —— '
+                '设了 10 分钟然后锁屏走人，到点它也会老老实实收尾。'),
           ],
         ),
       ),

@@ -103,6 +103,16 @@ class Defaults {
   /// 「不带答案」模式下答错后停留几秒再跳（答对是立刻跳）
   static const int wrongStaySec = 6;
 
+  /// 「刷题模式（只看不做）」下自动翻页的秒数。0 = 不自动跳。
+  ///
+  /// v1.6.0 按用户要求从 `autoNextSec` 里**独立出来**。
+  /// 用户要的是三个各自独立的时间：
+  ///   ① 普通模式答完跳的   → autoNextSec
+  ///   ② 普通模式答错后跳的 → wrongStaySec
+  ///   ③ 只看不做模式跳的   → browseNextSec
+  /// 只看不做是「背题」，节奏本来就比做题慢，默认给 5 秒。
+  static const int browseNextSec = 5;
+
   /// 「自动下一题」秒数可选项（0 表示关闭）
   ///
   /// v1.4.0 按用户要求调整：补上 1 秒和 2 秒（想快刷的人需要更短的间隔），
@@ -112,6 +122,10 @@ class Defaults {
   /// 答错停留秒数可选项。
   /// v1.4.0 去掉末尾两项 —— 15 / 30 秒等得太久，实际上没人会让它自己跳。
   static const List<int> wrongStaySecOptions = [2, 4, 6, 10];
+
+  /// 「只看不做」模式翻页秒数可选项（0 表示关闭）。
+  /// 比做题模式整体慢一档：背题时一页总要多看两眼。
+  static const List<int> browseNextSecOptions = [0, 3, 5, 8, 12, 20];
 
   /// 默认下载目录（Android）：系统「下载」目录下的 StudyHub 文件夹
   static const String androidDownloadFolder = 'StudyHub';
@@ -135,6 +149,24 @@ class Defaults {
 
   /// 可选的同步间隔（分钟）
   static const List<int> syncIntervalOptions = [1, 2, 5, 10, 15, 30, 60];
+
+  // ---------------------------------------------------------- 后台录音录像（v1.6.0）
+
+  /// 录音最长时长默认值（分钟）。0 = 不限。
+  static const int audioMaxMinutes = 0;
+
+  /// 录像最长时长默认值（分钟）。0 = 不限。
+  ///
+  /// 录像给 0，但页面上会摆出几档 —— 录像是真占空间的
+  /// （1080p 大约 1 分钟 60 MB），长时间没人看着录很容易把存储吃光，
+  /// 所以选项里有 5 / 10 / 30 分钟这些常用档。
+  static const int videoMaxMinutes = 0;
+
+  /// 录音最长时长可选项（分钟，0 = 不限）
+  static const List<int> audioMaxOptions = [0, 5, 10, 20, 30, 60, 120];
+
+  /// 录像最长时长可选项（分钟，0 = 不限）
+  static const List<int> videoMaxOptions = [0, 1, 3, 5, 10, 20, 30, 60];
 }
 
 /// App 版本（设置页「关于」里显示）。
@@ -144,4 +176,4 @@ class Defaults {
 ///     这个项目历次构建翻车全是因为依赖，为一个版本号不值得。
 ///   * 反正发版时 pubspec 里的 version 也是手改的，两处一起改就行。
 /// 改这里的时候记得同步 pubspec.yaml 的 version。
-const String kAppVersion = '1.5.0';
+const String kAppVersion = '1.6.0';

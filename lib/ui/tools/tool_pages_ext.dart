@@ -3,6 +3,9 @@ import 'dart:convert';
 // Platform 在这个文件里用来判断 Android/iOS（手电筒、相机权限那些）
 import 'dart:io';
 import 'dart:math' as math;
+// Uint8List 来自 dart:typed_data。这里 dart:ui 是「as ui」前缀引入的，
+// 不会把 Uint8List 带进来 —— 二维码/条码保存成 PNG 时要用，必须自己引。
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
@@ -1366,17 +1369,20 @@ class _QrToolPageState extends State<QrToolPage> {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: valid ? () => copyText(context, data) : null,
-                  icon: const Icon(Icons.copy, size: 18),
-                  label: const Text('复制内容'),
+                  // v1.6.0：这一颗原来是「复制内容」，用户要求改成「保存」——
+                  // 点了直接把二维码图存到本地（复制内容另有别的入口，二维码本来也不是拿来拷文字的）
+                  onPressed: valid ? _saveQr : null,
+                  icon: const Icon(Icons.download_outlined, size: 18),
+                  label: const Text('保存'),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: valid ? _saveQr : null,
+                  // v1.6.0：原来叫「保存 / 分享」，用户要求直接叫「分享」
+                  onPressed: valid ? _shareQr : null,
                   icon: const Icon(Icons.ios_share, size: 18),
-                  label: const Text('保存 / 分享'),
+                  label: const Text('分享'),
                 ),
               ),
             ],
@@ -1386,15 +1392,43 @@ class _QrToolPageState extends State<QrToolPage> {
     );
   }
 
+  /// 把当前二维码渲染成 PNG 字节。渲染不出来返回 null。
+  ///
+  /// 抽出来是因为 v1.6.0 起「保存」和「分享」都要先拿到这份字节，
+  /// 两处各写一遍 toImage/toByteData 迟早有一遍会漏掉判空。
+  Future<Uint8List?> _qrPng() async {
+    final b = _boundary.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+    if (b == null) return null;
+    final img = await b.toImage(pixelRatio: 3);
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    return data?.buffer.asUint8List();
+  }
+
+  /// 「保存」：安静地存到下载目录，不拉分享面板。
   Future<void> _saveQr() async {
     try {
-      final b = _boundary.currentContext?.findRenderObject() as RenderRepaintBoundary?;
-      if (b == null) return;
-      final img = await b.toImage(pixelRatio: 3);
-      final data = await img.toByteData(format: ui.ImageByteFormat.png);
-      if (data == null) return;
-      final f = await saveToDownload('二维码_${DateTime.now().millisecondsSinceEpoch}.png',
-          data.buffer.asUint8List());
+      final bytes = await _qrPng();
+      if (bytes == null || !mounted) return;
+      final f = await saveToDownload(
+          '二维码_${DateTime.now().millisecondsSinceEpoch}.png', bytes);
+      if (!mounted) return;
+      if (f == null) {
+        toast(context, '保存失败，检查存储权限');
+        return;
+      }
+      toast(context, '已保存到 ${f.path}');
+    } catch (e) {
+      if (mounted) toast(context, '保存失败：$e');
+    }
+  }
+
+  /// 「分享」：分享得先有文件，所以还是先落盘，再拉起分享面板。
+  Future<void> _shareQr() async {
+    try {
+      final bytes = await _qrPng();
+      if (bytes == null || !mounted) return;
+      final f = await saveToDownload(
+          '二维码_${DateTime.now().millisecondsSinceEpoch}.png', bytes);
       if (!mounted) return;
       if (f == null) {
         toast(context, '保存失败，检查存储权限');
@@ -2356,80 +2390,62 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
                 ),
               ),
               if (!_full)
-                Container(
-                  color: scheme.surface,
-                  padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: FilledButton.icon(
-                              onPressed: _toggle,
-                              icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
-                              label: Text(_playing ? '暂停（也可点屏幕）' : '开始提词'),
+                // ★ v1.6.0 修的真 bug：这块面板原来裸在 Scaffold 的 body 里，
+                // 而这个页面走的是 edgeToEdge（系统栏是「浮」在内容上面的）。
+                // 结果竖屏时最下面那行「行距」滑块正好被系统导航条盖住，
+                // 伸手也拖不动 —— 用户反馈的就是这句「调行距的按钮被遮挡」。
+                // 包一层 SafeArea（只要 bottom）把底部安全区让出来就好。
+                SafeArea(
+                  top: false,
+                  child: Container(
+                    color: scheme.surface,
+                    padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: _toggle,
+                                icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
+                                label: Text(_playing ? '暂停（也可点屏幕）' : '开始提词'),
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 10),
-                          OutlinedButton.icon(
-                            onPressed: () => _editScript(),
-                            icon: const Icon(Icons.edit_outlined, size: 18),
-                            label: const Text('改稿'),
-                          ),
-                        ],
-                      ),
-                      Row(
-                        children: [
-                          const Icon(Icons.speed, size: 17),
-                          Expanded(
-                            child: Slider(
-                              value: _speed,
-                              min: 8,
-                              max: 200,
-                              onChanged: (v) => setState(() => _speed = v),
+                            const SizedBox(width: 10),
+                            OutlinedButton.icon(
+                              onPressed: () => _editScript(),
+                              icon: const Icon(Icons.edit_outlined, size: 18),
+                              label: const Text('改稿'),
                             ),
-                          ),
-                          SizedBox(
-                              width: 46,
-                              child: Text('${_speed.round()}',
-                                  style: const TextStyle(fontSize: 11.5))),
-                        ],
-                      ),
-                      Row(
-                        children: [
-                          const Icon(Icons.format_size, size: 17),
-                          Expanded(
-                            child: Slider(
-                              value: _fontSize,
-                              min: 16,
-                              max: 90,
-                              onChanged: (v) => setState(() => _fontSize = v),
-                            ),
-                          ),
-                          SizedBox(
-                              width: 46,
-                              child: Text('${_fontSize.round()}',
-                                  style: const TextStyle(fontSize: 11.5))),
-                        ],
-                      ),
-                      Row(
-                        children: [
-                          const Icon(Icons.format_line_spacing, size: 17),
-                          Expanded(
-                            child: Slider(
-                              value: _lineHeight,
-                              min: 1.2,
-                              max: 3.0,
-                              onChanged: (v) => setState(() => _lineHeight = v),
-                            ),
-                          ),
-                          SizedBox(
-                              width: 46,
-                              child: Text(_lineHeight.toStringAsFixed(1),
-                                  style: const TextStyle(fontSize: 11.5))),
-                        ],
-                      ),
-                    ],
+                          ],
+                        ),
+                        _sliderRow(
+                          icon: Icons.speed,
+                          value: _speed,
+                          min: 8,
+                          max: 200,
+                          label: '${_speed.round()}',
+                          onChanged: (v) => setState(() => _speed = v),
+                        ),
+                        _sliderRow(
+                          icon: Icons.format_size,
+                          value: _fontSize,
+                          min: 16,
+                          max: 90,
+                          label: '${_fontSize.round()}',
+                          onChanged: (v) => setState(() => _fontSize = v),
+                        ),
+                        _sliderRow(
+                          icon: Icons.format_line_spacing,
+                          value: _lineHeight,
+                          min: 1.2,
+                          max: 3.0,
+                          label: _lineHeight.toStringAsFixed(1),
+                          onChanged: (v) => setState(() => _lineHeight = v),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
             ],
@@ -2441,15 +2457,17 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
             Positioned(
               top: 8,
               right: 8,
-              child: Material(
-                color: Colors.black45,
-                shape: const CircleBorder(),
-                child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: _toggleFull,
-                  child: const Padding(
-                    padding: EdgeInsets.all(9),
-                    child: Icon(Icons.fullscreen_exit, color: Colors.white70, size: 22),
+              child: SafeArea(
+                child: Material(
+                  color: Colors.black45,
+                  shape: const CircleBorder(),
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: _toggleFull,
+                    child: const Padding(
+                      padding: EdgeInsets.all(9),
+                      child: Icon(Icons.fullscreen_exit, color: Colors.white70, size: 22),
+                    ),
                   ),
                 ),
               ),
@@ -2458,6 +2476,48 @@ class _TeleprompterPageState extends State<TeleprompterPage> {
       ),
     );
   }
+
+  /// 一行滑块：图标 + 滑条 + 右侧数值。
+  ///
+  /// 抽出来是因为原来三个 Row 是复制粘贴的，改一处漏两处；
+  /// 顺便把 `Slider` 外层的默认 48 高度压到 40 —— 竖屏小屏上
+  /// 这几十像素是「会不会溢出」和「最后一行的行距滑块看得见看不见」的分界。
+  Widget _sliderRow({
+    required IconData icon,
+    required double value,
+    required double min,
+    required double max,
+    required String label,
+    required ValueChanged<double> onChanged,
+  }) =>
+      SizedBox(
+        height: 40,
+        child: Row(
+          children: [
+            Icon(icon, size: 16),
+            Expanded(
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
+                ),
+                child: Slider(
+                  value: value,
+                  min: min,
+                  max: max,
+                  onChanged: onChanged,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 44,
+              child: Text(label,
+                  textAlign: TextAlign.right, style: const TextStyle(fontSize: 11.5)),
+            ),
+          ],
+        ),
+      );
 
   Future<void> _editScript() async {
     _timer?.cancel();
@@ -2711,13 +2771,15 @@ class DeadPixelPage extends StatefulWidget {
 
 class _DeadPixelPageState extends State<DeadPixelPage> {
   int _i = 0;
-  bool _auto = false;
 
   /// 是否已经点过「开始检测」。开始之后提示文字与按钮全部收起 ——
   /// 这时候屏幕上任何多余的东西都会干扰「找亮点」这件事。
   bool _started = false;
 
   Timer? _t;
+
+  /// 每种颜色停留多久。一轮 = 9 种颜色依次铺满，走完自动退出。
+  static const _dwell = Duration(seconds: 3);
 
   static const _colors = <(String, Color)>[
     ('白', Colors.white),
@@ -2748,22 +2810,38 @@ class _DeadPixelPageState extends State<DeadPixelPage> {
     super.dispose();
   }
 
-  void _toggleAuto() {
-    setState(() => _auto = !_auto);
+  /// 点「开始检测」：从当前颜色开始自动往下轮，一轮走完自己退出。
+  ///
+  /// v1.6.0 改动（用户提的）：
+  ///   * 点屏幕**不再**换颜色。原来手一抖就把颜色翻过去了，
+  ///     正盯着看的那一屏直接没了。现在只有这颗按钮能启动。
+  ///   * 长按自动轮播删掉了 —— 改成本来就是自动轮播，不必再长按。
+  ///   * 走完最后一色自动 pop 回工具箱，不用用户自己找返回。
+  void _start() {
+    if (_started) return;
+    setState(() => _started = true);
     _t?.cancel();
-    if (!_auto) return;
-    _t = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (mounted) setState(() => _i = (_i + 1) % _colors.length);
+    _t = Timer.periodic(_dwell, (_) {
+      if (!mounted) return;
+      if (_i >= _colors.length - 1) {
+        // 一轮结束
+        _t?.cancel();
+        Navigator.of(context).maybePop();
+        return;
+      }
+      setState(() => _i++);
     });
   }
 
   /// 底部色圈。每个圈画成它代表的那个颜色本身，
   /// 当前选中的那个加粗描边 + 稍微放大。
+  ///
+  /// 开始检测之后变成纯指示器（不可点）—— 一轮的顺序是固定的。
   Widget _dot(int i, Color fg, bool compact) {
     final on = i == _i;
     final size = compact ? (on ? 16.0 : 12.0) : (on ? 20.0 : 15.0);
     return GestureDetector(
-      onTap: () => setState(() => _i = i),
+      onTap: _started ? null : () => setState(() => _i = i),
       behavior: HitTestBehavior.opaque,
       child: Container(
         width: size,
@@ -2792,56 +2870,51 @@ class _DeadPixelPageState extends State<DeadPixelPage> {
 
     return Scaffold(
       backgroundColor: col,
-      body: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        // 点屏幕换下一个颜色。开始检测之后这是最主要的操作，
-        // 所以不做任何额外的判定 —— 点哪儿都算。
-        onTap: () => setState(() => _i = (_i + 1) % _colors.length),
-        onLongPress: _toggleAuto,
-        child: Stack(
-          children: [
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 26,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      for (var i = 0; i < _colors.length; i++) _dot(i, fg, _started),
-                    ],
-                  ),
-                  if (!_started) ...[
-                    const SizedBox(height: 16),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 28),
-                      child: Text(
-                        '把屏幕调到最亮，盯着整块颜色找不对劲的亮点 / 暗点。\n'
-                        '点屏幕换颜色，长按自动轮播。',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            fontSize: 12.5, height: 1.7, color: fg.withValues(alpha: 0.6)),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    FilledButton.icon(
-                      onPressed: () => setState(() => _started = true),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: fg,
-                        foregroundColor: lightBg ? Colors.white : Colors.black,
-                        padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 12),
-                      ),
-                      icon: const Icon(Icons.play_arrow_rounded, size: 20),
-                      label: const Text('开始检测'),
-                    ),
+      // 注意这里**没有** GestureDetector 了：点屏幕不做任何事。
+      body: Stack(
+        children: [
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 26,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    for (var i = 0; i < _colors.length; i++) _dot(i, fg, _started),
                   ],
+                ),
+                if (!_started) ...[
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 28),
+                    child: Text(
+                      '把屏幕调到最亮，盯着整块颜色找不对劲的亮点 / 暗点。\n'
+                      '点「开始检测」后会自动依次铺满 9 种颜色，'
+                      '一轮走完自动退出。',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 12.5, height: 1.7, color: fg.withValues(alpha: 0.6)),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  FilledButton.icon(
+                    onPressed: _start,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: fg,
+                      foregroundColor: lightBg ? Colors.white : Colors.black,
+                      padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 12),
+                    ),
+                    icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                    label: const Text('开始检测'),
+                  ),
                 ],
-              ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

@@ -8,16 +8,27 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.ServiceInfo
+import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.util.DisplayMetrics
+import android.util.Size
+import android.view.Surface
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -158,11 +169,15 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "start" -> {
                         val path = call.argument<String>("path")
+                        // 用 Any 接再自己转 Number：Dart 传过来的整数在标准编解码器里
+                        // 小的是 Int、大的会变 Long，写死 argument<Int> 会在
+                        // 「不限时长」传 0 以外的大数时拿到 null。
+                        val maxMs = (call.argument<Any>("maxDurationMs") as? Number)?.toLong() ?: 0L
                         if (path.isNullOrBlank()) {
                             result.error("bad_args", "缺少录音文件路径", null)
                         } else {
                             try {
-                                RecorderService.start(applicationContext, path)
+                                RecorderService.start(applicationContext, path, maxMs)
                                 result.success(true)
                             } catch (t: Throwable) {
                                 result.error("start_failed", t.message ?: "启动录音失败", null)
@@ -183,6 +198,92 @@ class MainActivity : FlutterActivity() {
                         out["elapsedMs"] = RecorderService.elapsedMs()
                         out["error"] = RecorderService.lastError
                         result.success(out)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // ---- 后台录像：开 / 停 / 查状态（v1.6.0 新增）----
+        //
+        // 和上面那条录音通道长得一样，但走的是完全不同的实现：
+        // 录音只是「麦克风 + 前台服务」，录像还要把相机交给服务持有，
+        // 所以必须声明 foregroundServiceType="camera"（见 AndroidManifest.xml）。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, VIDEOREC_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> {
+                        val path = call.argument<String>("path")
+                        val lens = call.argument<String>("lens") ?: "back"
+                        val audio = call.argument<Boolean>("audio") ?: true
+                        val maxMs =
+                            (call.argument<Any>("maxDurationMs") as? Number)?.toLong() ?: 0L
+                        if (path.isNullOrBlank()) {
+                            result.error("bad_args", "缺少录像文件路径", null)
+                        } else {
+                            try {
+                                VideoRecorderService.start(
+                                    applicationContext, path, lens, audio, maxMs
+                                )
+                                result.success(true)
+                            } catch (t: Throwable) {
+                                result.error("start_failed", t.message ?: "启动录像失败", null)
+                            }
+                        }
+                    }
+                    "stop" -> {
+                        try {
+                            VideoRecorderService.stop(applicationContext)
+                            result.success(true)
+                        } catch (t: Throwable) {
+                            result.error("stop_failed", t.message ?: "停止录像失败", null)
+                        }
+                    }
+                    "status" -> {
+                        val out = HashMap<String, Any?>()
+                        out["running"] = VideoRecorderService.running
+                        out["elapsedMs"] = VideoRecorderService.elapsedMs()
+                        out["error"] = VideoRecorderService.lastError
+                        result.success(out)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // ---- 系统媒体音量（v1.6.0 新增，播放器用）----
+        //
+        // 为什么要这么一个通道：media_kit 的 setVolume 是**乘在系统音量之上**的系数，
+        // 手机媒体音量只有 30% 时播放器系数调到 100% 也还是 30% 的响度 ——
+        // 用户得先去按手机侧面的音量键。用户第 1 条要求「不按音量键也能把音量开到最大」，
+        // 所以这里直接改 AudioManager 的 STREAM_MUSIC。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AUDIO_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                if (am == null) {
+                    result.success(null)
+                    return@setMethodCallHandler
+                }
+                when (call.method) {
+                    "getMusicVolume" -> {
+                        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                        val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                        // 归一化成 0~100 百分比；max 异常时返回 null，让 Dart 侧退回老逻辑
+                        result.success(if (max <= 0) null else cur * 100.0 / max)
+                    }
+                    "setMusicVolume" -> {
+                        val pct = call.argument<Int>("percent") ?: 0
+                        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                        if (max <= 0) {
+                            result.success(false)
+                        } else {
+                            val target = Math.round(pct.coerceIn(0, 100) * max / 100.0).toInt()
+                            try {
+                                // flags = 0：不弹系统音量条，免得挡画面
+                                am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+                                result.success(true)
+                            } catch (t: Throwable) {
+                                result.error("set_failed", t.message ?: "设置音量失败", null)
+                            }
+                        }
                     }
                     else -> result.notImplemented()
                 }
@@ -358,6 +459,16 @@ class MainActivity : FlutterActivity() {
         private var recorder: MediaRecorder? = null
         private var wakeLock: PowerManager.WakeLock? = null
 
+        /**
+         * 「最长录多久」的定时器（v1.6.0 新增）。
+         *
+         * 用 Handler 而不是 Dart 侧的 Timer：服务必须自己收尾 ——
+         * 用户设置了「最多录 30 分钟」然后切后台，Dart 侧早就被冻结了，
+         * 只有原生这条定时器能保证到点真的停下来并把文件写完。
+         */
+        private val main = Handler(Looper.getMainLooper())
+        private var stopRunnable: Runnable? = null
+
         override fun onBind(intent: Intent?): IBinder? = null
 
         override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -366,6 +477,7 @@ class MainActivity : FlutterActivity() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            val maxMs = intent.getLongExtra(EXTRA_MAX_MS, 0L)
             // 已经在录了就别重开：会盖掉上一段
             if (running) return START_STICKY
             return try {
@@ -375,6 +487,7 @@ class MainActivity : FlutterActivity() {
                 running = true
                 lastError = null
                 startedAt = System.currentTimeMillis()
+                scheduleAutoStop(maxMs)
                 START_STICKY
             } catch (t: Throwable) {
                 lastError = t.message ?: t.javaClass.simpleName
@@ -383,6 +496,29 @@ class MainActivity : FlutterActivity() {
                 stopSelf()
                 START_NOT_STICKY
             }
+        }
+
+        /**
+         * 到点自动停。`maxMs <= 0` 表示不限时长。
+         *
+         * 走 `stopSelf()` 而不是直接 release：让 onDestroy 里那条收尾路径
+         * 统一处理（停止 / 释放 / 撤通知），只有一处逻辑才不容易漏。
+         */
+        private fun scheduleAutoStop(maxMs: Long) {
+            cancelAutoStop()
+            if (maxMs <= 0L) return
+            val r = Runnable {
+                // 到点了：把录音停掉，通知也随之收掉
+                stopSelf()
+            }
+            stopRunnable = r
+            main.postDelayed(r, maxMs)
+        }
+
+        private fun cancelAutoStop() {
+            val r = stopRunnable ?: return
+            main.removeCallbacks(r)
+            stopRunnable = null
         }
 
         override fun onDestroy() {
@@ -461,6 +597,7 @@ class MainActivity : FlutterActivity() {
         }
 
         private fun releaseAll() {
+            cancelAutoStop()
             try {
                 recorder?.stop()
             } catch (t: Throwable) {
@@ -484,6 +621,7 @@ class MainActivity : FlutterActivity() {
 
         companion object {
             const val EXTRA_PATH = "path"
+            const val EXTRA_MAX_MS = "maxMs"
             private const val CHANNEL_ID = "studyhub_recorder"
             private const val NOTIF_ID = 4101
 
@@ -496,10 +634,11 @@ class MainActivity : FlutterActivity() {
             @Volatile
             var startedAt: Long = 0L
 
-            fun start(context: Context, path: String) {
+            fun start(context: Context, path: String, maxDurationMs: Long = 0L) {
                 lastError = null
                 val i = Intent(context, RecorderService::class.java)
                 i.putExtra(EXTRA_PATH, path)
+                i.putExtra(EXTRA_MAX_MS, maxDurationMs)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(i)
                 } else {
@@ -523,9 +662,451 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /**
+     * 后台录像服务（v1.6.0 新增）。
+     *
+     * ── 为什么值得单独写一个服务 ────────────────────────────
+     * 原来的录像走 Flutter 的 `camera` 插件，只能在**前台**录：
+     * 一退到后台，Android 9 起会直接把相机会话掐掉，文件写不完。
+     * 但「退到后台也能录」是完全可以做到的 —— 关键是把相机放进一个
+     * `foregroundServiceType="camera"` 的**前台服务**里（这也是 Alibi 的做法：
+     * 它的 VideoRecorderService 用的就是 android:foregroundServiceType="camera"）。
+     * 官方文档写得很清楚：camera 类型的前台服务可以「继续在后台访问相机」，
+     * 唯一的限制是**必须在前台启动**这个服务 —— 用户正是在前台点的「开始录像」，
+     * 完全满足。
+     *
+     * ── 为什么没有预览画面 ──────────────────────────────────
+     * 相机只能有一个持有者。前台服务的相机句柄一旦交给服务，Activity 这边
+     * 就没有画面可显示了（要么服务录、要么页面预览，二选一）。
+     * 好在「后台录像」这个场景本来就不需要盯着看（放兜里、当行车记录仪）。
+     * 想要画面的话，页面上还有一条「前台录像（有画面）」的路。
+     *
+     * ── 用 Camera2 而不是 CameraX ──────────────────────────
+     * Camera2 是系统框架自带的（`android.hardware.camera2.*`），
+     * 不需要往 build.gradle 里加任何依赖 —— 这个项目的云端构建流程
+     * 只注入一个 MainActivity.kt 和一个 AndroidManifest.xml，
+     * 加 Gradle 依赖意味着还要改工作流，多一处可能失败的环节。
+     *
+     * ── 录制链路 ────────────────────────────────────────────
+     * CameraManager.openCamera → MediaRecorder.prepare → 拿 `recorder.surface`
+     * 当作 capture target → 开一个 TEMPLATE_RECORD 的重复请求。
+     * 另外挂了一块**假 Surface**（`SurfaceTexture(10)`）当第二个 target：
+     * 一部分 ROM 在「没有预览 target」时会拒绝开会话，加上它就稳了
+     * （这些帧没人消费，直接丢掉，不耗什么）。
+     */
+    class VideoRecorderService : Service() {
+
+        private var camera: CameraDevice? = null
+        private var session: CameraCaptureSession? = null
+        private var recorder: MediaRecorder? = null
+        private var dummyTexture: SurfaceTexture? = null
+        private var dummySurface: Surface? = null
+        private var thread: HandlerThread? = null
+        private var handler: Handler? = null
+        private var wakeLock: PowerManager.WakeLock? = null
+        private var stopRunnable: Runnable? = null
+
+        override fun onBind(intent: Intent?): IBinder? = null
+
+        override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+            val path = intent?.getStringExtra(EXTRA_PATH)
+            if (path.isNullOrBlank()) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            if (running) return START_STICKY
+            val front = intent.getStringExtra(EXTRA_LENS) == "front"
+            val withAudio = intent.getBooleanExtra(EXTRA_AUDIO, true)
+            val maxMs = intent.getLongExtra(EXTRA_MAX_MS, 0L)
+            return try {
+                startForegroundCompat(withAudio)
+                acquireWakeLock()
+                startBackgroundThread()
+                val h = handler ?: throw IllegalStateException("录像线程没起来")
+                openAndRecord(path, front, withAudio, h)
+                running = true
+                lastError = null
+                startedAt = System.currentTimeMillis()
+                scheduleAutoStop(maxMs, h)
+                START_STICKY
+            } catch (t: Throwable) {
+                lastError = t.message ?: t.javaClass.simpleName
+                running = false
+                releaseAll()
+                stopSelf()
+                START_NOT_STICKY
+            }
+        }
+
+        override fun onDestroy() {
+            releaseAll()
+            running = false
+            startedAt = 0L
+            try {
+                stopForeground(true)
+            } catch (t: Throwable) {
+                // 忽略
+            }
+            super.onDestroy()
+        }
+
+        // ------------------------------------------------ 前台通知与唤醒锁
+
+        private fun startForegroundCompat(withAudio: Boolean) {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val ch = NotificationChannel(
+                    CHANNEL_ID, "后台录像", NotificationManager.IMPORTANCE_LOW
+                )
+                ch.description = "录像进行中显示的常驻通知"
+                nm.createNotificationChannel(ch)
+            }
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(this, CHANNEL_ID)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(this)
+            }
+            val notif: Notification = builder
+                .setContentTitle("学聚正在录像")
+                .setContentText("息屏、切到后台都会继续录")
+                .setSmallIcon(applicationInfo.icon)
+                .setOngoing(true)
+                .build()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                if (withAudio) {
+                    types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                }
+                startForeground(NOTIF_ID, notif, types)
+            } else {
+                startForeground(NOTIF_ID, notif)
+            }
+        }
+
+        private fun acquireWakeLock() {
+            try {
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                val lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "studyhub:videorec")
+                lock.setReferenceCounted(false)
+                lock.acquire()
+                wakeLock = lock
+            } catch (t: Throwable) {
+                wakeLock = null
+            }
+        }
+
+        // ------------------------------------------------ 线程
+
+        private fun startBackgroundThread() {
+            val t = HandlerThread("studyhub-videorec")
+            t.start()
+            thread = t
+            handler = Handler(t.looper)
+        }
+
+        private fun stopBackgroundThread() {
+            val t = thread
+            thread = null
+            handler = null
+            if (t == null) return
+            t.quitSafely()
+            try {
+                t.join(500)
+            } catch (e: InterruptedException) {
+                // 忽略：线程本来就要结束了
+            }
+        }
+
+        // ------------------------------------------------ 录制
+
+        private fun openAndRecord(path: String, front: Boolean, withAudio: Boolean, h: Handler) {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+                ?: throw IllegalStateException("这台设备没有相机服务")
+            val wantFacing = if (front) {
+                CameraCharacteristics.LENS_FACING_FRONT
+            } else {
+                CameraCharacteristics.LENS_FACING_BACK
+            }
+            val id = pickCameraId(cm, wantFacing)
+                ?: throw IllegalStateException("没有找到可用的摄像头")
+            val chars = cm.getCameraCharacteristics(id)
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?: throw IllegalStateException("读不到摄像头参数")
+            val size = pickSize(map.getOutputSizes(MediaRecorder::class.java))
+                ?: throw IllegalStateException("这台设备的摄像头不支持录像")
+
+            val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(this)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }
+            rec.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            if (withAudio) {
+                rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+                rec.setAudioChannels(1)
+                rec.setAudioSamplingRate(44100)
+                rec.setAudioEncodingBitRate(96000)
+            }
+            rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            rec.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            rec.setVideoSize(size.width, size.height)
+            rec.setVideoFrameRate(30)
+            rec.setVideoEncodingBitRate(bitrateFor(size))
+            rec.setOrientationHint(orientationHint(chars, front))
+            rec.setOutputFile(path)
+            rec.prepare()
+            recorder = rec
+
+            // 假 Surface：给会话凑一个「不消费」的 target，见类注释
+            val tex = SurfaceTexture(10)
+            dummyTexture = tex
+            val dummy = Surface(tex)
+            dummySurface = dummy
+            val targets = listOf<Surface>(rec.surface, dummy)
+
+            cm.openCamera(id, object : CameraDevice.StateCallback() {
+                override fun onOpened(dev: CameraDevice) {
+                    camera = dev
+                    try {
+                        @Suppress("DEPRECATION")
+                        dev.createCaptureSession(
+                            targets,
+                            object : CameraCaptureSession.StateCallback() {
+                                override fun onConfigured(s: CameraCaptureSession) {
+                                    session = s
+                                    try {
+                                        val req = dev.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                                        for (t in targets) req.addTarget(t)
+                                        req.set(
+                                            CaptureRequest.CONTROL_AF_MODE,
+                                            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+                                        )
+                                        req.set(
+                                            CaptureRequest.CONTROL_AE_MODE,
+                                            CaptureRequest.CONTROL_AE_MODE_ON
+                                        )
+                                        s.setRepeatingRequest(req.build(), null, h)
+                                        // 会话跑起来了才真正开始写文件
+                                        rec.start()
+                                    } catch (t: Throwable) {
+                                        fail(t)
+                                    }
+                                }
+
+                                override fun onConfigureFailed(s: CameraCaptureSession) {
+                                    fail(IllegalStateException("相机会话配置失败"))
+                                }
+                            },
+                            h
+                        )
+                    } catch (t: Throwable) {
+                        fail(t)
+                    }
+                }
+
+                override fun onDisconnected(dev: CameraDevice) {
+                    dev.close()
+                    if (camera === dev) camera = null
+                }
+
+                override fun onError(dev: CameraDevice, error: Int) {
+                    fail(IllegalStateException("相机打开出错（code=$error）"))
+                    dev.close()
+                }
+            }, h)
+        }
+
+        /** 相机侧失败：把原因留下来，让 Dart 侧轮询时能看到，然后收摊。 */
+        private fun fail(t: Throwable) {
+            lastError = t.message ?: t.javaClass.simpleName
+            running = false
+            releaseAll()
+            stopSelf()
+        }
+
+        private fun scheduleAutoStop(maxMs: Long, h: Handler) {
+            cancelAutoStop()
+            if (maxMs <= 0L) return
+            val r = Runnable { stopSelf() }
+            stopRunnable = r
+            h.postDelayed(r, maxMs)
+        }
+
+        private fun cancelAutoStop() {
+            val r = stopRunnable ?: return
+            handler?.removeCallbacks(r)
+            stopRunnable = null
+        }
+
+        private fun releaseAll() {
+            cancelAutoStop()
+            try {
+                session?.stopRepeating()
+            } catch (t: Throwable) {
+                // 忽略
+            }
+            try {
+                session?.close()
+            } catch (t: Throwable) {
+                // 忽略
+            }
+            session = null
+            try {
+                camera?.close()
+            } catch (t: Throwable) {
+                // 忽略
+            }
+            camera = null
+            try {
+                recorder?.stop()
+            } catch (t: Throwable) {
+                // 还没真正开始录就 stop 会抛 IllegalStateException —— 正常现象。
+                // 这时候文件可能只是个空壳，交给 Dart 侧按大小判断并删掉。
+            }
+            try {
+                recorder?.reset()
+            } catch (t: Throwable) {
+                // 忽略
+            }
+            try {
+                recorder?.release()
+            } catch (t: Throwable) {
+                // 忽略
+            }
+            recorder = null
+            try {
+                dummySurface?.release()
+            } catch (t: Throwable) {
+                // 忽略
+            }
+            dummySurface = null
+            try {
+                dummyTexture?.release()
+            } catch (t: Throwable) {
+                // 忽略
+            }
+            dummyTexture = null
+            try {
+                val lock = wakeLock
+                if (lock != null && lock.isHeld) lock.release()
+            } catch (t: Throwable) {
+                // 忽略
+            }
+            wakeLock = null
+            stopBackgroundThread()
+        }
+
+        private fun pickCameraId(cm: CameraManager, facing: Int): String? {
+            return try {
+                var fallback: String? = null
+                for (id in cm.cameraIdList) {
+                    val f = cm.getCameraCharacteristics(id)
+                        .get(CameraCharacteristics.LENS_FACING)
+                    if (fallback == null) fallback = id
+                    if (f != null && f == facing) return id
+                }
+                // 想要的那一侧不存在（比如很多机器没有前置）→ 退回随便一个能用的，
+                // 总比直接失败强
+                fallback
+            } catch (t: Throwable) {
+                null
+            }
+        }
+
+        /** 从摄像头支持的那堆尺寸里挑一个最接近 1080p 的。 */
+        private fun pickSize(sizes: Array<Size>?): Size? {
+            if (sizes == null || sizes.isEmpty()) return null
+            val target = 1920L * 1080L
+            var best = sizes[0]
+            var bestDiff = Long.MAX_VALUE
+            for (s in sizes) {
+                val d = Math.abs(s.width.toLong() * s.height.toLong() - target)
+                if (d < bestDiff) {
+                    bestDiff = d
+                    best = s
+                }
+            }
+            return best
+        }
+
+        private fun bitrateFor(size: Size): Int {
+            // 约 4 bit/像素/帧 × 30 帧的经验值，再夹到 2~20 Mbps
+            val v = size.width.toLong() * size.height.toLong() * 4L
+            return v.coerceIn(2_000_000L, 20_000_000L).toInt()
+        }
+
+        /**
+         * 让录出来的画面是正的。
+         *
+         * 传感器方向和手机朝向是两回事：竖屏拿着手机时，传感器常常是横的，
+         * 不给 orientationHint 的话录出来会躺在那里。这个页面锁竖屏，
+         * 所以按竖屏换算即可；前置镜头是镜像的，要多转 180°。
+         */
+        private fun orientationHint(chars: CameraCharacteristics, front: Boolean): Int {
+            val so = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+            return if (front) (so + 180) % 360 else so
+        }
+
+        companion object {
+            const val EXTRA_PATH = "path"
+            const val EXTRA_LENS = "lens"
+            const val EXTRA_AUDIO = "audio"
+            const val EXTRA_MAX_MS = "maxMs"
+            private const val CHANNEL_ID = "studyhub_videorec"
+            private const val NOTIF_ID = 4102
+
+            @Volatile
+            var running: Boolean = false
+
+            @Volatile
+            var lastError: String? = null
+
+            @Volatile
+            var startedAt: Long = 0L
+
+            fun start(
+                context: Context,
+                path: String,
+                lens: String,
+                withAudio: Boolean,
+                maxDurationMs: Long
+            ) {
+                lastError = null
+                val i = Intent(context, VideoRecorderService::class.java)
+                i.putExtra(EXTRA_PATH, path)
+                i.putExtra(EXTRA_LENS, lens)
+                i.putExtra(EXTRA_AUDIO, withAudio)
+                i.putExtra(EXTRA_MAX_MS, maxDurationMs)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(i)
+                } else {
+                    context.startService(i)
+                }
+            }
+
+            fun stop(context: Context) {
+                try {
+                    context.stopService(Intent(context, VideoRecorderService::class.java))
+                } catch (t: Throwable) {
+                    // 忽略：本来就没在跑
+                }
+            }
+
+            fun elapsedMs(): Long {
+                val t0 = startedAt
+                if (!running || t0 <= 0L) return 0L
+                return System.currentTimeMillis() - t0
+            }
+        }
+    }
+
     companion object {
         private const val CHANNEL = "studyhub/display"
         private const val LOCATION_CHANNEL = "studyhub/location"
         private const val RECORDER_CHANNEL = "studyhub/recorder"
+        private const val AUDIO_CHANNEL = "studyhub/audio"
+        private const val VIDEOREC_CHANNEL = "studyhub/videorec"
     }
 }

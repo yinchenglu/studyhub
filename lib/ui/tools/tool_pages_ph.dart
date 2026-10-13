@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/stats.dart';
+import '../../core/stats_hier.dart';
 import 'tool_pages.dart';
 
 // ===========================================================================
@@ -580,10 +581,208 @@ class _EpiStatsPageState extends State<EpiStatsPage> {
 // 2. 病例对照研究
 // ===========================================================================
 
+/// 一组四格表的输入（病例对照 / 队列共用）。
+///
+/// v1.6.0 新增：用户要求「增加添加按钮，能添加多组数据、多个四格表，
+/// 最后汇总分析」——以前这两页各只有一张表，只能一次看一层。
+class _GroupRow {
+  final TextEditingController name;
+  final TextEditingController a, b, c, d;
+  _GroupRow({
+    String n = '',
+    String va = '30',
+    String vb = '20',
+    String vc = '10',
+    String vd = '40',
+  })  : name = TextEditingController(text: n),
+        a = TextEditingController(text: va),
+        b = TextEditingController(text: vb),
+        c = TextEditingController(text: vc),
+        d = TextEditingController(text: vd);
+
+  void dispose() {
+    name.dispose();
+    a.dispose();
+    b.dispose();
+    c.dispose();
+    d.dispose();
+  }
+}
+
+/// 多组四格表的编辑区 + 汇总结果。病例对照 / 队列共用这一套。
+///
+/// 为什么值得抽出来共用：两个页面的差别只有「四格的标签」和「汇总里要不要显示 RR」，
+/// 各写一份的话以后改样式必然只改一半。
+class _MultiGroups extends StatelessWidget {
+  final List<_GroupRow> rows;
+  final String aLabel, bLabel, cLabel, dLabel;
+  final String title;
+  final bool cohort;
+  final VoidCallback onChanged;
+  final VoidCallback onAdd;
+  final void Function(int) onDel;
+
+  const _MultiGroups({
+    required this.rows,
+    required this.aLabel,
+    required this.bLabel,
+    required this.cLabel,
+    required this.dLabel,
+    required this.title,
+    required this.cohort,
+    required this.onChanged,
+    required this.onAdd,
+    required this.onDel,
+  });
+
+  static int _i(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
+
+  /// 所有组是否都还空着（用来决定要不要显示结果区）
+  bool get _anyFilled =>
+      rows.any((r) => (_i(r.a) + _i(r.b) + _i(r.c) + _i(r.d)) > 0);
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final strata = <Stratum>[
+      for (final r in rows) Stratum(_i(r.a), _i(r.b), _i(r.c), _i(r.d)),
+    ];
+    final mh = mhAnalyze(strata);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ToolSection('$title（${rows.length} 组）'),
+        for (var i = 0; i < rows.length; i++) ...[
+          _groupCard(context, i, scheme, strata[i]),
+          const SizedBox(height: 10),
+        ],
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: onAdd,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('添加一组'),
+              ),
+            ),
+            if (rows.length > 1) ...[
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                onPressed: () => onDel(rows.length - 1),
+                icon: const Icon(Icons.remove, size: 18),
+                label: const Text('删最后一组'),
+              ),
+            ],
+          ],
+        ),
+
+        if (rows.length > 1 && mh.k > 0) ...[
+          const SizedBox(height: 18),
+          ToolSection('汇总分析（Mantel-Haenszel 合并）'),
+          _ResultTable(rows: [
+            _Row('合并 OR（M-H）', fmtNum(mh.orMh, 3),
+                mh.orHi.isFinite ? '95%CI ${fmtCi(mh.orLo, mh.orHi, 3)}' : null),
+            if (cohort)
+              _Row('合并 RR（M-H）', fmtNum(mh.rrMh, 3),
+                  mh.rrHi.isFinite ? '95%CI ${fmtCi(mh.rrLo, mh.rrHi, 3)}' : null),
+            _Row('粗 OR（直接相加）', fmtNum(mh.orCrude, 3), '不做分层直接算的那个'),
+            if (cohort) _Row('粗 RR（直接相加）', fmtNum(mh.rrCrude, 3)),
+            _Row('齐性检验（Breslow-Day）', 'P = ${fmtP(mh.bdP)}',
+                'χ² = ${fmtNum(mh.bdChi2, 3)}，df = ${mh.bdDf}'),
+            _Row('各层 OR 是否一致', mh.homogeneous ? '一致' : '不一致',
+                mh.homogeneous
+                    ? '可以放心合并成一个数'
+                    : '存在效应修饰，应各层分别报告（可去看「交互作用」）'),
+            _Row('粗算 vs 合并', mh.confounding ? '存在混杂' : '未见明显混杂',
+                mh.confounding ? '合并后的值才是可信的估计' : '分层没有改变结论'),
+          ], hi: const {'合并 OR（M-H）'}),
+        ],
+        if (!_anyFilled) ...[
+          const SizedBox(height: 8),
+          _Hint('把每张四格表的数字填上，这里会自动算出合并结果。',
+              icon: Icons.tips_and_updates_outlined),
+        ] else if (mh.skipped > 0) ...[
+          const SizedBox(height: 8),
+          _Hint('有 ${mh.skipped} 组的四格表不完整，已跳过（不影响其余组的合并）。',
+              icon: Icons.info_outline),
+        ],
+      ],
+    );
+  }
+
+  Widget _groupCard(BuildContext context, int i, ColorScheme scheme, Stratum s) {
+    final or = s.orCrude;
+    final rr = s.rrCrude;
+    final ci = s.orCi;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: rows[i].name,
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: InputBorder.none,
+                      hintText: '这一组的名字（比如「男」/「40 岁以上」）',
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '删掉这一组',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: rows.length > 1 ? () => onDel(i) : null,
+                  icon: const Icon(Icons.delete_outline, size: 19),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Row(children: [
+              Expanded(child: _Num(label: aLabel, c: rows[i].a, onChanged: onChanged)),
+              const SizedBox(width: 8),
+              Expanded(child: _Num(label: bLabel, c: rows[i].b, onChanged: onChanged)),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(child: _Num(label: cLabel, c: rows[i].c, onChanged: onChanged)),
+              const SizedBox(width: 8),
+              Expanded(child: _Num(label: dLabel, c: rows[i].d, onChanged: onChanged)),
+            ]),
+            const SizedBox(height: 8),
+            Text(
+              s.usable
+                  ? '这一组：OR = ${fmtNum(or, 3)}'
+                      '${ci.$1.isFinite ? '（95%CI ${fmtCi(ci.$1, ci.$2, 2)}）' : ''}'
+                      '${cohort && rr.isFinite ? ' · RR = ${fmtNum(rr, 3)}' : ''}'
+                  : '这一组还没填完整',
+              style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ===========================================================================
+// 2. 病例对照研究
+// ===========================================================================
+
 /// 输入口径严格按公卫教材：
 ///   病例组里「有暴露史」a、「无暴露史」b
 ///   对照组里「有暴露史」c、「无暴露史」d
 /// 输出以 OR 为核心（病例对照研究算不出发病率，只能算 OR）。
+///
+/// v1.6.0：从「一张四格表」扩成「可以加好几张，最后汇总」——
+/// 多组一般是按某个特征分出来的层（性别 / 年龄段 / 不同医院），
+/// 汇总用的是 Mantel-Haenszel 合并 OR 而不是简单相加。
 class CaseControlPage extends StatefulWidget {
   const CaseControlPage({super.key});
 
@@ -592,16 +791,22 @@ class CaseControlPage extends StatefulWidget {
 }
 
 class _CaseControlPageState extends State<CaseControlPage> {
-  final _a = TextEditingController(text: '30');   // 病例·暴露
-  final _b = TextEditingController(text: '20');   // 病例·非暴露
-  final _c = TextEditingController(text: '10');   // 对照·暴露
-  final _d = TextEditingController(text: '40');   // 对照·非暴露
+  late List<_GroupRow> _rows;
 
   @override
   void initState() {
     super.initState();
-    for (final c in [_a, _b, _c, _d]) {
-      c.addListener(_refresh);
+    _rows = <_GroupRow>[
+      _GroupRow(n: '第 1 组', va: '30', vb: '20', vc: '10', vd: '40'),
+    ];
+    _bind();
+  }
+
+  void _bind() {
+    for (final r in _rows) {
+      for (final c in [r.name, r.a, r.b, r.c, r.d]) {
+        c.addListener(_refresh);
+      }
     }
   }
 
@@ -609,19 +814,65 @@ class _CaseControlPageState extends State<CaseControlPage> {
     if (mounted) setState(() {});
   }
 
+  void _add() {
+    setState(() {
+      final r = _GroupRow(n: '第 ${_rows.length + 1} 组');
+      for (final c in [r.name, r.a, r.b, r.c, r.d]) {
+        c.addListener(_refresh);
+      }
+      _rows.add(r);
+    });
+  }
+
+  void _del(int i) {
+    setState(() {
+      _rows.removeAt(i).dispose();
+    });
+  }
+
   @override
   void dispose() {
-    for (final c in [_a, _b, _c, _d]) {
-      c.dispose();
+    for (final r in _rows) {
+      r.dispose();
     }
     super.dispose();
   }
 
-  int _i(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
+  static int _i(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
 
   @override
   Widget build(BuildContext context) {
-    final a = _i(_a), b = _i(_b), c = _i(_c), d = _i(_d);
+    // 单组时保持老的展示方式（下面直接出完整结果表），
+    // 多组时由 _MultiGroups 出「各组 + 汇总」。
+    if (_rows.length > 1) {
+      return ToolScaffold(
+        title: '病例对照研究',
+        subtitle: 'OR · 95%CI · 卡方 · P 值 · 多组汇总',
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+          children: [
+            const _Hint('填的是「人数」。每组：病例组、对照组各分「有暴露史 / 无暴露史」两栏。\n'
+                '点多组是为了做**分层**：按性别、年龄段分开算，再汇总，能排除混杂。'),
+            const SizedBox(height: 14),
+            _MultiGroups(
+              rows: _rows,
+              title: '各组四格表',
+              aLabel: '病例组·有暴露 a',
+              bLabel: '病例组·无暴露 b',
+              cLabel: '对照组·有暴露 c',
+              dLabel: '对照组·无暴露 d',
+              cohort: false,
+              onChanged: _refresh,
+              onAdd: _add,
+              onDel: _del,
+            ),
+          ],
+        ),
+      );
+    }
+
+    final r0 = _rows.first;
+    final a = _i(r0.a), b = _i(r0.b), c = _i(r0.c), d = _i(r0.d);
     final has = (a + b + c + d) > 0;
     final r = analyze2x2(a, b, c, d);
     final rows = <_Row>[
@@ -645,20 +896,21 @@ class _CaseControlPageState extends State<CaseControlPage> {
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
           const _Hint('填的是「人数」。病例组、对照组各分「有暴露史 / 无暴露史」两栏。\n'
-              '病例对照研究是从「病」往回找「因」，算不出发病率，所以核心指标是 OR（比值比）。'),
+              '病例对照研究是从「病」往回找「因」，算不出发病率，所以核心指标是 OR（比值比）。\n'
+              '需要按性别 / 年龄段分层的话，点下面的「添加一组」。'),
           const SizedBox(height: 14),
           const ToolSection('病例组'),
           Row(children: [
-            Expanded(child: _Num(label: '有暴露史 a', c: _a, onChanged: _refresh)),
+            Expanded(child: _Num(label: '有暴露史 a', c: r0.a, onChanged: _refresh)),
             const SizedBox(width: 10),
-            Expanded(child: _Num(label: '无暴露史 b', c: _b, onChanged: _refresh)),
+            Expanded(child: _Num(label: '无暴露史 b', c: r0.b, onChanged: _refresh)),
           ]),
           const SizedBox(height: 12),
           const ToolSection('对照组'),
           Row(children: [
-            Expanded(child: _Num(label: '有暴露史 c', c: _c, onChanged: _refresh)),
+            Expanded(child: _Num(label: '有暴露史 c', c: r0.c, onChanged: _refresh)),
             const SizedBox(width: 10),
-            Expanded(child: _Num(label: '无暴露史 d', c: _d, onChanged: _refresh)),
+            Expanded(child: _Num(label: '无暴露史 d', c: r0.d, onChanged: _refresh)),
           ]),
           const SizedBox(height: 14),
           if (has) _ResultTable(rows: rows, hi: const {'比值比 OR'}),
@@ -676,6 +928,12 @@ class _CaseControlPageState extends State<CaseControlPage> {
                 '卡方检验在这里不可靠，请以 **Fisher 精确检验** 的 P 值为准。',
                 icon: Icons.warning_amber_outlined),
           ],
+          const SizedBox(height: 16),
+          OutlinedButton.icon(
+            onPressed: _add,
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('添加一组（分层 / 多个四格表）'),
+          ),
         ],
       ),
     );
@@ -696,6 +954,8 @@ class _CaseControlPageState extends State<CaseControlPage> {
 // ===========================================================================
 
 /// 队列研究：从「因」看「果」，能直接算发病率，所以核心指标是 RR。
+///
+/// v1.6.0 同病例对照：支持多组 + Mantel-Haenszel 汇总。
 class CohortPage extends StatefulWidget {
   const CohortPage({super.key});
 
@@ -704,16 +964,22 @@ class CohortPage extends StatefulWidget {
 }
 
 class _CohortPageState extends State<CohortPage> {
-  final _a = TextEditingController(text: '40');
-  final _b = TextEditingController(text: '160');
-  final _c = TextEditingController(text: '15');
-  final _d = TextEditingController(text: '185');
+  late List<_GroupRow> _rows;
 
   @override
   void initState() {
     super.initState();
-    for (final c in [_a, _b, _c, _d]) {
-      c.addListener(_refresh);
+    _rows = <_GroupRow>[
+      _GroupRow(n: '第 1 组', va: '40', vb: '160', vc: '15', vd: '185'),
+    ];
+    _bind();
+  }
+
+  void _bind() {
+    for (final r in _rows) {
+      for (final c in [r.name, r.a, r.b, r.c, r.d]) {
+        c.addListener(_refresh);
+      }
     }
   }
 
@@ -721,19 +987,63 @@ class _CohortPageState extends State<CohortPage> {
     if (mounted) setState(() {});
   }
 
+  void _add() {
+    setState(() {
+      final r = _GroupRow(n: '第 ${_rows.length + 1} 组', va: '30', vb: '120', vc: '12', vd: '140');
+      for (final c in [r.name, r.a, r.b, r.c, r.d]) {
+        c.addListener(_refresh);
+      }
+      _rows.add(r);
+    });
+  }
+
+  void _del(int i) {
+    setState(() {
+      _rows.removeAt(i).dispose();
+    });
+  }
+
   @override
   void dispose() {
-    for (final c in [_a, _b, _c, _d]) {
-      c.dispose();
+    for (final r in _rows) {
+      r.dispose();
     }
     super.dispose();
   }
 
-  int _i(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
+  static int _i(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
 
   @override
   Widget build(BuildContext context) {
-    final a = _i(_a), b = _i(_b), c = _i(_c), d = _i(_d);
+    if (_rows.length > 1) {
+      return ToolScaffold(
+        title: '队列研究',
+        subtitle: 'RR · AR · 卡方 · P 值 · 多组汇总',
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+          children: [
+            const _Hint('每组：暴露组、非暴露组各分「发病 / 未发病」两栏，填人数。\n'
+                '多组一般是分层（比如按年龄分组），汇总用 Mantel-Haenszel 合并 RR。'),
+            const SizedBox(height: 14),
+            _MultiGroups(
+              rows: _rows,
+              title: '各组四格表',
+              aLabel: '暴露组·发病 a',
+              bLabel: '暴露组·未发病 b',
+              cLabel: '非暴露·发病 c',
+              dLabel: '非暴露·未发病 d',
+              cohort: true,
+              onChanged: _refresh,
+              onAdd: _add,
+              onDel: _del,
+            ),
+          ],
+        ),
+      );
+    }
+
+    final r0 = _rows.first;
+    final a = _i(r0.a), b = _i(r0.b), c = _i(r0.c), d = _i(r0.d);
     final r = analyze2x2(a, b, c, d);
     final has = r.n > 0;
     final rows = twoByTwoRows(r, cohort: true);
@@ -745,20 +1055,21 @@ class _CohortPageState extends State<CohortPage> {
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
           const _Hint('暴露组、非暴露组各分「发病 / 未发病」两栏，填人数。\n'
-              '队列研究是从「因」看到「果」，能直接算两组发病率，所以核心指标是 RR（相对危险度）。'),
+              '队列研究是从「因」看到「果」，能直接算两组发病率，所以核心指标是 RR（相对危险度）。\n'
+              '需要分层的话，点下面的「添加一组」。'),
           const SizedBox(height: 14),
           const ToolSection('暴露组'),
           Row(children: [
-            Expanded(child: _Num(label: '发病 a', c: _a, onChanged: _refresh)),
+            Expanded(child: _Num(label: '发病 a', c: r0.a, onChanged: _refresh)),
             const SizedBox(width: 10),
-            Expanded(child: _Num(label: '未发病 b', c: _b, onChanged: _refresh)),
+            Expanded(child: _Num(label: '未发病 b', c: r0.b, onChanged: _refresh)),
           ]),
           const SizedBox(height: 12),
           const ToolSection('非暴露组'),
           Row(children: [
-            Expanded(child: _Num(label: '发病 c', c: _c, onChanged: _refresh)),
+            Expanded(child: _Num(label: '发病 c', c: r0.c, onChanged: _refresh)),
             const SizedBox(width: 10),
-            Expanded(child: _Num(label: '未发病 d', c: _d, onChanged: _refresh)),
+            Expanded(child: _Num(label: '未发病 d', c: r0.d, onChanged: _refresh)),
           ]),
           const SizedBox(height: 14),
           if (has) _ResultTable(rows: rows, hi: const {'相对危险度 RR'}),
@@ -768,6 +1079,12 @@ class _CohortPageState extends State<CohortPage> {
                 '请以 **Fisher 精确检验** 的 P 值为准。',
                 icon: Icons.warning_amber_outlined),
           ],
+          const SizedBox(height: 16),
+          OutlinedButton.icon(
+            onPressed: _add,
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('添加一组（分层 / 多个四格表）'),
+          ),
         ],
       ),
     );

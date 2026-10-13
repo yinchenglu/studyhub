@@ -165,17 +165,22 @@ class ToolSection extends StatelessWidget {
       );
 }
 
-/// 结果展示框（可点一下复制）
+/// 结果展示框。
+///
+/// 默认点一下复制（绝大多数工具页都这么用）；`copyable: false` 时
+/// 完全不响应点击、也不显示「点一下即可复制」那行小字 —— 日期计算页
+/// 就是这种，用户明确说不要复制。
 class ResultBox extends StatelessWidget {
   final String text;
   final String? hint;
-  const ResultBox({super.key, required this.text, this.hint});
+  final bool copyable;
+  const ResultBox({super.key, required this.text, this.hint, this.copyable = true});
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return InkWell(
-      onTap: text.trim().isEmpty ? null : () => copyText(context, text),
+      onTap: (!copyable || text.trim().isEmpty) ? null : () => copyText(context, text),
       borderRadius: BorderRadius.circular(10),
       child: Container(
         width: double.infinity,
@@ -191,7 +196,7 @@ class ResultBox extends StatelessWidget {
               text.isEmpty ? '（这里会显示结果）' : text,
               style: const TextStyle(fontSize: 14.5, height: 1.55),
             ),
-            if (text.trim().isNotEmpty) ...[
+            if (copyable && text.trim().isNotEmpty) ...[
               const SizedBox(height: 8),
               Text(hint ?? '点一下即可复制',
                   style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
@@ -216,6 +221,17 @@ class ResultBox extends StatelessWidget {
 ///      拿不到才回退到 Flutter 的 160/in 近似。
 ///      仍然留了一个折叠的「微调」入口 —— 万一某台机器报的 DPI 离谱，
 ///      用户还有个后路，但默认不打扰。
+///
+/// v1.6.0 改动（用户原话：「数字要从最下面开始，最下面是0，然后数字横过来，
+/// 因为我使用的时候，手机是横的」）：
+///   1. **0 挪到最下面，往上递增**。
+///   2. **数字整体逆时针转 90°**。
+///   3. **这个页面钉死在竖屏**。原因是 1、2 两条只有在「内容保持竖屏形状」
+///      时才成立：用户把手机顺时针转成横屏之后，页面里那条竖尺会变成
+///      屏幕上的一条**横尺**，并且是我们想要的样子（0 在最左端、数字向右递增、
+///      字是正的）。要是让系统跟着手机一起转，页面自己也横过来，尺子反而
+///      只剩屏幕短边那么长（5 cm 都不到），刻度也被重新摆一遍 ——
+///      那才是最初让用户难受的原因。
 class RulerPage extends StatefulWidget {
   const RulerPage({super.key});
 
@@ -242,6 +258,12 @@ class _RulerPageState extends State<RulerPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     keepScreenOn(true);
+    // 钉死竖屏（原因见类注释）。注意这里**不能**用 ScreenOrientation.lockHere：
+    // 那玩意儿是「停在这一刻的方向」，用户要是已经横着拿手机进来，
+    // 会把页面直接锁成横屏，正好跟我们要的相反。
+    SystemChrome.setPreferredOrientations(
+      const <DeviceOrientation>[DeviceOrientation.portraitUp],
+    );
     // 校准要读 MediaQuery（拿 devicePixelRatio），首帧才有，
     // 所以挂到 postFrameCallback 上，不能在 initState 里直接调。
     WidgetsBinding.instance.addPostFrameCallback((_) => _calibrate());
@@ -251,6 +273,14 @@ class _RulerPageState extends State<RulerPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     keepScreenOn(false);
+    // 离开这个页面就把方向还给整个 App（App 的常态是跟着手机转）。
+    SystemChrome.setPreferredOrientations(
+      const <DeviceOrientation>[
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ],
+    );
     super.dispose();
   }
 
@@ -280,8 +310,11 @@ class _RulerPageState extends State<RulerPage> with WidgetsBindingObserver {
   }
 
   /// 屏幕上能放下的刻度总长（厘米）。用来决定尺子画多长。
+  ///
+  /// 这个页面钉死在竖屏（见类注释），所以「长边」就是 `size.height`，
+  /// 不管用户手里把手机转成什么样。
   double get _totalCm {
-    // 减掉标题栏 / 状态条 / 底部留白占掉的高度
+    // 减掉标题栏 / 状态条 / 顶部说明条 / 底部留白占掉的高度
     final h = MediaQuery.of(context).size.height - 250;
     final cm = h / _lpcm;
     return cm < 5 ? 5 : cm; // 极端小屏也别少于 5 cm
@@ -379,10 +412,27 @@ class _RulerPageState extends State<RulerPage> with WidgetsBindingObserver {
                           ),
                         ],
                       ),
-                      // 10 cm 实体标尺，拿来跟真尺对着看
-                      CustomPaint(
-                        size: Size(10 * _lpcm, 34),
-                        painter: _RulerPainter(_lpcm),
+                      // 参考刻度：跟主尺同一套画法（0 在下、数字转 90°），
+                      // 长度取 5 cm —— 拿实体尺比着看这个就够了，
+                      // 再长的话这个折叠面板会高得离谱。
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(6),
+                            child: CustomPaint(
+                              size: Size(52, 5 * _lpcm),
+                              painter: _RulerPainter(_lpcm),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Text(
+                              '5 cm 参考刻度\n跟实体尺比着看，差得多再拖滑块。',
+                              style: TextStyle(fontSize: 11, height: 1.6),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 6),
                       Row(
@@ -399,15 +449,23 @@ class _RulerPageState extends State<RulerPage> with WidgetsBindingObserver {
               ),
             ),
 
-          // ---------- 竖尺本体 ----------
+          // ---------- 尺子本体 ----------
           const SizedBox(height: 14),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text('竖尺 · 0 ~ ${_totalCm.floor()} cm',
+            child: Text('直尺 · 0 ~ ${_totalCm.floor()} cm',
                 style: TextStyle(
                     fontSize: 12.5,
                     fontWeight: FontWeight.w600,
                     color: scheme.primary)),
+          ),
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              '把手机顺时针转成横屏使用：左边是 0，刻度向右递增。',
+              style: TextStyle(fontSize: 11.5, height: 1.5, color: scheme.onSurfaceVariant),
+            ),
           ),
           const SizedBox(height: 8),
           Padding(
@@ -426,10 +484,17 @@ class _RulerPageState extends State<RulerPage> with WidgetsBindingObserver {
   }
 }
 
-/// 竖尺的刻度绘制。0 点在上，往下递增。
+/// 刻度绘制。
 ///
 /// 刻度线长度分三档：整厘米最长、半厘米中等、毫米最短 ——
 /// 这也是实体尺的通行画法，扫一眼就能定位。
+///
+/// v1.6.0 改了两点（用户提的）：
+///   1. **0 挪到最下面，往上递增**。原来 0 在上面，用户把手机转成横屏
+///      之后得再转 180° 才能顺着读，很别扭。
+///   2. **数字整体逆时针转 90°**。手机顺时针转成横屏之后，这些数字
+///      正好是正的，而且沿着尺子从左往右排 —— 也就是「0 在最左端、
+///      数字向右递增」，跟拿一把实体尺的读法完全一致。
 class _RulerPainter extends CustomPainter {
   final double lpcm;
 
@@ -450,22 +515,26 @@ class _RulerPainter extends CustomPainter {
     final h = size.height;
     final w = size.width;
 
-    // 毫米刻度
+    // 毫米刻度：0 在最下面（y = h），越往上数越大。
     final totalMm = (h / lpcm * 10).floor();
     for (var mm = 0; mm <= totalMm; mm++) {
-      final pos = mm / 10 * lpcm;
-      if (pos > h) break;
+      final pos = h - mm / 10 * lpcm;
+      if (pos < 0) break;
       final isCm = mm % 10 == 0;
       final isHalf = mm % 5 == 0;
       final len = isCm ? w * 0.52 : (isHalf ? w * 0.34 : w * 0.18);
       canvas.drawLine(Offset(0, pos), Offset(len, pos), line);
     }
 
-    // 厘米数字，贴在刻度线右侧
+    // 厘米数字。
+    //
+    // 画法：先把原点平移到「这条刻度线上、数字该待的横向位置」，
+    // 再整体逆时针转 90°。转完之后局部坐标系的 +x 就是**屏幕上方**，
+    // 于是沿着局部 +x 排版的文本，看起来就是「从刻度线往上方延伸」——
+    // 横屏看过去则是「从刻度线往右边延伸」，正好是实体尺印数字的方式。
     final totalCm = (h / lpcm).floor();
     for (var cm = 0; cm <= totalCm; cm++) {
-      final pos = cm * lpcm;
-      if (pos > h - 8) break;
+      final pos = h - cm * lpcm;
       final tp = TextPainter(
         text: TextSpan(
             text: '$cm',
@@ -475,7 +544,13 @@ class _RulerPainter extends CustomPainter {
                 fontWeight: FontWeight.w600)),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, Offset(w * 0.56, pos + 3));
+      // 顶上那几个数字会被画布裁掉，干脆不画。
+      if (pos < tp.width + 4) continue;
+      canvas.save();
+      canvas.translate(w * 0.76, pos);
+      canvas.rotate(-math.pi / 2);
+      tp.paint(canvas, Offset(2, -tp.height / 2));
+      canvas.restore();
     }
   }
 
@@ -1880,14 +1955,32 @@ class _DateCalcPageState extends State<DateCalcPage> {
   DateTime _from = DateTime.now();
   DateTime _to = DateTime.now().add(const Duration(days: 30));
   DateTime _base = DateTime.now();
-  int _offset = 30;
   String _unit = '天';
+
+  /// 偏移量输入框的控制器。
+  ///
+  /// v1.6.0 之前这里写的是 `TextEditingController(text: '$_offset')`
+  /// **直接写在 build 里面** —— 每敲一个字 setState，build 就会 new 一个
+  /// 全新控制器，光标被顶回开头、键盘开始跳，看着就像「输一个数字就自动
+  /// 计算跳转了」。现在改成长期持有的一个控制器，并且输入时**什么都不做**，
+  /// 必须点「计算」按钮才算。
+  final _offsetCtrl = TextEditingController(text: '30');
+
+  /// 点过「计算」之后才有值；null 表示还没算过，显示占位提示。
+  DateTime? _shiftResult;
 
   /// 区间天数是否把开始那天也算进去。默认不含（这是「相差多少天」的通行口径）。
   bool _includeStart = false;
 
   static final _fmt = DateFormat('yyyy-MM-dd');
   static final _fmtLong = DateFormat('yyyy年M月d日 EEEE', 'zh_CN');
+  static final _fmtWeek = DateFormat('EEEE', 'zh_CN');
+
+  @override
+  void dispose() {
+    _offsetCtrl.dispose();
+    super.dispose();
+  }
 
   Future<DateTime?> _pick(DateTime init) => showDatePicker(
         context: context,
@@ -1901,6 +1994,19 @@ class _DateCalcPageState extends State<DateCalcPage> {
   /// 几小时之差少算一天 —— 这是日期计算里最经典的坑。
   static DateTime _d0(DateTime d) => DateTime(d.year, d.month, d.day);
 
+  /// 点「计算」按钮才走这里。
+  void _computeShift() {
+    final n = int.tryParse(_offsetCtrl.text.trim()) ?? 0;
+    setState(() => _shiftResult = _d0(_shift(_base, n, _unit)));
+  }
+
+  /// 基准日 / 单位变了：已经算过的话跟着刷新，没算过就别自作主张。
+  void _recomputeShift() {
+    if (_shiftResult == null) return;
+    final n = int.tryParse(_offsetCtrl.text.trim()) ?? 0;
+    _shiftResult = _d0(_shift(_base, n, _unit));
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1911,22 +2017,12 @@ class _DateCalcPageState extends State<DateCalcPage> {
     // 反着数的时候加 1 反而更难解释，所以不动。
     final days = rawDays + (_includeStart && rawDays >= 0 ? 1 : 0);
 
-    final basePlus = _shift(_base, _offset, _unit);
-
     return ToolScaffold(
       title: '日期计算',
       subtitle: _fmtLong.format(today),
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
-          const ToolSection('今天'),
-          ResultBox(
-            text: '${_fmtLong.format(today)}\n'
-                '本年第 ${_dayOfYear(today)} 天 · 剩 ${_daysInYear(today.year) - _dayOfYear(today)} 天\n'
-                '第 ${_isoWeek(today)} 周',
-            hint: '点一下复制日期',
-          ),
-
           const ToolSection('两个日期之间差多少'),
           Card(
             child: Padding(
@@ -1952,11 +2048,12 @@ class _DateCalcPageState extends State<DateCalcPage> {
                   const Divider(height: 18),
                   if (rawDays >= 0)
                     ResultBox(
+                      copyable: false,
                       text: '相差 $days 天\n'
                           '${_fmt.format(_d0(_from))}  →  ${_fmt.format(_d0(_to))}',
                     )
                   else
-                    const ResultBox(text: '结束日期比开始日期早，把两个日期换一下顺序'),
+                    const ResultBox(copyable: false, text: '结束日期比开始日期早，把两个日期换一下顺序'),
                 ],
               ),
             ),
@@ -1965,21 +2062,27 @@ class _DateCalcPageState extends State<DateCalcPage> {
           const ToolSection('从某天往前 / 往后推'),
           Card(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _dateRow('基准日', _base, (d) => setState(() => _base = d)),
+                  _dateRow('基准日', _base, (d) => setState(() {
+                        _base = d;
+                        _recomputeShift();
+                      })),
+                  const SizedBox(height: 8),
                   Row(
                     children: [
                       Expanded(
                         child: TextField(
-                          keyboardType: TextInputType.number,
+                          controller: _offsetCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(signed: true),
+                          // onChanged 故意留空：输数字不再自动算，必须点下面的「计算」。
                           decoration: const InputDecoration(
                             labelText: '偏移量（可为负）',
                             isDense: true,
+                            border: OutlineInputBorder(),
                           ),
-                          controller: TextEditingController(text: '$_offset'),
-                          onChanged: (v) => setState(() => _offset = int.tryParse(v) ?? 0),
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -1991,15 +2094,27 @@ class _DateCalcPageState extends State<DateCalcPage> {
                           DropdownMenuItem(value: '月', child: Text('月')),
                           DropdownMenuItem(value: '年', child: Text('年')),
                         ],
-                        onChanged: (v) => setState(() => _unit = v ?? '天'),
+                        onChanged: (v) => setState(() {
+                          _unit = v ?? '天';
+                          _recomputeShift();
+                        }),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  ResultBox(
-                    text: '$_base 的 $_offset $_unit 后是\n'
-                        '${_fmt.format(_d0(basePlus))}（${DateFormat('EEEE', 'zh_CN').format(basePlus)}）',
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: _computeShift,
+                    icon: const Icon(Icons.calculate_outlined, size: 18),
+                    label: const Text('计算'),
                   ),
+                  const SizedBox(height: 12),
+                  if (_shiftResult != null)
+                    ResultBox(
+                      copyable: false,
+                      text: '${_fmt.format(_shiftResult!)}（${_fmtWeek.format(_shiftResult!)}）',
+                    )
+                  else
+                    const ResultBox(copyable: false, text: ''),
                 ],
               ),
             ),
@@ -2009,31 +2124,51 @@ class _DateCalcPageState extends State<DateCalcPage> {
     );
   }
 
-  Widget _dateRow(String label, DateTime d, ValueChanged<DateTime> onChanged) => ListTile(
-        dense: true,
-        contentPadding: EdgeInsets.zero,
-        title: Text(label, style: const TextStyle(fontSize: 12.5)),
-        trailing: TextButton.icon(
-          onPressed: () async {
-            final r = await _pick(d);
-            if (r != null) onChanged(r);
-          },
-          icon: const Icon(Icons.event, size: 17),
-          label: Text(DateFormat('yyyy-MM-dd EEE', 'zh_CN').format(d)),
+  /// 一行日期选择：`标签 | [选日期按钮] | [今天]`。
+  ///
+  /// v1.6.0 加的「今天」按钮 —— 省得为了选回今天还去翻日历
+  /// （跨月的时候尤其烦）。
+  Widget _dateRow(String label, DateTime d, ValueChanged<DateTime> onChanged) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 46,
+              child: Text(label, style: const TextStyle(fontSize: 12.5)),
+            ),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final r = await _pick(d);
+                  if (r != null) onChanged(r);
+                },
+                icon: const Icon(Icons.event, size: 16),
+                label: Text(
+                  DateFormat('yyyy-MM-dd EEE', 'zh_CN').format(d),
+                  style: const TextStyle(fontSize: 12.5),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: const Size(0, 38),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: () => onChanged(DateTime.now()),
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                minimumSize: const Size(0, 38),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('今天', style: TextStyle(fontSize: 12.5)),
+            ),
+          ],
         ),
       );
-
-  static int _dayOfYear(DateTime d) => d.difference(DateTime(d.year, 1, 1)).inDays + 1;
-
-  static int _daysInYear(int y) => DateTime(y, 12, 31).difference(DateTime(y, 1, 1)).inDays + 1;
-
-  /// ISO 8601 周号：第 1 周是含当年第一个星期四的那一周。
-  static int _isoWeek(DateTime d) {
-    final thursday = d.add(Duration(days: 4 - (d.weekday == 7 ? 7 : d.weekday)));
-    final firstThursday = DateTime(thursday.year, 1, 1)
-        .add(Duration(days: (11 - DateTime(thursday.year, 1, 1).weekday) % 7));
-    return ((thursday.difference(firstThursday).inDays) / 7).floor() + 1;
-  }
 
   static DateTime _shift(DateTime d, int n, String unit) {
     switch (unit) {
