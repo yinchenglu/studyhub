@@ -195,17 +195,31 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
     } catch (_) {}
   }
 
+  /// 一条短提示。
+  ///
+  /// v1.7.0 修：这个文件里原来有 4 处写的是 `toast(context, '…')`，
+  /// 而**顶层压根没有 toast 这个函数**（隔壁 reading_page.dart 里叫 `_snack`）——
+  /// 本地几个自检脚本都没看出来，是云端 analyze 报了 4 条 undefined_method
+  /// 才发现的。现在补成类内的一个私有方法。
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      duration: const Duration(seconds: 2),
+    ));
+  }
+
   /// dir = -1 上一篇，+1 下一篇
   void _siblingStep(int dir) {
     final i = _sibIndex;
     if (i < 0) return;
     final j = i + dir;
     if (j < 0) {
-      toast(context, '已经是第一篇了');
+      _toast('已经是第一篇了');
       return;
     }
     if (j >= widget.siblings.length) {
-      toast(context, '已经是最后一篇了');
+      _toast('已经是最后一篇了');
       return;
     }
     _jumpTo(widget.siblings[j]);
@@ -274,7 +288,7 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
   Future<void> _showFind() async {
     final text = _content ?? '';
     if (text.trim().isEmpty) {
-      toast(context, '这篇还没有内容');
+      _toast('这篇还没有内容');
       return;
     }
     final ctrl = TextEditingController();
@@ -395,7 +409,7 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
       final ratio = (idx / text.length).clamp(0.0, 1.0);
       _scroll.animateTo((ratio * max).toDouble(),
           duration: const Duration(milliseconds: 280), curve: Curves.easeOut);
-      toast(context, '第 ${n + 1} / $total 处');
+      _toast('第 ${n + 1} / $total 处');
     });
   }
 
