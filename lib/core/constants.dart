@@ -96,36 +96,54 @@ class Defaults {
   static const int cacheLimitMb = 2048; // 缓存上限 2GB
   static const int scanMaxDepth = 4; // 媒体库最大扫描深度
 
-  /// 「显示答案」模式下答完自动跳下一题的秒数。0 = 不自动跳。
-  /// 给 3 秒是折中：够看一眼解析，又不至于干等。
+  /// 「普通模式」答完自动跳下一题的秒数。0 = 不自动跳。
+  ///
+  /// v1.7.0：它**自己就是开关**了。用户要求删掉那个单独的
+  /// 「答完自动下一题」总开关、连同菜单里的「不显示答案时也自动跳题」，
+  /// 设置里只留三个时间，0 就代表不跳。选项按用户点名的来：
+  /// 不自动跳 / 1 / 2 / 3 / 4 / 5 秒。
   static const int autoNextSec = 3;
 
-  /// 「不带答案」模式下答错后停留几秒再跳（答对是立刻跳）
+  /// 「答错」**以及「点了显示答案之后」**停留几秒再跳。
+  ///
+  /// v1.7.0：从「只管答错」扩到「答错 + 看过答案」，所以改名叫
+  /// 「答错和显示答案跳题秒数」；选项补上 8 秒和「不自动跳」（0）。
   static const int wrongStaySec = 6;
 
-  /// 「刷题模式（只看不做）」下自动翻页的秒数。0 = 不自动跳。
+  /// 「带答案刷题（只看不做）」模式翻页的秒数。0 = 不自动跳。
   ///
   /// v1.6.0 按用户要求从 `autoNextSec` 里**独立出来**。
-  /// 用户要的是三个各自独立的时间：
-  ///   ① 普通模式答完跳的   → autoNextSec
-  ///   ② 普通模式答错后跳的 → wrongStaySec
-  ///   ③ 只看不做模式跳的   → browseNextSec
-  /// 只看不做是「背题」，节奏本来就比做题慢，默认给 5 秒。
-  static const int browseNextSec = 5;
+  /// 三个时间各管各的：
+  ///   ① 普通模式答完跳的    → autoNextSec
+  ///   ② 答错 / 看过答案跳的 → wrongStaySec
+  ///   ③ 带答案刷题模式跳的  → browseNextSec
+  static const int browseNextSec = 4;
 
-  /// 「自动下一题」秒数可选项（0 表示关闭）
+  /// 普通模式答完自动跳的秒数可选项（0 表示不自动跳）
+  /// v1.7.0 按用户点名的档位重排。
+  static const List<int> autoNextSecOptions = [0, 1, 2, 3, 4, 5];
+
+  /// 答错 / 看过答案后停留的可选项（0 = 不自动跳）
+  /// v1.7.0 按用户点名的档位重排（原来是 [2, 4, 6, 10]，没有「不自动跳」）。
+  static const List<int> wrongStaySecOptions = [0, 2, 4, 6, 8];
+
+  /// 「带答案刷题 / 只看不做」模式翻页秒数可选项（0 = 不自动跳）
+  /// v1.7.0 按用户点名的档位重排。
+  static const List<int> browseNextSecOptions = [0, 2, 4, 6, 8];
+
+  /// 把从磁盘读回来的旧值归一到当前选项列表里的合法值。
   ///
-  /// v1.4.0 按用户要求调整：补上 1 秒和 2 秒（想快刷的人需要更短的间隔），
-  /// 去掉 10 秒和 15 秒（真想要那么久，不如关掉自动跳、自己按下一题）。
-  static const List<int> autoNextSecOptions = [0, 1, 2, 3, 5, 8];
-
-  /// 答错停留秒数可选项。
-  /// v1.4.0 去掉末尾两项 —— 15 / 30 秒等得太久，实际上没人会让它自己跳。
-  static const List<int> wrongStaySecOptions = [2, 4, 6, 10];
-
-  /// 「只看不做」模式翻页秒数可选项（0 表示关闭）。
-  /// 比做题模式整体慢一档：背题时一页总要多看两眼。
-  static const List<int> browseNextSecOptions = [0, 3, 5, 8, 12, 20];
+  /// 为什么必须有：用户升级前可能存着 10 / 12 / 20 这些**已经不在选项里**
+  /// 的秒数，而 DropdownButton 的 value 一旦不等于任何 item 就直接断言崩。
+  /// 归一到「最接近的合法档位」，体验上也比悄悄跳回默认值合理。
+  static int normalizeSec(int v, List<int> options) {
+    if (options.contains(v)) return v;
+    var best = options.first;
+    for (final o in options) {
+      if ((o - v).abs() < (best - v).abs()) best = o;
+    }
+    return best;
+  }
 
   /// 默认下载目录（Android）：系统「下载」目录下的 StudyHub 文件夹
   static const String androidDownloadFolder = 'StudyHub';
@@ -176,4 +194,4 @@ class Defaults {
 ///     这个项目历次构建翻车全是因为依赖，为一个版本号不值得。
 ///   * 反正发版时 pubspec 里的 version 也是手改的，两处一起改就行。
 /// 改这里的时候记得同步 pubspec.yaml 的 version。
-const String kAppVersion = '1.6.0';
+const String kAppVersion = '1.7.0';

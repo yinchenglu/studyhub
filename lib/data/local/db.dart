@@ -313,6 +313,95 @@ class AppDb {
     await d.delete('wrong');
   }
 
+  // ------------------------------------------------------------ 收藏（v1.7.0）
+
+  /// 加一条收藏。
+  ///
+  /// `favorite` 表在 v1.5.0 就建好了但一直没人用，这次直接拿它存 ——
+  /// 省掉一次数据库版本升级（升级写错了在老机器上就是启动即崩）。
+  /// [kind] 见 `FavoriteItem`：note / noteDir / media / mediaDir。
+  Future<void> addFavorite(String path, String kind, String title) async {
+    if (path.isEmpty) return;
+    final d = await db;
+    await d.insert(
+      'favorite',
+      {
+        'path': path,
+        'kind': kind,
+        'title': title,
+        'added_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> removeFavorite(String path) async {
+    final d = await db;
+    await d.delete('favorite', where: 'path = ?', whereArgs: [path]);
+  }
+
+  Future<bool> isFavorite(String path) async {
+    final d = await db;
+    final rows =
+        await d.query('favorite', columns: ['path'], where: 'path = ?', whereArgs: [path], limit: 1);
+    return rows.isNotEmpty;
+  }
+
+  /// 全部收藏，新的在前。
+  Future<List<FavoriteItem>> favorites() async {
+    final d = await db;
+    final rows = await d.query('favorite', orderBy: 'added_at DESC');
+    return rows
+        .map((m) => FavoriteItem(
+              path: m['path'].toString(),
+              kind: (m['kind'] ?? 'note').toString(),
+              title: (m['title'] ?? '').toString(),
+              addedAt: DateTime.fromMillisecondsSinceEpoch((m['added_at'] as int?) ?? 0),
+            ))
+        .toList();
+  }
+
+  /// 删掉某个路径**及其所有子路径**的收藏。
+  ///
+  /// 删除笔记 / 视频时顺手调用 —— 不然首页「我的收藏」里会留着一堆
+  /// 点开就报「文件不存在」的死条目。
+  Future<void> removeFavoritesUnder(String path) async {
+    if (path.isEmpty) return;
+    final d = await db;
+    await d.delete('favorite', where: 'path = ? OR path LIKE ?', whereArgs: [path, '$path/%']);
+  }
+
+  /// 改名之后，把挂在旧路径上的收藏迁到新路径。
+  ///
+  /// 不迁的话：用户收藏一篇笔记 → 再给它改个名 → 首页「我的收藏」里就留下
+  /// 一条点开报「文件不存在」的死条目。目录改名同理，子路径要整段换前缀。
+  ///
+  /// [newTitle] 只在「收藏的就是被改名的那个东西本身」时用得上；子项的文件名
+  /// 没变，标题不用动。
+  Future<void> moveFavoritesUnder(String oldPath, String newPath, {String? newTitle}) async {
+    if (oldPath.isEmpty || newPath.isEmpty || oldPath == newPath) return;
+    final d = await db;
+    final rows = await d.query('favorite', columns: ['path']);
+    for (final r in rows) {
+      final p = (r['path'] ?? '').toString();
+      if (p == oldPath) {
+        await d.update(
+          'favorite',
+          {'path': newPath, if (newTitle != null && newTitle.isNotEmpty) 'title': newTitle},
+          where: 'path = ?',
+          whereArgs: [oldPath],
+        );
+      } else if (p.startsWith('$oldPath/')) {
+        await d.update(
+          'favorite',
+          {'path': '$newPath${p.substring(oldPath.length)}'},
+          where: 'path = ?',
+          whereArgs: [p],
+        );
+      }
+    }
+  }
+
   // ------------------------------------------------------------ 播放进度
 
   Future<void> saveProgress(String path, int positionMs, int durationMs) async {

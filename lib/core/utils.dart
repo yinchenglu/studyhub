@@ -63,6 +63,52 @@ String titleFromFileName(String name) {
   return n.toLowerCase().endsWith('.md') ? n.substring(0, n.length - 3) : n;
 }
 
+/// 抠出名字开头的序号。
+///
+/// 服务器上手工整理的小工具 / 分类常常带序号前缀，写法五花八门：
+///   `01_单位换算`、`2.日期计算`、`3 时间戳`、`0101 血压计`
+/// 这里只认「开头那串数字」，分隔符是什么不管。
+/// 没有数字前缀就返回 null（调用方据此把它排到带序号的那批后面）。
+///
+/// v1.7.0：用户要求「服务器小工具目录自动识别名称前面的数字来排序」。
+int? leadingNumber(String raw) {
+  final m = RegExp(r'^\s*(\d{1,4})').firstMatch(raw);
+  if (m == null) return null;
+  return int.tryParse(m.group(1)!);
+}
+
+/// 去掉名字开头的「序号 + 分隔符」，拿来显示。
+///
+/// `01_单位换算` → `单位换算`、`2. 日期计算` → `日期计算`、`3 时间戳` → `时间戳`。
+/// 注意：**数字后面必须紧跟分隔符或空白才算序号**，所以
+/// `3D 打印` 不会被误伤成 `D 打印`，`2024年度总结` 也不会被剥掉年份。
+/// 如果剥完什么都不剩（名字本身就叫「01」），那就原样返回，别给个空标题。
+///
+/// v1.7.0：用户要求「显示名称的时候不显示前面的数字和空格」。
+String stripLeadingNumber(String raw) {
+  final s = raw.replaceFirst(RegExp(r'^\s*\d{1,4}[\s_.\-、,)]+'), '');
+  final cut = s.trim();
+  if (cut.isEmpty) return raw.trim();
+  return cut;
+}
+
+/// 给带序号的名字排序：序号小的在前，没序号的垫底（再按名字比）。
+///
+/// 两个都带序号就比数值（`2` 排在 `10` 前面，这是字符串比较做不到的）；
+/// 只有一边带序号，带序号的那边优先 —— 用户既然编了号，就是想让它们成组。
+int compareByLeadingNumber(String a, String b) {
+  final na = leadingNumber(a);
+  final nb = leadingNumber(b);
+  if (na != null && nb != null) {
+    if (na != nb) return na.compareTo(nb);
+  } else if (na != null) {
+    return -1;
+  } else if (nb != null) {
+    return 1;
+  }
+  return a.toLowerCase().compareTo(b.toLowerCase());
+}
+
 /// 图片/视频的图标
 bool isMediaPlayable(String name) => FileTypes.isPlayable(name);
 

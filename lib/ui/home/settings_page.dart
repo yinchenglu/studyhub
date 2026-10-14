@@ -333,17 +333,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ),
                 const Divider(height: 1),
                 SwitchListTile(
-                  secondary: const Icon(Icons.flash_on_outlined),
-                  title: const Text('答完自动下一题'),
-                  // v1.6.0：这已经是个「总开关」—— 三种模式都归它管，
-                  // 下面三个秒数分别决定各自跳多快。
-                  subtitle: const Text('总开关：不勾就完全手动翻。'
-                      '勾上之后，下面三个秒数分别管「普通模式答对」「普通模式答错」「只看不做」'),
-                  value: prefs.autoNext,
-                  onChanged: (v) => ref.read(quizPrefsProvider.notifier).setAutoNext(v),
-                ),
-                const Divider(height: 1),
-                SwitchListTile(
+                  dense: true,
+                  visualDensity: const VisualDensity(vertical: -2),
                   secondary: const Icon(Icons.visibility_outlined),
                   title: const Text('选择后立即显示答案'),
                   subtitle: const Text('关掉就是「先自己想，按确认才判定」。'
@@ -352,19 +343,24 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   onChanged: (v) => ref.read(quizPrefsProvider.notifier).setShowAnswerNow(v),
                 ),
                 const Divider(height: 1),
+                // v1.7.0：这里原来还有个「答完自动下一题」总开关（连带答题页菜单里的
+                // 「不显示答案时也自动跳题」），用户要求撤掉 —— 只留三个时间设置，
+                // 秒数选「不自动跳」就等于关。整段的行高也压了一档。
                 ListTile(
+                  dense: true,
+                  visualDensity: const VisualDensity(vertical: -2),
                   leading: const Icon(Icons.timelapse),
                   title: const Text('自动跳题秒数'),
-                  // v1.6.0：这里原来写「显示答案 / 刷题模式」共用，现在拆成三个独立设置
                   subtitle: Text(prefs.autoNextSec == 0
-                      ? '普通刷题：不自动跳'
-                      : '普通刷题：答完 ${prefs.autoNextSec} 秒自动跳下一题'),
+                      ? '普通模式：不自动跳'
+                      : '普通模式：答完 ${prefs.autoNextSec} 秒跳下一题'),
                   trailing: DropdownButton<int>(
                     value: prefs.autoNextSec,
+                    isDense: true,
                     underline: const SizedBox.shrink(),
                     items: [
                       for (final s in Defaults.autoNextSecOptions)
-                        DropdownMenuItem(value: s, child: Text(s == 0 ? '关闭' : '$s 秒')),
+                        DropdownMenuItem(value: s, child: Text(s == 0 ? '不自动跳' : '$s 秒')),
                     ],
                     onChanged: (v) {
                       if (v != null) ref.read(quizPrefsProvider.notifier).setAutoNextSec(v);
@@ -373,15 +369,20 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ),
                 const Divider(height: 1),
                 ListTile(
+                  dense: true,
+                  visualDensity: const VisualDensity(vertical: -2),
                   leading: const Icon(Icons.timer_off_outlined),
-                  title: const Text('答错后停留'),
-                  subtitle: Text('普通刷题：答错至少停留 ${prefs.wrongStaySec} 秒再跳，方便看完解析'),
+                  title: const Text('答错和显示答案跳题秒数'),
+                  subtitle: Text(prefs.wrongStaySec == 0
+                      ? '答错、或点了「显示答案」之后：不自动跳'
+                      : '答错、或点了「显示答案」之后：停留 ${prefs.wrongStaySec} 秒再跳'),
                   trailing: DropdownButton<int>(
                     value: prefs.wrongStaySec,
+                    isDense: true,
                     underline: const SizedBox.shrink(),
                     items: [
                       for (final s in Defaults.wrongStaySecOptions)
-                        DropdownMenuItem(value: s, child: Text('$s 秒')),
+                        DropdownMenuItem(value: s, child: Text(s == 0 ? '不自动跳' : '$s 秒')),
                     ],
                     onChanged: (v) {
                       if (v != null) ref.read(quizPrefsProvider.notifier).setWrongStaySec(v);
@@ -389,21 +390,23 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   ),
                 ),
                 const Divider(height: 1),
-                // v1.6.0 新增：第三个时间 —— 「刷题模式（只看不做）」自己的翻页间隔。
-                // 用户要的是三个互不干扰的时间设置。
+                // 第三个时间 —— 「带答案刷题（只看不做）」自己的翻页间隔。
+                // 答题页顶栏那个切换按钮切过去之后，就按这个秒数自动翻。
                 ListTile(
+                  dense: true,
+                  visualDensity: const VisualDensity(vertical: -2),
                   leading: const Icon(Icons.menu_book_outlined),
                   title: const Text('只看不做跳题秒数'),
                   subtitle: Text(prefs.browseNextSec == 0
-                      ? '刷题模式（只看不做）：不自动跳'
-                      : '刷题模式（只看不做）：每 ${prefs.browseNextSec} 秒翻一页'
-                          '（还要勾上上面的「答完自动下一题」）'),
+                      ? '带答案刷题（只看不做）：不自动跳'
+                      : '带答案刷题（只看不做）：每 ${prefs.browseNextSec} 秒翻一页'),
                   trailing: DropdownButton<int>(
                     value: prefs.browseNextSec,
+                    isDense: true,
                     underline: const SizedBox.shrink(),
                     items: [
                       for (final s in Defaults.browseNextSecOptions)
-                        DropdownMenuItem(value: s, child: Text(s == 0 ? '关闭' : '$s 秒')),
+                        DropdownMenuItem(value: s, child: Text(s == 0 ? '不自动跳' : '$s 秒')),
                     ],
                     onChanged: (v) {
                       if (v != null) ref.read(quizPrefsProvider.notifier).setBrowseNextSec(v);

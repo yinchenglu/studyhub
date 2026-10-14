@@ -211,8 +211,26 @@ final statsProvider = FutureProvider<StatsSummary>((ref) async {
 });
 
 /// 最近浏览（本地播放 / 打开记录，视频和笔记都在里面）
+///
+/// v1.7.0：取 12 条改成取 30 条 —— 首页默认只露 5 条、点「更多」把剩下的摊开，
+/// 只取 12 条的话「更多」也只能多露 7 条，感觉像骗人。
 final recentProvider = FutureProvider<List<MapEntry<String, PlayProgress>>>((ref) async {
-  return AppDb.instance.recentPlayed(limit: 12);
+  return AppDb.instance.recentPlayed(limit: 30);
+});
+
+/// 首页「最近浏览」是否已经展开（默认只看 5 条）
+final recentExpandedProvider = StateProvider<bool>((ref) => false);
+
+/// 我的收藏（v1.7.0 用户第 6 条）。
+/// 笔记、视频的文件和文件夹都能收藏，首页按这两类分开摆。
+/// 收藏 / 取消收藏之后记得 `ref.invalidate(favoriteProvider)`。
+final favoriteProvider = FutureProvider<List<FavoriteItem>>((ref) async {
+  return AppDb.instance.favorites();
+});
+
+/// 某条路径当前是不是已收藏。长按菜单靠它决定显示「收藏」还是「取消收藏」。
+final isFavoriteProvider = FutureProvider.family<bool, String>((ref, path) async {
+  return AppDb.instance.isFavorite(path);
 });
 
 // ------------------------------------------------------------- 主题
@@ -240,16 +258,19 @@ class QuizPrefs {
   final int perRound;
   final int examCount;
   final int examMinutes;
-  final bool autoNext;
+
+  /// v1.7.0：原来的 `autoNext` 总开关删掉了。
+  /// 用户要求「只留 3 个时间设置」—— 那个开关和「不显示答案时也自动跳题」
+  /// 都撤了，秒数填 0 就是「不自动跳」，语义更直观。
   final bool showAnswerNow;
 
-  /// 「显示答案」模式下答完停留几秒自动跳下一题（0 = 不自动跳）
+  /// 「普通模式」答完停留几秒自动跳下一题（0 = 不自动跳）
   final int autoNextSec;
 
-  /// 「不带答案」模式下答错后停留几秒再跳下一题（答对立刻跳）
+  /// 「答错」以及「点了显示答案之后」停留几秒再跳下一题（0 = 不自动跳）
   final int wrongStaySec;
 
-  /// 「刷题模式（只看不做）」下自动翻页的秒数（0 = 不自动跳）。
+  /// 「带答案刷题（只看不做）」模式自动翻页的秒数（0 = 不自动跳）。
   /// v1.6.0 从 autoNextSec 里独立出来，三种模式各管各的。
   final int browseNextSec;
 
@@ -257,18 +278,16 @@ class QuizPrefs {
     this.perRound = 20,
     this.examCount = 30,
     this.examMinutes = 40,
-    this.autoNext = false,
     this.showAnswerNow = true,
     this.autoNextSec = 3,
     this.wrongStaySec = 6,
-    this.browseNextSec = 5,
+    this.browseNextSec = 4,
   });
 
   QuizPrefs copy({
     int? perRound,
     int? examCount,
     int? examMinutes,
-    bool? autoNext,
     bool? showAnswerNow,
     int? autoNextSec,
     int? wrongStaySec,
@@ -278,7 +297,6 @@ class QuizPrefs {
         perRound: perRound ?? this.perRound,
         examCount: examCount ?? this.examCount,
         examMinutes: examMinutes ?? this.examMinutes,
-        autoNext: autoNext ?? this.autoNext,
         showAnswerNow: showAnswerNow ?? this.showAnswerNow,
         autoNextSec: autoNextSec ?? this.autoNextSec,
         wrongStaySec: wrongStaySec ?? this.wrongStaySec,
@@ -297,7 +315,6 @@ class QuizPrefsNotifier extends StateNotifier<QuizPrefs> {
       perRound: await s.quizCount(),
       examCount: await s.examCount(),
       examMinutes: await s.examMinutes(),
-      autoNext: await s.autoNext(),
       showAnswerNow: await s.showAnswerNow(),
       autoNextSec: await s.autoNextSec(),
       wrongStaySec: await s.wrongStaySec(),
@@ -318,11 +335,6 @@ class QuizPrefsNotifier extends StateNotifier<QuizPrefs> {
   Future<void> setExamMinutes(int v) async {
     await SettingsStore.instance.setExamMinutes(v);
     state = state.copy(examMinutes: v);
-  }
-
-  Future<void> setAutoNext(bool v) async {
-    await SettingsStore.instance.setAutoNext(v);
-    state = state.copy(autoNext: v);
   }
 
   Future<void> setShowAnswerNow(bool v) async {

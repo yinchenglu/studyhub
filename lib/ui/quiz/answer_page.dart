@@ -35,6 +35,14 @@ enum QuizMode { practice, exam, browse }
 ///       2. 往回翻已经做过的题不显示答案（用的是一次性的 _submitted 标记，
 ///          翻页时被清掉了。现在改成按题号记录「这题已经揭示过答案」）
 ///   * 新增填空题 / 问答题
+///
+/// v1.7.0 起（用户第 3 条）：
+///   * 顶栏那个「暂停自动跳题」按钮换成**普通模式 ↔ 带答案刷题模式**的切换
+///   * 跳题时间只剩三个，且**秒数 0 就是「不自动跳」**，
+///     「答完自动下一题」总开关和菜单里的「不显示答案时也自动跳题」都撤了：
+///       ① 普通模式答完跳的   → autoNextSec
+///       ② 答错 / 看过答案跳的 → wrongStaySec（点「显示答案」也算这一档）
+///       ③ 带答案刷题模式跳的  → browseNextSec
 class AnswerPage extends ConsumerStatefulWidget {
   final List<Question> questions;
   final String title;
@@ -78,6 +86,13 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
   /// 显示答案（true = 一答就出答案；false = 要按「确认答案」才判定）
   bool _showAnswerNow = true;
 
+  /// v1.7.0：页面内的「带答案刷题模式」开关。
+  ///
+  /// 初值跟随进来时的 QuizMode（从题库选「刷题模式」进来就是 true），
+  /// 但顶栏那个切换按钮可以在这页里随时改 —— 用户要的就是它。
+  /// 打开时：答案和解析直接摊开、不用作答，翻页按第 ③ 个秒数走。
+  late bool _browseOn = widget.mode == QuizMode.browse;
+
   /// 考试模式倒计时
   Timer? _examTimer;
   int _remainSec = 0;
@@ -85,7 +100,6 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
   /// 自动跳下一题的倒计时
   Timer? _autoTimer;
   int _autoRemainMs = 0;
-  bool _autoPaused = false;
   int _autoFor = -1; // 倒计时是为哪一题排的，切题后就作废
 
   final TextEditingController _input = TextEditingController();
@@ -93,11 +107,8 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
   Question get _q => _list[_i];
   List<int> get _myChoice => _choices[_i] ?? const [];
   String get _myText => _texts[_i] ?? '';
-  bool get _revealedHere => _isBrowse || _revealed.contains(_i);
+  bool get _revealedHere => _browseOn || _revealed.contains(_i);
   bool get _isExam => widget.mode == QuizMode.exam;
-
-  /// 刷题模式：答案和解析一直摊开着，不用作答（v1.5.0）
-  bool get _isBrowse => widget.mode == QuizMode.browse;
 
   @override
   void initState() {
@@ -143,49 +154,37 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
 
   /// 排一次「N 秒后自动跳下一题」。
   ///
-  /// 三种模式取的时间完全不同：
-  ///   * 刷题模式 → 只看「答完自动下一题」这个开关和它下面的秒数。
-  ///     没勾就完全不自动跳（手动翻）；勾了但秒数是 0 也不跳
-  ///   * 显示答案模式 → 用设置里选的固定秒数（3/5/8…），0 表示不自动跳
-  ///   * 不带答案模式 → 答对几乎立刻跳；答错停留用户设置的秒数，好让人看完解析
+  /// v1.7.0 起三个时间各管一段，而且**秒数 0 就是「不自动跳」** ——
+  /// 「答完自动下一题」那个总开关已经按用户要求撤掉了：
+  ///   * 带答案刷题 / 只看不做 → `browseNextSec`（答案是现成的，按背题节奏翻）
+  ///   * 普通模式答对          → `autoNextSec`
+  ///   * 普通模式答错          → `wrongStaySec`（要留时间看解析）
+  ///
+  /// 「答错」这一档同时也管「用户自己点了显示答案」—— 见 `_revealNow`。
   void _scheduleAutoNext(int idx, bool correct) {
     _cancelAuto();
     if (_isExam || _finished) return;
     final prefs = ref.read(quizPrefsProvider);
 
-    int ms;
-    if (_isBrowse) {
-      // v1.6.0：只看不做模式改用**自己的**秒数 `browseNextSec`。
-      // 原来跟普通模式共用 autoNextSec，用户要的是三个时间各管各的。
-      // 开关仍然是「答完自动下一题」—— 不勾就完全手动翻。
-      if (!prefs.autoNext || prefs.browseNextSec <= 0) return;
-      ms = prefs.browseNextSec * 1000;
-    } else if (_showAnswerNow) {
-      // ★ v1.5.0 修的真 bug：原来这一支只认 autoNextSec，
-      //   **完全不看 wrongStaySec**。而 showAnswerNow 默认就是 true，
-      //   于是设置里那个「答错后停留 N 秒」在默认配置下点了等于没点
-      //   （用户反馈的正是「这个设置没起作用」）。
-      //   现在答错按「答错后停留」走，而且取两者的**较大值**：
-      //   万一用户把自动跳题设成 8 秒、答错停留设成 2 秒，
-      //   答错反而比答对跳得更快，那就荒唐了。
-      if (prefs.autoNextSec <= 0) return;
-      ms = (correct ? prefs.autoNextSec : max(prefs.autoNextSec, prefs.wrongStaySec)) * 1000;
+    final int sec;
+    if (_browseOn) {
+      sec = prefs.browseNextSec;
+    } else if (correct) {
+      sec = prefs.autoNextSec;
     } else {
-      if (!prefs.autoNext) return;
-      ms = correct ? 600 : prefs.wrongStaySec * 1000;
+      sec = prefs.wrongStaySec;
     }
+    if (sec <= 0) return;
+    final ms = sec * 1000;
 
     _autoFor = idx;
     _autoRemainMs = ms;
-    // 注意：不重置 _autoPaused —— 用户按了「暂停」就该一直暂停，
-    // 否则每答一题就又自动跑起来，暂停按钮等于没用。
     _autoTimer?.cancel();
     _autoTimer = Timer.periodic(const Duration(milliseconds: 100), (t) {
       if (!mounted) {
         t.cancel();
         return;
       }
-      if (_autoPaused) return;
       setState(() => _autoRemainMs -= 100);
       if (_autoRemainMs <= 0) {
         t.cancel();
@@ -204,8 +203,24 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     _autoFor = -1;
   }
 
-  void _togglePause() {
-    setState(() => _autoPaused = !_autoPaused);
+  /// 顶栏那个按钮：普通模式 ↔ 带答案刷题模式。
+  ///
+  /// v1.7.0：它原来是「暂停自动跳题」。用户要求换掉 ——
+  /// 暂停这个动作，「把秒数改成 0」就能表达，而切换模式更需要一个一键入口。
+  ///
+  /// 切到带答案模式时把**当前这道题**的答案直接摊开（否则按钮点了像没反应），
+  /// 并按第 ③ 个秒数排上自动翻页。
+  /// 切回普通模式只停掉自动翻页，**不把答案收回去** —— 用户可能正看着解析，
+  /// 硬收掉会很难受；翻到下一题自然就是正常作答了。
+  void _toggleBrowse() {
+    final on = !_browseOn;
+    setState(() => _browseOn = on);
+    if (on) {
+      setState(() => _revealed.add(_i));
+      _scheduleAutoNext(_i, true);
+    } else {
+      _cancelAuto();
+    }
   }
 
   // ------------------------------------------------------------ 判定
@@ -318,6 +333,9 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
       setState(() => _showAnswerNow = true);
       ref.read(quizPrefsProvider.notifier).setShowAnswerNow(true);
     }
+    // v1.7.0：点了「显示答案」也算进「答错和显示答案跳题秒数」那一档 ——
+    // 看完答案同样需要一点时间再往下走，不然刚点开就被翻走了。
+    _scheduleAutoNext(_i, false);
   }
 
   /// 提交当前题：揭示答案 → 记录 → 排自动跳题
@@ -356,7 +374,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     // 刷题模式的自动翻页不是「答完才排」，而是「翻到这一页就排」——
     // 因为没有作答这个动作。手动翻（按钮 / 左右滑 / 答题卡）都会走到这里，
     // 所以在这儿排一次就够了。
-    if (_isBrowse) _scheduleAutoNext(idx, true);
+    if (_browseOn) _scheduleAutoNext(idx, true);
   }
 
   void _next() {
@@ -365,7 +383,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     } else {
       if (_isExam) {
         _submitExam();
-      } else if (_isBrowse) {
+      } else if (_browseOn) {
         // 刷题模式一题都没答，没有「小结」可看 —— 翻到最后一题就是看完了，
         // 直接退出。硬要弹个「答对 0/50」的小结只会让人一脸问号。
         _cancelAuto();
@@ -452,16 +470,15 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
         body: const Center(child: Text('这套题库里没有题目')),
       );
     }
-    // 刷题模式的自动翻页**完全**由设置里的「答完自动下一题」决定，
-    // 而那个开关是异步从磁盘读回来的 —— 页面先建、prefs 后到是常态。
-    // 所以在这儿盯着 prefs：一旦它到货（或用户在设置里改了）就重排倒计时。
-    // 不这么干的话，进刷题模式时 prefs 还是默认值 autoNext=false，
-    // 用户明明勾了自动跳却一动不动。
+    // 刷题模式的自动翻页**完全**由设置里那三个秒数决定，
+    // 而它们是异步从磁盘读回来的 —— 页面先建、prefs 后到是常态。
+    // 所以在这儿盯着 prefs：一旦它到货（或用户在菜单里改了）就重排倒计时。
+    // 不这么干的话，进刷题模式时 prefs 还是默认值，用户明明设了秒数却一动不动。
     ref.listen(quizPrefsProvider, (prev, next) {
-      if (!_isBrowse || _finished) return;
-      if (prev?.autoNext == next.autoNext &&
-          prev?.autoNextSec == next.autoNextSec &&
-          prev?.browseNextSec == next.browseNextSec) {
+      if (!_browseOn || _finished) return;
+      if (prev?.autoNextSec == next.autoNextSec &&
+          prev?.browseNextSec == next.browseNextSec &&
+          prev?.wrongStaySec == next.wrongStaySec) {
         return;
       }
       _scheduleAutoNext(_i, true);
@@ -513,19 +530,22 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
                 margin: const EdgeInsets.only(right: 4),
                 padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
                 decoration: BoxDecoration(
-                  color: _autoPaused ? scheme.surfaceContainerHighest : scheme.primaryContainer,
+                  color: scheme.primaryContainer,
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  _autoPaused ? '已暂停' : '${(_autoRemainMs / 1000).ceil()} 秒后下一题',
+                  '${(_autoRemainMs / 1000).ceil()} 秒后下一题',
                   style: const TextStyle(fontSize: 11.5),
                 ),
               ),
             ),
+          // v1.7.0：这里原来是「暂停自动跳题」，用户要求换掉 ——
+          // 改成「普通模式 ↔ 带答案刷题模式」的切换按钮。
+          // 「暂停」这个动作本身不需要专门的按钮了：把秒数填 0 就是永不自动跳。
           IconButton(
-            tooltip: _autoPaused ? '继续自动跳题' : '暂停自动跳题（多看一会）',
-            onPressed: _togglePause,
-            icon: Icon(_autoPaused ? Icons.play_circle_outline : Icons.pause_circle_outline),
+            tooltip: _browseOn ? '带答案刷题模式（点一下切回普通模式）' : '普通模式（点一下切到带答案刷题）',
+            onPressed: _toggleBrowse,
+            icon: Icon(_browseOn ? Icons.auto_stories : Icons.edit_note),
           ),
           IconButton(
             // 已经揭示过就不用再点了（灰掉，免得以为按钮坏了）
@@ -540,59 +560,53 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
                 _finishPractice();
               } else if (v.startsWith('autoNext:')) {
                 n.setAutoNextSec(int.parse(v.split(':')[1]));
-              } else if (v.startsWith('autoOn:')) {
-                n.setAutoNext(v.split(':')[1] == '1');
               } else if (v.startsWith('stay:')) {
                 n.setWrongStaySec(int.parse(v.split(':')[1]));
               } else if (v.startsWith('browse:')) {
-                // v1.6.0：只看不做模式自己的翻页秒数
                 n.setBrowseNextSec(int.parse(v.split(':')[1]));
               }
             },
             itemBuilder: (_) {
               final p = ref.read(quizPrefsProvider);
+              // v1.7.0：这里原来还有个「不显示答案时也自动跳题」开关，
+              // 用户要求去掉。三个秒数全部就地可改，行高从 48 压到 34。
               return <PopupMenuEntry<String>>[
                 const PopupMenuItem<String>(
                     enabled: false,
-                    height: 32,
-                    child: Text('自动跳题秒数（显示答案时）', style: TextStyle(fontSize: 11.5))),
+                    height: 30,
+                    child: Text('① 自动跳题秒数（普通模式答完）', style: TextStyle(fontSize: 11.5))),
                 for (final s in Defaults.autoNextSecOptions)
                   CheckedPopupMenuItem<String>(
                     value: 'autoNext:$s',
+                    height: 34,
                     checked: p.autoNextSec == s,
                     child: Text(s == 0 ? '不自动跳' : '$s 秒'),
                   ),
-                const PopupMenuDivider(),
-                CheckedPopupMenuItem<String>(
-                  value: 'autoOn:${p.autoNext ? 0 : 1}',
-                  checked: p.autoNext,
-                  child: const Text('不显示答案时也自动跳题'),
-                ),
+                const PopupMenuDivider(height: 8),
                 const PopupMenuItem<String>(
                     enabled: false,
-                    height: 32,
-                    child: Text('答错后停留', style: TextStyle(fontSize: 11.5))),
+                    height: 30,
+                    child: Text('② 答错和显示答案跳题秒数', style: TextStyle(fontSize: 11.5))),
                 for (final s in Defaults.wrongStaySecOptions)
                   CheckedPopupMenuItem<String>(
                     value: 'stay:$s',
+                    height: 34,
                     checked: p.wrongStaySec == s,
-                    child: Text('$s 秒'),
+                    child: Text(s == 0 ? '不自动跳' : '$s 秒'),
                   ),
-                // v1.6.0：只看不做模式有自己的翻页秒数，就地也能改
-                if (_isBrowse) ...[
-                  const PopupMenuDivider(),
-                  const PopupMenuItem<String>(
-                      enabled: false,
-                      height: 32,
-                      child: Text('只看不做翻页秒数', style: TextStyle(fontSize: 11.5))),
-                  for (final s in Defaults.browseNextSecOptions)
-                    CheckedPopupMenuItem<String>(
-                      value: 'browse:$s',
-                      checked: p.browseNextSec == s,
-                      child: Text(s == 0 ? '不自动跳' : '$s 秒'),
-                    ),
-                ],
-                const PopupMenuDivider(),
+                const PopupMenuDivider(height: 8),
+                const PopupMenuItem<String>(
+                    enabled: false,
+                    height: 30,
+                    child: Text('③ 只看不做跳题秒数（带答案刷题）', style: TextStyle(fontSize: 11.5))),
+                for (final s in Defaults.browseNextSecOptions)
+                  CheckedPopupMenuItem<String>(
+                    value: 'browse:$s',
+                    height: 34,
+                    checked: p.browseNextSec == s,
+                    child: Text(s == 0 ? '不自动跳' : '$s 秒'),
+                  ),
+                const PopupMenuDivider(height: 8),
                 const PopupMenuItem<String>(
                     value: 'end',
                     child: ListTile(leading: Icon(Icons.done_all), title: Text('结束本轮'), dense: true)),
@@ -863,7 +877,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
                 icon: const Icon(Icons.grid_view_outlined, size: 18),
                 label: Text('答题卡 $_answeredCount/${_list.length}'),
               )
-            else if (_isBrowse)
+            else if (_browseOn)
               // 刷题模式没有「已答」这个概念 —— 一个字都没答。
               // 显示「已答 0/50」只会让人以为出了问题，改成页码。
               Text('第 ${_i + 1} / ${_list.length} 题', style: const TextStyle(fontSize: 12.5))
@@ -874,7 +888,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
               onPressed: _next,
               icon: const Icon(Icons.chevron_right, size: 18),
               label: Text(_i == _list.length - 1
-                  ? (_isExam ? '交卷' : (_isBrowse ? '退出' : '看小结'))
+                  ? (_isExam ? '交卷' : (_browseOn ? '退出' : '看小结'))
                   : '下一题'),
             ),
           ],

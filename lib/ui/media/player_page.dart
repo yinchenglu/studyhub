@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -14,6 +16,26 @@ import '../../data/local/settings_store.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
 
+/// 播放模式（v1.7.0，用户点名这四种）。
+///
+/// 只存在内存里、不落盘 —— 用户没要求记住，而且「上次是随机」这种事
+/// 下次打开反而让人困惑（以为是顺序的，结果跳着放）。
+enum PlayMode { sequential, shuffle, repeatOne, repeatAll }
+
+String playModeName(PlayMode m) => switch (m) {
+      PlayMode.sequential => '默认顺序播放',
+      PlayMode.shuffle => '随机播放',
+      PlayMode.repeatOne => '单个循环播放',
+      PlayMode.repeatAll => '全目录循环播放',
+    };
+
+IconData playModeIcon(PlayMode m) => switch (m) {
+      PlayMode.sequential => Icons.playlist_play,
+      PlayMode.shuffle => Icons.shuffle,
+      PlayMode.repeatOne => Icons.repeat_one,
+      PlayMode.repeatAll => Icons.repeat,
+    };
+
 /// 视频播放页：nplayer 风格
 /// · 双击左右两侧：快退 / 快进 10 秒
 /// · 左右滑动：拖进度（松手才跳，带预览时间）
@@ -25,6 +47,9 @@ import '../../providers/providers.dart';
 /// · 跟着手机方向自动翻转：竖屏 / 左横屏 / 右横屏；锁定后不再自动翻转，
 ///   而且点击屏幕也不呼出控制栏 —— 躺床上单手划着看时不会误触出一堆按钮
 /// · 倍速菜单 0.5× ~ 3.0×
+/// · 播放模式菜单（v1.7.0）：默认顺序 / 随机 / 单个循环 / 全目录循环
+/// · 全屏（v1.7.0）：切沉浸式，把状态栏和导航栏收掉
+/// · 双指捏合缩放画面（v1.7.0），按返回键恢复原始大小
 /// · 自动记忆播放进度，下次接着看
 class PlayerPage extends ConsumerStatefulWidget {
   final List<MediaItem> playlist;
@@ -84,6 +109,30 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   String? _error;
 
+  /// 播放模式（v1.7.0 新增）。见 PlayMode 的注释。
+  PlayMode _playMode = PlayMode.sequential;
+
+  /// 沉浸式全屏（v1.7.0 新增）：true 时收掉系统状态栏和导航栏。
+  bool _fullscreen = false;
+
+  // ---- 双指缩放（v1.7.0 新增）----
+  //
+  // 为什么用 `Listener` 而不是给外层 GestureDetector 加 `onScaleUpdate`：
+  // 外层已经挂了单击 / 双击 / 横滑 / 竖滑四个识别器（切 UI、快进快退、
+  // 拖进度、音量亮度）。再塞一个 scale 识别器会跟它们抢手势竞技场 ——
+  // 单指滑动很可能被判给 scale，把「右半屏上下滑调音量」整条弄坏。
+  // Listener 是**被动**的、不进竞技场，只数自己收到几根手指，
+  // 所以绝对抢不走别人的手势。这是这里唯一安全的做法。
+  final Map<int, Offset> _pointers = {};
+  double _pinchStartDist = 0;
+  double _pinchStartZoom = 1;
+
+  /// 当前缩放倍数，1.0 = 原始大小。
+  double _zoom = 1;
+
+  static const double _minZoom = 1.0;
+  static const double _maxZoom = 4.0;
+
   // 拖进度预览
   bool _seeking = false;
   Duration _seekTarget = Duration.zero;
@@ -142,7 +191,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     _subs.add(_player.stream.completed.listen((done) {
       if (done && mounted) {
         _saveProgress();
-        _next();
+        // v1.7.0：原来不管什么模式都无脑 _next()，现在交给播放模式决定
+        _onCompleted();
       }
     }));
 
@@ -240,11 +290,169 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   }
 
   void _next() {
+    // v1.7.0：随机模式下「下一集」也走随机；全目录循环模式到末尾绕回开头
+    if (_playMode == PlayMode.shuffle && widget.playlist.length > 1) {
+      _open(_randomOther());
+      return;
+    }
+    if (_index < widget.playlist.length - 1) {
+      _open(_index + 1);
+    } else if (_playMode == PlayMode.repeatAll) {
+      _open(0);
+    } else {
+      _toast('已经是最后一个了');
+    }
+  }
+
+  /// 随机挑一个**不是当前这一集**的下标。
+  ///
+  /// 特意排除当前集：随机到同一集在用户看来就是「按了没反应」，
+  /// 会以为随机坏了。
+  int _randomOther() {
+    final n = widget.playlist.length;
+    if (n <= 1) return _index;
+    final rnd = math.Random();
+    var i = _index;
+    while (i == _index) {
+      i = rnd.nextInt(n);
+    }
+    return i;
+  }
+
+  /// 一集播完了该干什么 —— 由播放模式决定（v1.7.0 新增）。
+  ///
+  /// 这里刻意用 if 链而不是 switch：Dart 的 `case` 体共享作用域，
+  /// 而且这个文件的既有风格就是 if 链，少一类语法坑。
+  void _onCompleted() {
+    if (_playMode == PlayMode.repeatOne) {
+      // 不换集，同一集重头再来
+      _player.seek(Duration.zero);
+      _player.play();
+      return;
+    }
+    if (_playMode == PlayMode.shuffle) {
+      if (widget.playlist.length <= 1) {
+        _player.seek(Duration.zero);
+        _player.play();
+      } else {
+        _open(_randomOther());
+      }
+      return;
+    }
+    if (_playMode == PlayMode.repeatAll) {
+      _open((_index + 1) % widget.playlist.length);
+      return;
+    }
+    // 默认顺序播放：放完最后一个是真停，并说明一下，免得以为卡住了
     if (_index < widget.playlist.length - 1) {
       _open(_index + 1);
     } else {
       _toast('已经是最后一个了');
     }
+  }
+
+  /// 播放模式菜单（v1.7.0）。写法与倍速菜单保持一致。
+  Future<void> _showPlayModeSheet() async {
+    _hideTimer?.cancel();
+    final picked = await showModalBottomSheet<PlayMode>(
+      context: context,
+      backgroundColor: const Color(0xFF1C1C1E),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Text('播放模式',
+                  style: TextStyle(
+                      color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+            ),
+            for (final m in PlayMode.values)
+              ListTile(
+                leading: Icon(playModeIcon(m),
+                    color: m == _playMode ? Colors.lightBlueAccent : Colors.white70),
+                title: Text(playModeName(m),
+                    style: TextStyle(
+                        fontSize: 14,
+                        color: m == _playMode ? Colors.lightBlueAccent : Colors.white)),
+                trailing: m == _playMode
+                    ? const Icon(Icons.check, color: Colors.lightBlueAccent, size: 20)
+                    : null,
+                onTap: () => Navigator.of(ctx).pop(m),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (picked != null) {
+      setState(() => _playMode = picked);
+      _toast(playModeName(picked));
+    }
+    _scheduleHide();
+  }
+
+  /// 全屏（v1.7.0 新增）：切沉浸式，把系统状态栏和导航栏收掉。
+  ///
+  /// 播放页本来就是整屏黑底，所以「全屏」真正能看到的差别就是把系统栏收掉。
+  /// 退出页面时会还原成 edgeToEdge（见 dispose），不会把整个 App 带成沉浸式。
+  void _toggleFullscreen() {
+    final next = !_fullscreen;
+    setState(() => _fullscreen = next);
+    SystemChrome.setEnabledSystemUIMode(
+      next ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+    );
+    _scheduleHide();
+  }
+
+  // ------------------------------------------------------------ 双指缩放
+
+  void _onPointerDown(PointerDownEvent e) {
+    _pointers[e.pointer] = e.localPosition;
+    if (_pointers.length == 2) _baselinePinch();
+  }
+
+  void _onPointerMove(PointerMoveEvent e) {
+    if (!_pointers.containsKey(e.pointer)) return;
+    _pointers[e.pointer] = e.localPosition;
+    if (_pointers.length != 2 || _pinchStartDist <= 0) return;
+    final pts = _pointers.values.toList();
+    final d = (pts[0] - pts[1]).distance;
+    if (d <= 0) return;
+    // 必须 toDouble()：num.clamp 的静态返回类型是 num，直接赋给 double 会编译错
+    final z = (_pinchStartZoom * d / _pinchStartDist)
+        .clamp(_minZoom, _maxZoom)
+        .toDouble();
+    if ((z - _zoom).abs() < 0.01) return;
+    setState(() => _zoom = z);
+  }
+
+  void _onPointerUp(PointerEvent e) {
+    _pointers.remove(e.pointer);
+    // 手指数变了就重新取基准，否则下一轮捏合会拿上一轮的距离去比，画面会跳一下
+    if (_pointers.length == 2) {
+      _baselinePinch();
+    } else {
+      _pinchStartDist = 0;
+    }
+  }
+
+  void _baselinePinch() {
+    final pts = _pointers.values.toList();
+    if (pts.length < 2) {
+      _pinchStartDist = 0;
+      return;
+    }
+    _pinchStartDist = (pts[0] - pts[1]).distance;
+    _pinchStartZoom = _zoom;
+  }
+
+  /// 回到原始大小。返回键走的就是这里（见 build 里的 PopScope）。
+  void _resetZoom() {
+    if (_zoom == 1) return;
+    setState(() => _zoom = 1);
+    _toast('已恢复原始大小');
   }
 
   void _prev() {
@@ -333,6 +541,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     // 顺带也把可能的「锁定」状态清掉 —— followDevice/restorePortrait 都是
     // setPreferredOrientations，会把原生的 SCREEN_ORIENTATION_LOCKED 覆盖掉。
     ScreenOrientation.restorePortrait();
+    // v1.7.0：全屏是「沉浸式」，退出播放页必须还原成 edgeToEdge，
+    // 否则整个 App 都会一直没状态栏 —— 这个坑很容易漏，别忘了。
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
@@ -476,10 +687,24 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    // v1.7.0：按返回键先「恢复原始大小」，只有没缩放的时候才真的退出页面。
+    // 用动态 canPop（和 download_site_page 一个套路），不要自己拦 pop 再手动退 ——
+    // 那样会丢掉系统返回手势的动画。
+    return PopScope(
+      canPop: _zoom <= 1.001,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _resetZoom();
+      },
+      child: Scaffold(
       backgroundColor: Colors.black,
       body: LayoutBuilder(
-        builder: (context, constraints) => GestureDetector(
+        builder: (context, constraints) => Listener(
+          // 双指捏合缩放走这个**被动**监听，不进手势竞技场（见 _pointers 的注释）
+          onPointerDown: _onPointerDown,
+          onPointerMove: _onPointerMove,
+          onPointerUp: _onPointerUp,
+          onPointerCancel: _onPointerUp,
+          child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: _toggleUi,
           onDoubleTapDown: (d) => _onDoubleTapDown(d, constraints.maxWidth),
@@ -502,10 +727,15 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
             children: [
               Positioned.fill(
                 child: Center(
-                  child: Video(
-                    controller: _controller,
-                    fit: BoxFit.contain,
-                    controls: NoVideoControls,
+                  child: Transform.scale(
+                    // 双指缩放只缩画面，**不缩控制栏** ——
+                    // 控制栏跟着放大会把按钮推出屏幕外，反而没法用了。
+                    scale: _zoom,
+                    child: Video(
+                      controller: _controller,
+                      fit: BoxFit.contain,
+                      controls: NoVideoControls,
+                    ),
                   ),
                 ),
               ),
@@ -571,6 +801,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
             ],
           ),
         ),
+        ),
+      ),
       ),
     );
   }
@@ -672,19 +904,19 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                     Text(formatDuration(_duration.inMilliseconds), style: const TextStyle(color: Colors.white, fontSize: 12)),
                   ],
                 ),
-                // 七个按钮排成一行，**左右严格对称**：
-                //   倍速 · 上一集 · 快退 10 · 播放/暂停 · 快进 10 · 下一集 · 静音
-                // 「倍速」和「静音」一个在最左、一个在最右，尺寸完全一样，
-                // 所以整排看起来是对称的（v1.4.0 时倍速是带图标的 TextButton、
-                // 音量那边是图标 + 90px 滑条，两边宽度差一大截，歪得厉害）。
+                // 七个按钮排成一行（v1.7.0 换了内容，个数没变）：
+                //   倍速 · 播放模式 · 上一集 · 播放/暂停 · 下一集 · 全屏 · 静音
                 //
-                // 宽度用 LayoutBuilder 按可用空间均分，不再写死：
-                // 竖屏窄机上 7 个 48px 是放不下的（336 > 可用宽度），
-                // 写死就会溢出成黄黑斜纹。这里按 (可用宽 / 7) 算，并夹在 34~52 之间 ——
-                // 34 是手指还能点准的下限，52 是避免平板上一排按钮散得太开。
+                // v1.7.0 按用户要求：快退 10 / 快进 10 这两个键**去掉了** ——
+                // 双击左右半屏本来就能干同样的事（`_onDoubleTapDown`），留着只是占宽度。
+                // 空出来的两个位置给了「播放模式」（紧跟倍速，用户点名）
+                // 和「全屏」（紧挨静音之前，用户点名）。
+                //
+                // 宽度仍按可用空间均分并夹在 34~52 之间：竖屏窄机上
+                // 7 个 48px 是放不下的（336 > 可用宽度），写死就会溢出成黄黑斜纹。
                 LayoutBuilder(
                   builder: (context, c) {
-                    final bw = ((c.maxWidth - 4) / 7).clamp(34.0, 52.0);
+                    final bw = ((c.maxWidth - 4) / 7).clamp(34.0, 52.0).toDouble();
                     return Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -699,15 +931,22 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                         ),
                         _barButton(
                           width: bw,
-                          tooltip: '上一集',
-                          onTap: _prev,
-                          child: const Icon(Icons.skip_previous, color: Colors.white, size: 24),
+                          tooltip: '播放模式：${playModeName(_playMode)}',
+                          onTap: _showPlayModeSheet,
+                          child: Icon(
+                            playModeIcon(_playMode),
+                            // 不是默认顺序播放时点亮一下，扫一眼就知道现在什么模式
+                            color: _playMode == PlayMode.sequential
+                                ? Colors.white
+                                : Colors.lightBlueAccent,
+                            size: 24,
+                          ),
                         ),
                         _barButton(
                           width: bw,
-                          tooltip: '快退 10 秒（也可以双击屏幕左半边）',
-                          onTap: _seekBy,
-                          child: const Icon(Icons.replay_10, color: Colors.white, size: 24),
+                          tooltip: '上一集',
+                          onTap: _prev,
+                          child: const Icon(Icons.skip_previous, color: Colors.white, size: 24),
                         ),
                         // 播放/暂停是这一排的视觉中心，图标给大一号
                         _barButton(
@@ -722,15 +961,19 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                         ),
                         _barButton(
                           width: bw,
-                          tooltip: '快进 10 秒（也可以双击屏幕右半边）',
-                          onTap: () => _seekBy(forward: true),
-                          child: const Icon(Icons.forward_10, color: Colors.white, size: 24),
-                        ),
-                        _barButton(
-                          width: bw,
                           tooltip: '下一集',
                           onTap: _next,
                           child: const Icon(Icons.skip_next, color: Colors.white, size: 24),
+                        ),
+                        _barButton(
+                          width: bw,
+                          tooltip: _fullscreen ? '退出全屏' : '全屏',
+                          onTap: _toggleFullscreen,
+                          child: Icon(
+                            _fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                            color: Colors.white,
+                            size: 24,
+                          ),
                         ),
                         _barButton(
                           width: bw,

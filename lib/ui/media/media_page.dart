@@ -12,6 +12,7 @@ import '../../data/dav/webdav_client.dart';
 import '../../data/local/db.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
+import '../common/favorite_action.dart';
 import '../common/sort_menu.dart';
 import '../home/login_page.dart';
 import 'image_viewer_page.dart';
@@ -572,50 +573,66 @@ class MediaPageState extends ConsumerState<MediaPage> {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                      child: Text(e.name,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis)),
-                ],
+      builder: (_) => Consumer(builder: (ctx, ref2, __) {
+        // v1.7.0：目录也能收藏，所以要先看看现在是不是已经收藏了
+        final on = ref2.watch(isFavoriteProvider(e.path)).valueOrNull ?? false;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                        child: Text(e.name,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis)),
+                  ],
+                ),
               ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.folder_open_outlined),
-              title: const Text('打开'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _enterDir(e);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.drive_file_rename_outline),
-              title: const Text('重命名'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _rename(e);
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.delete_outline, color: scheme.error),
-              title: Text('删除', style: TextStyle(color: scheme.error)),
-              subtitle: const Text('整个目录连同里面的东西一起删掉', style: TextStyle(fontSize: 12)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _confirmDelete([e]);
-              },
-            ),
-          ],
-        ),
-      ),
+              // v1.7.0：收藏整个文件夹（用户第 6 条）
+              ListTile(
+                leading: Icon(favoriteIcon(on)),
+                title: Text(on ? '取消收藏' : '收藏这个文件夹'),
+                subtitle: const Text('收藏后首页「我的收藏」里能快速找到'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  // 用页面的 ref，不用 Consumer 的 ref2：pop 之后这棵子树已经拆了
+                  toggleFavorite(context, ref,
+                      path: e.path, title: e.name, isNote: false, isFolder: true);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.folder_open_outlined),
+                title: const Text('打开'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _enterDir(e);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.drive_file_rename_outline),
+                title: const Text('重命名'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _rename(e);
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.delete_outline, color: scheme.error),
+                title: Text('删除', style: TextStyle(color: scheme.error)),
+                subtitle: const Text('整个目录连同里面的东西一起删掉', style: TextStyle(fontSize: 12)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _confirmDelete([e]);
+                },
+              ),
+            ],
+          ),
+        );
+      }),
     );
   }
 
@@ -626,59 +643,77 @@ class MediaPageState extends ConsumerState<MediaPage> {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                      child: Text(e.name,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis)),
-                ],
+      builder: (_) => Consumer(builder: (ctx, ref2, __) {
+        final on = ref2.watch(isFavoriteProvider(e.path)).valueOrNull ?? false;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                        child: Text(e.name,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis)),
+                  ],
+                ),
               ),
-            ),
-            ListTile(
-              leading: Icon(isVideo ? Icons.play_circle_outline : Icons.image_outlined),
-              title: const Text('打开'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _open(MediaItem(path: e.path, isVideo: isVideo, size: e.size, modified: e.modified));
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.download_outlined),
-              title: const Text('下载到本地'),
-              subtitle: Text('保存到下载目录（${formatBytes(e.size)}）',
-                  style: const TextStyle(fontSize: 12)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _downloadEntry(e);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.drive_file_rename_outline),
-              title: const Text('重命名'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _rename(e);
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.delete_outline, color: scheme.error),
-              title: Text('删除', style: TextStyle(color: scheme.error)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _confirmDelete([e]);
-              },
-            ),
-          ],
-        ),
-      ),
+              ListTile(
+                leading: Icon(favoriteIcon(on)),
+                title: Text(on ? '取消收藏' : '收藏这一个'),
+                subtitle: const Text('收藏后首页「我的收藏」里能快速打开'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  toggleFavorite(context, ref,
+                      path: e.path,
+                      title: FileTypes.isPlayable(e.name) || FileTypes.isImage(e.name)
+                          ? titleFromFileName(e.name)
+                          : e.name,
+                      isNote: false);
+                },
+              ),
+              ListTile(
+                leading: Icon(isVideo ? Icons.play_circle_outline : Icons.image_outlined),
+                title: const Text('打开'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _open(MediaItem(
+                      path: e.path, isVideo: isVideo, size: e.size, modified: e.modified));
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.download_outlined),
+                title: const Text('下载到本地'),
+                subtitle: Text('保存到下载目录（${formatBytes(e.size)}）',
+                    style: const TextStyle(fontSize: 12)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _downloadEntry(e);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.drive_file_rename_outline),
+                title: const Text('重命名'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _rename(e);
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.delete_outline, color: scheme.error),
+                title: Text('删除', style: TextStyle(color: scheme.error)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _confirmDelete([e]);
+                },
+              ),
+            ],
+          ),
+        );
+      }),
     );
   }
 
@@ -755,6 +790,16 @@ class MediaPageState extends ConsumerState<MediaPage> {
     try {
       final failed = await repo.deleteMany(paths);
       if (!mounted) return;
+      // v1.7.0：真删成功的那些，把收藏一起清掉 —— 只清成功的，
+      // 删失败的（通常是只读）文件还在服务器上，收藏得留着
+      final bad = failed.map((f) => f.key).toSet();
+      for (final p in paths) {
+        if (!bad.contains(p)) await AppDb.instance.removeFavoritesUnder(p);
+      }
+      // 上面这一串 await 之后页面可能已经被关掉了
+      if (!mounted) return;
+      ref.invalidate(favoriteProvider);
+      ref.invalidate(isFavoriteProvider);
       setState(() => _selected = null); // 删完退出多选
       await _load();
       if (!mounted) return;
@@ -778,8 +823,17 @@ class MediaPageState extends ConsumerState<MediaPage> {
     final repo = ref.read(mediaRepoProvider);
     if (repo == null) return;
     if (name.trim() == e.name) return;
+    final newPath = joinPath(parentOf(e.path), name.trim());
     try {
-      await repo.renameEntry(e.path, joinPath(parentOf(e.path), name.trim()));
+      await repo.renameEntry(e.path, newPath);
+      // v1.7.0：收藏里存的是完整路径，改了名要把收藏一起搬过去
+      await AppDb.instance.moveFavoritesUnder(
+        e.path,
+        newPath,
+        newTitle: e.isDir ? name.trim() : titleFromFileName(name.trim()),
+      );
+      ref.invalidate(favoriteProvider);
+      ref.invalidate(isFavoriteProvider);
       await _load();
       _toast('已改名为 ${name.trim()}');
     } catch (err) {

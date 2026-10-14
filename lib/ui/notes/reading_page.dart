@@ -20,11 +20,23 @@ import '../../providers/providers.dart';
 /// 字体（系统/宋体/黑体/等宽）、左右翻页还是上下滚动、自动翻页间隔。
 ///
 /// 「读到哪了」按笔记路径存进 SharedPreferences（章|页|滚动位置），
-/// 下次打开自动回到原位，并给一条「从头开始」的退路。
+/// 下次打开自动回到原位。
+///
+/// v1.7.0 大修（用户第 1 条的后半段）。原来这个页面**只认自己打开的那一个文件**：
+/// 「上一篇 / 下一篇」是**章**级别，可一篇普通笔记往往只有一章 ——
+/// 于是那两个按钮永远是灰的，目录里也只有孤零零一条，用户的原话是
+/// 「没有匹配功能…不能切换到上一篇和下一篇，使用不了」。
+/// 现在把「同目录的其它笔记」也接进来：
+///   * 底栏首尾两个 skip 键改成**跨文件**的「上一篇 / 下一篇笔记」
+///   * 目录弹窗分两段：上面「本目录的笔记」（跨文件）、下面「本篇章节」
+///   * chevron 左右键仍然管文件内的翻页，职责分清
 class ReadingPage extends ConsumerStatefulWidget {
   final String path;
 
-  const ReadingPage({super.key, required this.path});
+  /// 同目录里所有能读的笔记（按列表页的排序）——「上一篇 / 下一篇笔记」用它
+  final List<String> siblings;
+
+  const ReadingPage({super.key, required this.path, this.siblings = const []});
 
   @override
   ConsumerState<ReadingPage> createState() => _ReadingPageState();
@@ -56,6 +68,9 @@ const List<String?> _fontFamilies = [null, 'serif', 'sans-serif', 'monospace'];
 const int _maxCharsToPaginate = 60000;
 
 class _ReadingPageState extends ConsumerState<ReadingPage> {
+  /// 当前正在读哪一篇。可以在本页里原地切到同目录的上一篇 / 下一篇。
+  late String _path = widget.path;
+
   Book? _book;
   bool _loading = true;
   String? _error;
@@ -106,22 +121,22 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
       _error = null;
     });
     try {
-      final ext = FileTypes.ext(widget.path);
-      final name = titleFromFileName(widget.path);
+      final ext = FileTypes.ext(_path);
+      final name = titleFromFileName(_path);
       Book book;
       if (ext == 'epub') {
         final dav = ref.read(davClientProvider);
         if (dav == null) throw StateError('未登录');
-        final bytes = await dav.readBytes(widget.path);
+        final bytes = await dav.readBytes(_path);
         book = EpubParser.parse(bytes, fallbackTitle: name);
       } else {
         final repo = ref.read(noteRepoProvider);
         if (repo == null) throw StateError('未登录');
-        var text = await repo.readNote(widget.path);
+        var text = await repo.readNote(_path);
         if (ext == 'md') text = markdownToPlain(text);
         book = Book(title: name, author: '', chapters: splitChapters(text, name));
       }
-      final raw = await SettingsStore.instance.readPos(widget.path);
+      final raw = await SettingsStore.instance.readPos(_path);
       if (!mounted) return;
       setState(() {
         _book = book;
@@ -131,6 +146,8 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
         _pageKey = '';
         _posApplied = false;
         _pendingPos = raw ?? '';
+        _lastSaved = '';
+        _wantLastPage = false;
         _loading = false;
       });
     } catch (e) {
@@ -140,6 +157,59 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
         _loading = false;
       });
     }
+  }
+
+  // ------------------------------------------------- 同目录的上一篇 / 下一篇
+
+  bool get _hasSibs => widget.siblings.length > 1;
+
+  int get _sibIndex => widget.siblings.indexOf(_path);
+
+  /// 切到同目录的另一篇。
+  ///
+  /// 切之前先把当前这篇的进度写盘 —— 不写的话，用户看一眼再回来
+  /// 会发现自己「读到哪儿」丢了。
+  Future<void> _openSibling(String path) async {
+    if (path == _path) return;
+    _savePos();
+    _timer?.cancel();
+    _timer = null;
+    setState(() {
+      _path = path;
+      _auto = false;
+      _book = null;
+      _loading = true;
+      _error = null;
+      _pages = const [];
+      _pageKey = '';
+      _chapter = 0;
+      _page = 0;
+      _posApplied = false;
+      _pendingPos = '';
+      _lastSaved = '';
+    });
+    await _load();
+    // 换了一篇之后滚动位置要回顶（_load 里只重置了页码）
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_sCtrl.hasClients) _sCtrl.jumpTo(0);
+    });
+  }
+
+  /// dir = -1 上一篇，+1 下一篇
+  void _siblingStep(int dir) {
+    final i = _sibIndex;
+    if (i < 0) return;
+    final j = i + dir;
+    if (j < 0) {
+      _snack('已经是第一篇笔记了');
+      return;
+    }
+    if (j >= widget.siblings.length) {
+      _snack('已经是最后一篇笔记了');
+      return;
+    }
+    _openSibling(widget.siblings[j]);
   }
 
   String _friendly(Object e) {
@@ -276,7 +346,7 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
     final s = _posString();
     if (s == _lastSaved) return;
     _lastSaved = s;
-    SettingsStore.instance.setReadPos(widget.path, s);
+    SettingsStore.instance.setReadPos(_path, s);
   }
 
   void _applyPosIfNeeded() {
@@ -312,33 +382,32 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
         _sCtrl.jumpTo(sc.clamp(0.0, _sCtrl.position.maxScrollExtent).toDouble());
       }
       _savePos();
-      _snack('已回到上次读到的地方 · 第 ${target + 1} 章', undo: true);
+      // v1.7.0：用户要求删掉「已回到上次读到的地方 · 第 N 章／从头看」这条提示。
+      // 每次打开都弹一下确实烦 —— 位置已经自动回去了，用户自己能看出来。
     });
   }
 
-  void _snack(String msg, {bool undo = false}) {
+  void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(msg),
-      duration: const Duration(seconds: 4),
-      action: undo
-          ? SnackBarAction(
-              label: '从头看',
-              onPressed: () {
-                if (!mounted) return;
-                setState(() {
-                  _chapter = 0;
-                  _page = 0;
-                  _pageKey = '';
-                  _pages = const [];
-                  _pendingPos = '';
-                });
-                SettingsStore.instance.clearReadPos(widget.path);
-                _lastSaved = '';
-              },
-            )
-          : null,
+      duration: const Duration(seconds: 3),
     ));
+  }
+
+  /// 「回到文章开头」。
+  ///
+  /// 先退到第 1 章（`_goChapter(0)` 会把页码和滚动都归零），
+  /// 已经在本篇开头时再把滚动条拉回顶部 —— 不然点一下什么都不会发生，
+  /// 用户会以为按钮坏了。
+  void _backToTop() {
+    if (_chapter != 0 || _page != 0) {
+      _goChapter(0);
+    } else if (_sCtrl.hasClients) {
+      _sCtrl.animateTo(0,
+          duration: const Duration(milliseconds: 260), curve: Curves.easeOut);
+    }
+    _savePos();
   }
 
   // ---------------------------------------------------------------- 翻页
@@ -445,7 +514,7 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
     final prefs = ref.watch(readPrefsProvider);
     final t = _themeOf(prefs.themeIndex);
     final book = _book;
-    final title = book == null || book.title.isEmpty ? titleFromFileName(widget.path) : book.title;
+    final title = book == null || book.title.isEmpty ? titleFromFileName(_path) : book.title;
 
     if (_loading) {
       return Scaffold(backgroundColor: t.bg, body: const Center(child: CircularProgressIndicator()));
@@ -612,6 +681,9 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
   }
 
   Widget _bottomBar(_ReadTheme t, ReadPrefs p) {
+    final si = _sibIndex;
+    final hasPrev = si > 0;
+    final hasNext = si >= 0 && si + 1 < widget.siblings.length;
     return Material(
       color: t.bg,
       child: SafeArea(
@@ -620,11 +692,21 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
           height: 52,
           child: Row(
             children: [
-              _barBtn(Icons.skip_previous, '上一章', _chapter > 0 ? () => _goChapter(_chapter - 1) : null),
-              _barBtn(Icons.chevron_left, '上一页', () => _turn(-1)),
+              // v1.7.0：首尾两个 skip 键改成**跨文件**的「上一篇 / 下一篇笔记」。
+              // 原来它们是「上一章 / 下一章」，可一篇普通笔记往往只有一章，
+              // 于是永远是灰的、点不动 —— 用户反馈的「使用不了」就是这个。
               _barBtn(
-                _pagedNow ? Icons.menu_book : Icons.swap_vert,
-                _pagedNow ? '左右翻页' : '上下滚动',
+                Icons.skip_previous,
+                hasPrev ? '上一篇笔记' : '已经是第一篇了',
+                hasPrev ? () => _siblingStep(-1) : null,
+              ),
+              _barBtn(Icons.chevron_left, '上一页', () => _turn(-1)),
+              // v1.7.0：图标原来标反了 —— 翻页状态给的是书本图标、滚动状态给的是
+              // 上下箭头，跟提示文字说的「当前模式」对不上。
+              // 现在统一成「点一下会切成什么」，跟 tooltip 一致。
+              _barBtn(
+                p.paged ? Icons.swap_vert : Icons.menu_book,
+                p.paged ? '现在是左右翻页，点一下切成上下滚动' : '现在是上下滚动，点一下切成左右翻页',
                 () => ref.read(readPrefsProvider.notifier).setPaged(!p.paged),
               ),
               _barBtn(
@@ -632,13 +714,14 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
                 _auto ? '停止自动翻页' : '自动翻页${p.autoSec > 0 ? '（${p.autoSec} 秒）' : ''}',
                 () => _setAuto(!_auto),
               ),
+              // v1.7.0：新增「回到文章开头」，位置按用户要求紧跟在自动翻页按钮之后
+              _barBtn(Icons.vertical_align_top, '回到文章开头', _backToTop),
               _barBtn(Icons.chevron_right, '下一页', () => _turn(1)),
               _barBtn(
                 Icons.skip_next,
-                '下一章',
-                _chapter + 1 < _chapterCount ? () => _goChapter(_chapter + 1) : null,
+                hasNext ? '下一篇笔记' : '已经是最后一篇了',
+                hasNext ? () => _siblingStep(1) : null,
               ),
-              _barBtn(Icons.list_alt, '目录', _showToc),
             ],
           ),
         ),
@@ -666,11 +749,20 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
 
   // ---------------------------------------------------------------- 目录 / 设置
 
+  /// 目录弹窗。v1.7.0 起分两段：
+  ///   ① 本目录的笔记（**跨文件**）—— 顶栏那个「目录」按钮终于有内容可看了
+  ///   ② 本篇的章节（原来的行为，保留）
+  ///
+  /// 返回值用字符串编码：`s:<下标>` 表示选了第几篇笔记，`c:<下标>` 表示选章节。
+  /// 之所以不用 int：一个 int 表达不了两种来源。
   Future<void> _showToc() async {
     final book = _book;
     if (book == null) return;
     final t = _theme;
-    final jumped = await showModalBottomSheet<int>(
+    final sibs = widget.siblings;
+    final curSib = _sibIndex;
+
+    final pick = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
       backgroundColor: t.bg,
@@ -686,7 +778,7 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
                 child: Row(
                   children: [
                     Expanded(
-                      child: Text('目录 · 共 ${book.chapters.length} 章',
+                      child: Text('目录',
                           style: TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w600, color: t.fg)),
                     ),
@@ -698,31 +790,38 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
                 ),
               ),
               Expanded(
-                child: ListView.builder(
+                child: ListView(
                   controller: ctrl,
-                  itemCount: book.chapters.length,
-                  itemBuilder: (context, i) {
-                    final cur = i == _chapter;
-                    return ListTile(
-                      dense: true,
-                      selected: cur,
-                      selectedTileColor: t.fg.withValues(alpha: 0.08),
-                      title: Text(
-                        book.chapters[i].title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 14.5,
-                          color: cur ? t.fg : t.fg.withValues(alpha: 0.82),
-                          fontWeight: cur ? FontWeight.w600 : FontWeight.w400,
+                  children: [
+                    if (sibs.length > 1) ...[
+                      _tocSection(t, '本目录的笔记 · 共 ${sibs.length} 篇'),
+                      for (var i = 0; i < sibs.length; i++)
+                        _tocTile(
+                          t,
+                          index: '${i + 1}',
+                          title: titleFromFileName(sibs[i]),
+                          cur: i == curSib,
+                          onTap: () => Navigator.pop(ctx, 's:$i'),
                         ),
+                      const Divider(height: 20),
+                    ],
+                    _tocSection(
+                      t,
+                      sibs.length > 1
+                          ? '本篇章节 · 共 ${book.chapters.length} 章'
+                          : '共 ${book.chapters.length} 章',
+                    ),
+                    for (var i = 0; i < book.chapters.length; i++)
+                      _tocTile(
+                        t,
+                        index: null,
+                        title: book.chapters[i].title,
+                        sub: '${book.chapters[i].text.length} 字',
+                        cur: i == _chapter,
+                        onTap: () => Navigator.pop(ctx, 'c:$i'),
                       ),
-                      subtitle: Text('${book.chapters[i].text.length} 字',
-                          style: TextStyle(fontSize: 11.5, color: t.dim)),
-                      trailing: cur ? Icon(Icons.push_pin, size: 16, color: t.dim) : null,
-                      onTap: () => Navigator.pop(ctx, i),
-                    );
-                  },
+                    const SizedBox(height: 12),
+                  ],
                 ),
               ),
             ],
@@ -730,7 +829,55 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
         );
       },
     );
-    if (jumped != null && jumped != _chapter) _goChapter(jumped);
+
+    if (pick == null) return;
+    if (pick.startsWith('s:')) {
+      final i = int.tryParse(pick.substring(2));
+      if (i != null && i >= 0 && i < sibs.length) await _openSibling(sibs[i]);
+    } else if (pick.startsWith('c:')) {
+      final i = int.tryParse(pick.substring(2));
+      if (i != null && i != _chapter) _goChapter(i);
+    }
+  }
+
+  Widget _tocSection(_ReadTheme t, String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(18, 10, 18, 4),
+        child: Text(text,
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: t.dim)),
+      );
+
+  Widget _tocTile(
+    _ReadTheme t, {
+    required String? index,
+    required String title,
+    String? sub,
+    required bool cur,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      dense: true,
+      selected: cur,
+      selectedTileColor: t.fg.withValues(alpha: 0.08),
+      leading: index == null
+          ? null
+          : SizedBox(
+              width: 26,
+              child: Text(index, style: TextStyle(fontSize: 12.5, color: t.dim)),
+            ),
+      title: Text(
+        title,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 14.5,
+          color: cur ? t.fg : t.fg.withValues(alpha: 0.82),
+          fontWeight: cur ? FontWeight.w600 : FontWeight.w400,
+        ),
+      ),
+      subtitle: sub == null ? null : Text(sub, style: TextStyle(fontSize: 11.5, color: t.dim)),
+      trailing: cur ? Icon(Icons.push_pin, size: 16, color: t.dim) : null,
+      onTap: onTap,
+    );
   }
 
   Future<void> _showSettings() async {
@@ -886,30 +1033,10 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
                 const SizedBox(height: 8),
                 Text('选好间隔后，点底栏中间的播放按钮开始／停止自动翻页',
                     style: TextStyle(fontSize: 11.5, color: t.dim)),
-
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    TextButton.icon(
-                      onPressed: () {
-                        Navigator.pop(ctx2);
-                        _showToc();
-                      },
-                      icon: const Icon(Icons.list_alt, size: 18),
-                      label: const Text('目录'),
-                    ),
-                    const Spacer(),
-                    TextButton(
-                      onPressed: () {
-                        if (_chapter > 0 || _page > 0) {
-                          _goChapter(0);
-                          _snack('已回到开头');
-                        }
-                      },
-                      child: const Text('回到开头'),
-                    ),
-                  ],
-                ),
+                // v1.7.0：这里原来还有「目录」和「回到开头」两个按钮，
+                // 用户反馈它们贴着底部导航条、被挡着点不到；而且这两个功能
+                // 顶栏（目录）和底栏（回到开头）都已经有了，属于重复。
+                // 删掉之后面板内容变短，整块自然往上提了一截。
               ],
             ),
           ),

@@ -546,8 +546,14 @@ class _RulerPainter extends CustomPainter {
       )..layout();
       // 顶上那几个数字会被画布裁掉，干脆不画。
       if (pos < tp.width + 4) continue;
+      // v1.7.0：用户要求「数字跟刻度离近一些」。
+      // 原来数字钉死在 w*0.76，而厘米刻度只画到 w*0.52 —— 中间空了 0.24w
+      // （400px 宽的画布上足足 88px），看着像两件不相干的东西。
+      // 现在改成「贴住厘米刻度末端再留 5px」。注意数字是转过 90° 的，
+      // 它占的**横向**宽度其实是 tp.height，所以锚点还得再让半个字高。
+      final nx = w * 0.52 + 5 + tp.height / 2;
       canvas.save();
-      canvas.translate(w * 0.76, pos);
+      canvas.translate(nx, pos);
       canvas.rotate(-math.pi / 2);
       tp.paint(canvas, Offset(2, -tp.height / 2));
       canvas.restore();
@@ -1972,6 +1978,17 @@ class _DateCalcPageState extends State<DateCalcPage> {
   /// 区间天数是否把开始那天也算进去。默认不含（这是「相差多少天」的通行口径）。
   bool _includeStart = false;
 
+  /// v1.7.0：「从某天往后推」这一节也要「把开始那天也算进去」（用户要求）。
+  ///
+  /// 语义 —— 把基准日当作第 1 天，所以往后推 n 天实际只加 n-1
+  /// （推 n 周 / n 月 / n 年同理，各减一个单位）。这样「今天往后推 1 天
+  /// 且含首日」得到的就是今天本身，符合直觉。
+  /// **只对正方向生效**：反着数再 +1 更难解释，和上面区间天数保持同一口径。
+  bool _includeStartShift = false;
+
+  /// 「把开始那天也算进去」时的实际偏移量。
+  int _effN(int n) => (_includeStartShift && n > 0) ? n - 1 : n;
+
   static final _fmt = DateFormat('yyyy-MM-dd');
   static final _fmtLong = DateFormat('yyyy年M月d日 EEEE', 'zh_CN');
   static final _fmtWeek = DateFormat('EEEE', 'zh_CN');
@@ -1997,14 +2014,14 @@ class _DateCalcPageState extends State<DateCalcPage> {
   /// 点「计算」按钮才走这里。
   void _computeShift() {
     final n = int.tryParse(_offsetCtrl.text.trim()) ?? 0;
-    setState(() => _shiftResult = _d0(_shift(_base, n, _unit)));
+    setState(() => _shiftResult = _d0(_shift(_base, _effN(n), _unit)));
   }
 
-  /// 基准日 / 单位变了：已经算过的话跟着刷新，没算过就别自作主张。
+  /// 基准日 / 单位 / 含首日 变了：已经算过的话跟着刷新，没算过就别自作主张。
   void _recomputeShift() {
     if (_shiftResult == null) return;
     final n = int.tryParse(_offsetCtrl.text.trim()) ?? 0;
-    _shiftResult = _d0(_shift(_base, n, _unit));
+    _shiftResult = _d0(_shift(_base, _effN(n), _unit));
   }
 
   @override
@@ -2107,7 +2124,25 @@ class _DateCalcPageState extends State<DateCalcPage> {
                     icon: const Icon(Icons.calculate_outlined, size: 18),
                     label: const Text('计算'),
                   ),
-                  const SizedBox(height: 12),
+                  // v1.7.0：用户要求「从某天往后推」也加这个开关
+                  SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    value: _includeStartShift,
+                    onChanged: (v) => setState(() {
+                      _includeStartShift = v;
+                      _recomputeShift();
+                    }),
+                    title: const Text('把开始那天也算进去', style: TextStyle(fontSize: 13)),
+                    subtitle: Text(
+                      _includeStartShift
+                          ? '基准日算第 1 天：往后推 1 天就是当天本身'
+                          : '基准日不算：往后推 1 天就是明天',
+                      style: TextStyle(
+                          fontSize: 11.5, height: 1.4, color: scheme.onSurfaceVariant),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
                   if (_shiftResult != null)
                     ResultBox(
                       copyable: false,

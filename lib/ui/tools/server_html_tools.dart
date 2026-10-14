@@ -24,6 +24,12 @@ class ServerToolEntry {
 ///   * tools/公式表.html          →  归到「独立小工具」这个分类
 ///
 /// 一个子文件夹就是一个分类；根目录下散放的 html 单独归一类。
+///
+/// v1.7.0（用户第 5 条）：
+///   * 分类和工具都**按名字开头的序号排**（`01_` < `2.` < `10 `），
+///     没编号的垫底 —— 见 `core/utils.dart` 的 `compareByLeadingNumber`
+///   * 显示时把序号前缀和它后面的空格剥掉（`03 单位换算` → `单位换算`）
+///   * 卡片改成和内置工具箱一模一样：一行 3 个、图标与文字同排、行高钉死
 class ServerHtmlToolsPage extends ConsumerStatefulWidget {
   const ServerHtmlToolsPage({super.key});
 
@@ -59,20 +65,24 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
       final groups = <String, List<ServerToolEntry>>{};
 
       // 1) 根目录下散放的 html → 独立分类
-      final rootHtml = entries
-          .where((e) => !e.isDir && FileTypes.isHtml(e.name))
+      //
+      // v1.7.0：排序改成**先按原始文件名里的序号**排（`01_` < `2.` < `10 `），
+      // 再 map 成显示名。顺序不能反过来：显示名已经把序号剥掉了，
+      // 拿它排序等于按字面排，序号就白编了。
+      final rootRaw = entries.where((e) => !e.isDir && FileTypes.isHtml(e.name)).toList()
+        ..sort((a, b) => compareByLeadingNumber(a.name, b.name));
+      final rootHtml = rootRaw
           .map((e) => ServerToolEntry(
                 path: e.path,
                 name: _prettyName(e.name, '独立小工具'),
                 category: '独立小工具',
               ))
-          .toList()
-        ..sort((a, b) => a.name.compareTo(b.name));
+          .toList();
       if (rootHtml.isNotEmpty) groups['独立小工具'] = rootHtml;
 
-      // 2) 每个子目录一个分类
+      // 2) 每个子目录一个分类。目录本身也按名称里的序号排（v1.7.0）
       final dirs = entries.where((e) => e.isDir).toList()
-        ..sort((a, b) => a.name.compareTo(b.name));
+        ..sort((a, b) => compareByLeadingNumber(a.name, b.name));
       for (final d in dirs) {
         List<DavEntry> sub;
         try {
@@ -80,17 +90,21 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
         } catch (_) {
           continue;
         }
-        final html = sub
-            .where((e) => !e.isDir && FileTypes.isHtml(e.name))
+        // 显示用的分类名：剥掉 `01_` `2.` 这类前缀（用户要求「不显示前面的数字和空格」）
+        final label = stripLeadingNumber(d.name);
+        final htmlRaw = sub.where((e) => !e.isDir && FileTypes.isHtml(e.name)).toList()
+          ..sort((a, b) => compareByLeadingNumber(a.name, b.name));
+        final html = htmlRaw
             .map((e) => ServerToolEntry(
                   path: e.path,
-                  name: _prettyName(e.name, d.name),
-                  category: d.name,
+                  name: _prettyName(e.name, label),
+                  category: label,
                 ))
-            .toList()
-          ..sort((a, b) => a.name.compareTo(b.name));
+            .toList();
         if (html.isEmpty) continue;
-        groups[d.name] = html;
+        // 极端情况下两个目录剥完前缀会同名（`01_计算` 和 `1.计算`），
+        // 后者会覆盖前者。真出现这种目录，说明该整理服务器了。
+        groups[label] = html;
       }
 
       if (!mounted) return;
@@ -108,12 +122,13 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
     }
   }
 
-  /// index.html 这种入口文件直接用分类名，免得列表里一堆「index」
+  /// index.html 这种入口文件直接用分类名，免得列表里一堆「index」。
+  /// v1.7.0：显示名统一剥掉开头序号（`03 单位换算.html` → `单位换算`）。
   String _prettyName(String fileName, String category) {
     final n = baseName(fileName);
-    if (AppDirs.htmlEntryNames.contains(n.toLowerCase())) return category;
+    if (AppDirs.htmlEntryNames.contains(n.toLowerCase())) return stripLeadingNumber(category);
     final i = n.lastIndexOf('.');
-    return i > 0 ? n.substring(0, i) : n;
+    return stripLeadingNumber(i > 0 ? n.substring(0, i) : n);
   }
 
   @override
@@ -210,7 +225,8 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
         ),
         for (final k in keys) ...[
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            // v1.7.0：分类标题的上下留白也压一档（16/8 → 12/6）
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
             child: Row(
               children: [
                 Icon(Icons.folder_rounded, size: 16, color: scheme.primary),
@@ -224,18 +240,22 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
               ],
             ),
           ),
-          // v1.6.0：用户要求跟工具箱一样「类似一个木函」——
-          // 从一行一个大 ListTile 改成一行 3 个小卡片，图标缩到文字大小
+          // v1.7.0：卡片布局跟内置工具箱**完全对齐** ——
+          // 一行 3 个、图标与文字同一排、格子高度用 mainAxisExtent 钉死 34。
+          // 之前用的是 childAspectRatio，高度会随屏幕宽度变，「压缩行距」看运气。
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: GridView.count(
-              crossAxisCount: 3,
+            child: GridView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: 1.9,
-              children: [for (final t in _groups[k]!) _tile(t, scheme)],
+              itemCount: _groups[k]!.length,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                mainAxisExtent: 34,
+                mainAxisSpacing: 6,
+                crossAxisSpacing: 6,
+              ),
+              itemBuilder: (_, i) => _tile(_groups[k]![i], scheme),
             ),
           ),
         ],
@@ -247,12 +267,12 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
     final loose = t.category == '独立小工具';
     final accent = loose ? const Color(0xFFEF9F27) : const Color(0xFF7F77DD);
     return Tooltip(
-      // 卡片太小放不下文件名，用 tooltip 补上（鼠标/长按能看到）
+      // 卡片太小放不下完整路径，用 tooltip 补上（想知道服务器上的原文件名时能看到）
       message: baseName(t.path),
       child: Card(
         margin: EdgeInsets.zero,
         child: InkWell(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
           onTap: () async {
             final client = ref.read(davClientProvider);
             if (client == null) return;
@@ -266,18 +286,22 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
             ));
           },
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            // 图标和文字放同一排（与内置工具箱一致）；文字放不下就整体缩小
+            child: Row(
               children: [
-                Icon(loose ? Icons.html : Icons.web_asset, size: 17, color: accent),
-                const SizedBox(height: 3),
-                Text(
-                  t.name,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 11.5, height: 1.15, color: scheme.onSurface),
+                Icon(loose ? Icons.html : Icons.web_asset, size: 14, color: accent),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      t.name,
+                      maxLines: 1,
+                      style: TextStyle(fontSize: 12.5, height: 1.0, color: scheme.onSurface),
+                    ),
+                  ),
                 ),
               ],
             ),

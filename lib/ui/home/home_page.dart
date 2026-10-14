@@ -6,6 +6,9 @@ import '../../core/utils.dart';
 import '../../data/local/db.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
+import '../media/image_viewer_page.dart';
+import '../media/player_page.dart';
+import '../notes/note_read_page.dart';
 import '../quiz/wrong_book_page.dart';
 import 'login_page.dart';
 import 'server_guide_page.dart';
@@ -269,6 +272,11 @@ class _LoggedInView extends ConsumerWidget {
         ),
         const SizedBox(height: 16),
 
+        // ---- 我的收藏（v1.7.0；按用户要求放在错题本上面）----
+        const _FavoriteSection(),
+
+        const SizedBox(height: 16),
+
         // ---- 错题本 ----
         Card(
           child: InkWell(
@@ -328,49 +336,79 @@ class _LoggedInView extends ConsumerWidget {
         // 看了一半的片子看烦了想清掉，笔记的记录还要留着」。而且这个动作不可撤销，
         // 一刀切太粗暴。
         // 另外：哪边没有记录就不显示对应的按钮，免得出现「点了没反应」。
-        Builder(builder: (_) {
-          final list = recent.valueOrNull ?? const <MapEntry<String, PlayProgress>>[];
-          final hasNote = list.any((e) => e.key.startsWith('${AppDirs.notes}/'));
-          final hasMedia = list.any((e) => !e.key.startsWith('${AppDirs.notes}/'));
-          return Row(
-            children: [
-              Text('最近浏览', style: text.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
-              const Spacer(),
-              if (hasNote)
-                TextButton(
-                  onPressed: () => _clearRecent(context, ref, note: true),
-                  child: const Text('清笔记'),
+        //
+        // v1.7.0（用户第 6 条）：默认只露最近 5 条，剩下的点「更多」再展开。
+        // 展开状态存在 recentExpandedProvider 里 —— 首页是 ConsumerWidget、
+        // 自己不带 state，`setState` 用不了。
+        recent.when(
+          loading: () => const SizedBox.shrink(),
+          error: (_, __) => const SizedBox.shrink(),
+          data: (all) {
+            final expanded = ref.watch(recentExpandedProvider);
+            final shown = expanded ? all : all.take(5).toList();
+            final hasNote = all.any((e) => e.key.startsWith('${AppDirs.notes}/'));
+            final hasMedia = all.any((e) => !e.key.startsWith('${AppDirs.notes}/'));
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text('最近浏览', style: text.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+                    if (all.length > 5) ...[
+                      const SizedBox(width: 6),
+                      Text('共 ${all.length} 条',
+                          style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+                    ],
+                    const Spacer(),
+                    if (all.length > 5)
+                      TextButton(
+                        onPressed: () =>
+                            ref.read(recentExpandedProvider.notifier).state = !expanded,
+                        child: Text(expanded ? '收起' : '更多'),
+                      ),
+                  ],
                 ),
-              if (hasMedia)
-                TextButton(
-                  onPressed: () => _clearRecent(context, ref, note: false),
-                  child: const Text('清视频'),
-                ),
-            ],
-          );
-        }),
-        recent.maybeWhen(
-          data: (list) => list.isEmpty
-              ? Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Center(
-                      child: Text('还没有浏览记录，去「视频」或「笔记」里打开一个试试',
-                          style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
-                    ),
-                  ),
-                )
-              : Card(
-                  child: Column(
+                // 清记录的两个按钮单独一行 —— 和「更多」挤在同一行会溢出
+                if (hasNote || hasMedia)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      for (var i = 0; i < list.length; i++) ...[
-                        if (i > 0) const Divider(height: 1),
-                        _recentTile(context, ref, list[i]),
-                      ],
+                      if (hasNote)
+                        TextButton(
+                          onPressed: () => _clearRecent(context, ref, note: true),
+                          child: const Text('清笔记记录'),
+                        ),
+                      if (hasMedia)
+                        TextButton(
+                          onPressed: () => _clearRecent(context, ref, note: false),
+                          child: const Text('清视频记录'),
+                        ),
                     ],
                   ),
-                ),
-          orElse: () => const SizedBox.shrink(),
+                if (all.isEmpty)
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Center(
+                        child: Text('还没有浏览记录，去「视频」或「笔记」里打开一个试试',
+                            style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
+                      ),
+                    ),
+                  )
+                else
+                  Card(
+                    child: Column(
+                      children: [
+                        for (var i = 0; i < shown.length; i++) ...[
+                          if (i > 0) const Divider(height: 1),
+                          _recentTile(context, ref, shown[i]),
+                        ],
+                      ],
+                    ),
+                  ),
+              ],
+            );
+          },
         ),
       ],
     );
@@ -401,7 +439,6 @@ class _LoggedInView extends ConsumerWidget {
 
   /// 切到底部菜单的某个模块（返回键行为因此和点底部菜单完全一致）
   void _goTab(WidgetRef ref, int i) => ref.read(tabIndexProvider.notifier).state = i;
-
   /// 切换 / 添加账号。
   /// 返回的可能是某条 DavAccount（切过去），也可能是添加新账号的指令。
   Future<void> _switchAccount(BuildContext context, WidgetRef ref) async {
@@ -502,6 +539,184 @@ class _LoggedInView extends ConsumerWidget {
       await AppDb.instance.clearMediaProgress();
     }
     ref.invalidate(recentProvider);
+  }
+}
+
+/// 切到底部菜单的某个模块。做成顶层函数是因为首页里几个子组件都要用，
+/// 各自再写一遍容易改漏。
+void _switchTab(WidgetRef ref, int i) => ref.read(tabIndexProvider.notifier).state = i;
+
+/// ---------------------------------------------------------------- 我的收藏
+///
+/// v1.7.0 用户第 6 条：笔记 / 视频里的文件和文件夹长按都能收藏，
+/// 收藏的东西集中摆在这儿，按「笔记」「视频」两类分开。
+///
+/// 点一下的行为分两种：
+///   * 文件 —— **直接打开**（笔记进阅读页、视频进播放器），这才是「快速打开」
+///   * 文件夹 —— 切到对应模块。跨页把某个目录就地展开需要各模块配合，
+///     这里用最稳的方式：导航过去 + 明确告诉用户该进哪个目录
+/// 长按 = 取消收藏（会先问一次，免得手滑）。
+class _FavoriteSection extends ConsumerWidget {
+  const _FavoriteSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final fav = ref.watch(favoriteProvider);
+    final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+
+    return fav.maybeWhen(
+      data: (list) {
+        if (list.isEmpty) return const SizedBox.shrink();
+        final notes = list.where((e) => e.isNote).toList();
+        final media = list.where((e) => !e.isNote).toList();
+        return Padding(
+          padding: const EdgeInsets.only(top: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text('我的收藏', style: text.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+                  const SizedBox(width: 6),
+                  Text('${list.length} 项 · 长按可取消',
+                      style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Card(
+                child: Column(
+                  children: [
+                    if (notes.isNotEmpty) ...[
+                      _groupHeader('笔记', notes.length, Icons.description_outlined, scheme),
+                      for (var i = 0; i < notes.length; i++) ...[
+                        if (i > 0) const Divider(height: 1, indent: 56),
+                        _tile(context, ref, notes[i]),
+                      ],
+                    ],
+                    if (notes.isNotEmpty && media.isNotEmpty) const Divider(height: 8),
+                    if (media.isNotEmpty) ...[
+                      // 视频和图片都归在这一组：收藏里只存了路径，
+                      // 分组靠 kind 的 media 前缀，细分没意义
+                      _groupHeader('视频 / 图片', media.length, Icons.play_circle_outline, scheme),
+                      for (var i = 0; i < media.length; i++) ...[
+                        if (i > 0) const Divider(height: 1, indent: 56),
+                        _tile(context, ref, media[i]),
+                      ],
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+      orElse: () => const SizedBox.shrink(),
+    );
+  }
+
+  Widget _groupHeader(String label, int n, IconData icon, ColorScheme scheme) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+        child: Row(
+          children: [
+            Icon(icon, size: 14, color: scheme.onSurfaceVariant),
+            const SizedBox(width: 5),
+            Text('$label · $n 项',
+                style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+          ],
+        ),
+      );
+
+  Widget _tile(BuildContext context, WidgetRef ref, FavoriteItem f) {
+    final scheme = Theme.of(context).colorScheme;
+    final name = f.title.isEmpty ? baseName(f.path) : f.title;
+    final accent = f.isFolder
+        ? const Color(0xFF185FA5)
+        : (f.isNote ? const Color(0xFF7F77DD) : scheme.primary);
+    // 收藏里只存了路径 —— 是视频还是图片，靠扩展名现判
+    final isImg = !f.isNote && !f.isFolder && FileTypes.isImage(f.path);
+    return ListTile(
+      dense: true,
+      leading: Icon(
+        f.isFolder
+            ? Icons.folder_rounded
+            : (f.isNote
+                ? Icons.article_outlined
+                : (isImg ? Icons.image_outlined : Icons.play_circle_outline)),
+        color: accent,
+      ),
+      title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        f.isFolder ? '文件夹 · 点击切到${f.isNote ? '笔记' : '视频'}模块' : baseName(f.path),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 11.5),
+      ),
+      trailing: const Icon(Icons.chevron_right, size: 18),
+      onTap: () => _open(context, ref, f),
+      onLongPress: () => _unfavorite(context, ref, f),
+    );
+  }
+
+  Future<void> _open(BuildContext context, WidgetRef ref, FavoriteItem f) async {
+    if (f.isFolder) {
+      _switchTab(ref, f.isNote ? 1 : 2);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('已切到${f.isNote ? '笔记' : '视频'}模块，进入「${f.title}」就能看到'),
+        duration: const Duration(seconds: 3),
+      ));
+      return;
+    }
+    if (f.isNote) {
+      await Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => NoteReadPage(path: f.path)));
+      ref.invalidate(recentProvider);
+      return;
+    }
+    // 视频 / 音频 / 图片：收藏里只有一个路径，类型靠扩展名现判 ——
+    // 原来这里写死 isVideo: true，收藏一张图片点开就会拿播放器去解图片
+    final client = ref.read(davClientProvider);
+    if (client == null) return;
+    if (FileTypes.isPlayable(f.path)) {
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => PlayerPage(
+          playlist: [MediaItem(path: f.path, isVideo: FileTypes.isVideo(f.path))],
+          initialIndex: 0,
+        ),
+      ));
+    } else if (FileTypes.isImage(f.path)) {
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => ImageViewerPage(
+          images: [client.urlFor(f.path)],
+          headers: client.headers,
+          titles: [baseName(f.path)],
+        ),
+      ));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('打不开这个文件：${baseName(f.path)}')));
+      return;
+    }
+    ref.invalidate(recentProvider);
+  }
+
+  Future<void> _unfavorite(BuildContext context, WidgetRef ref, FavoriteItem f) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('取消收藏？'),
+        content: Text(f.title.isEmpty ? f.path : f.title),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true), child: const Text('取消收藏')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await AppDb.instance.removeFavorite(f.path);
+    ref.invalidate(favoriteProvider);
+    ref.invalidate(isFavoriteProvider(f.path));
   }
 }
 

@@ -845,6 +845,14 @@ class MainActivity : FlutterActivity() {
             rec.setVideoSource(MediaRecorder.VideoSource.SURFACE)
             if (withAudio) {
                 rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+                // ★ v1.7.0 修的这个 bug，害「后台录像」从 v1.6.0 起就没成功过：
+                //   设了 setAudioSource 却**没设 setAudioEncoder**，prepare() 会直接
+                //   抛 IllegalStateException（message 是空的，所以用户只看到光秃秃的
+                //   一个 "IllegalStateException"，文件也建不出来）。
+                //   MediaRecorder 的状态机要求音频源和音频编码器成对出现，
+                //   下面 RecorderService（录音那条路）一直是两个都设的，这边漏了。
+                //   别再删掉这行。
+                rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 rec.setAudioChannels(1)
                 rec.setAudioSamplingRate(44100)
                 rec.setAudioEncodingBitRate(96000)
@@ -856,7 +864,25 @@ class MainActivity : FlutterActivity() {
             rec.setVideoEncodingBitRate(bitrateFor(size))
             rec.setOrientationHint(orientationHint(chars, front))
             rec.setOutputFile(path)
-            rec.prepare()
+            try {
+                rec.prepare()
+            } catch (t: Throwable) {
+                // v1.7.0：把「哪一步、什么原因、可能是为什么」拼成一句人话再抛。
+                // 原来失败时 lastError 只有一个光秃秃的类名（比如
+                // "IllegalStateException"），用户和开发者都看不出问题在哪。
+                try {
+                    rec.release()
+                } catch (_: Throwable) {
+                    // 忽略
+                }
+                throw IllegalStateException(
+                    "准备录像失败（${t.javaClass.simpleName}" +
+                        (if (t.message.isNullOrBlank()) "" else "：${t.message}") +
+                        "）。多半是这台设备不支持 ${size.width}x${size.height} 这个录像分辨率，" +
+                        "或音频参数组合（有声音时要求 AAC 编码器可用）",
+                    t
+                )
+            }
             recorder = rec
 
             // 假 Surface：给会话凑一个「不消费」的 target，见类注释

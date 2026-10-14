@@ -421,15 +421,31 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
         maxDurationMs: _videoMaxMin * 60 * 1000,
       );
       if (mounted) setState(() => _vPending = f);
-      // 服务是异步起来的（要先 startForeground 再开相机），给它点时间
-      await Future<void>.delayed(const Duration(milliseconds: 1200));
-      await _refreshStatus();
-      if (mounted && !_vst.running && !_vst.hasError) {
-        setState(() => _videoErr = '录像服务没起来。若是第一次用，'
-            '请检查是否允许了「相机」「录音」权限和通知权限。');
+      // 服务是异步起来的（要先 startForeground 再开相机），轮着问几次。
+      // v1.7.0 修：原来只等 1.2 秒问一次，而且**只有在「既没在跑、也没报错」
+      // 时才提示** —— 一旦原生日志里带了 lastError，这里就一个字都不说，
+      // 用户看到的就是「点了开始录像，什么都没发生」。
+      // 现在无论哪种失败都必须出话，而且额外弹一条 SnackBar，跑不掉。
+      String? failMsg;
+      for (var i = 0; i < 8; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        if (!mounted) return;
+        await _refreshStatus();
+        if (_vst.running) break;
+      }
+      if (mounted && !_vst.running) {
+        failMsg = _vst.hasError
+            ? '后台录像没起来：${_vst.error}'
+            : '录像服务没起来。若是第一次用，请检查是否允许了「相机」「录音」权限和通知权限。';
+        setState(() => _videoErr = failMsg);
+        toast(context, failMsg);
       }
     } catch (e) {
-      if (mounted) setState(() => _videoErr = '启动录像失败：$e');
+      final m = '启动录像失败：$e';
+      if (mounted) {
+        setState(() => _videoErr = m);
+        toast(context, m);
+      }
     } finally {
       if (mounted) setState(() => _videoBusy = false);
     }
@@ -461,7 +477,19 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
 
   Future<void> _startVideo() async {
     final c = _cam;
-    if (c == null || !c.value.isInitialized) return;
+    if (c == null || !c.value.isInitialized) {
+      // v1.7.0 修：原来这里直接 `return`，一个字都不说 —— 预览没起来的时候
+      // （相机权限没给、被别的 App 占着、或者初始化还在路上），
+      // 用户点「开始录像」就是彻底的没反应，连红字都没有。
+      // 这是「点击开始录像没有反应」最像的那个原因。
+      if (mounted) {
+        final m = '还没有可用的摄像头预览，录不了像：'
+            '${_videoErr ?? '摄像头没打开（检查相机权限，或被别的应用占用）'}';
+        setState(() => _videoErr = m);
+        toast(context, m);
+      }
+      return;
+    }
     setState(() {
       _videoBusy = true;
       _videoErr = null;
@@ -1353,6 +1381,12 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
             _note(scheme, '录音格式是 `m4a`（AAC 96 kbps 单声道 44.1 kHz），'
                 '一个小时约 43 MB，手机和电脑都能直接播；录像格式是 `mp4`（H.264，约 1080p，'
                 '一分钟 40~60 MB）。'),
+            // v1.7.0：用户问过「为什么不是 mp3」，这里把结论钉住，免得来回改。
+            _note(scheme, '**为什么不是 mp3**：Android 框架里**根本没有 MP3 编码器**。'
+                '`MediaRecorder` 的 `OutputFormat` 只有 MPEG_4 / 3GPP / AMR / AAC / OGG / WEBM 这些，'
+                '没有 MP3。要出真 mp3 只能另外引一个 LAME 编码器（纯 Java 的 jump3r 之类），'
+                '录完再用 MediaCodec 解成 PCM 再压一遍 —— 多一个依赖、多等几秒，而且云端构建更容易翻车。'
+                '`m4a`（AAC）在手机、电脑、微信里都能直接放，音质还比 128k 的 mp3 好，所以不改。'),
             _note(scheme, '录音和录像**不要同时开** —— 两个都在抢麦克风，'
                 '后开的那个大概率录不到声音。'),
             _note(scheme, '**时长上限**到点由服务自己停并保存，不依赖 App 在前台 —— '

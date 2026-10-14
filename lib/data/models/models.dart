@@ -500,6 +500,39 @@ class PlayProgress {
   const PlayProgress({required this.path, required this.positionMs, required this.durationMs, required this.updatedAt});
 }
 
+/// 一条收藏（v1.7.0 用户第 6 条）。
+///
+/// 笔记和视频共用一张表，靠 [kind] 区分 —— 首页「我的收藏」要按这两类分开摆。
+/// 收藏的是**目录或文件**都行：目录也能收藏，点一下直接进那个目录。
+///
+/// [kind] 一共四种取值（把「是不是目录」编进这个字段，就能沿用
+/// v1.5.0 就建好的那张三列表，不用再加列、不用写 `ALTER TABLE`）：
+///   `note` / `noteDir` / `media` / `mediaDir`
+class FavoriteItem {
+  /// 服务器上的相对路径（`notes/中医/经络.md`、`media/纪录片` 这种）
+  final String path;
+
+  final String kind;
+
+  /// 收藏那一刻的显示名。存下来是为了在文件被改名/删掉之后
+  /// 首页还能显示一个像样的名字，而不是孤立的一个路径。
+  final String title;
+
+  final DateTime addedAt;
+
+  const FavoriteItem({
+    required this.path,
+    required this.kind,
+    required this.title,
+    required this.addedAt,
+  });
+
+  bool get isNote => kind.startsWith('note');
+
+  /// 收藏的目标是一个目录（整个文件夹），不是单个文件
+  bool get isFolder => kind.endsWith('Dir');
+}
+
 /// ---------------- 首页统计 ----------------
 class StatsSummary {
   final int noteCount;

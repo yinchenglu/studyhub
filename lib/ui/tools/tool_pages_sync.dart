@@ -7,6 +7,7 @@ import '../../core/constants.dart';
 import '../../core/downloader.dart';
 import '../../core/sync_service.dart';
 import '../../providers/providers.dart';
+import 'dir_picker.dart';
 import 'tool_pages.dart';
 
 /// 文件夹同步（v1.5.0 用户第 1 条第 ⑷ 项）。
@@ -127,16 +128,36 @@ class _FolderSyncPageState extends ConsumerState<FolderSyncPage> {
                   labelText: '本地文件夹（手机上的绝对路径）',
                   hintText: '/storage/emulated/0/Download/StudyHub',
                   border: const OutlineInputBorder(),
-                  suffixIcon: IconButton(
-                    tooltip: '用默认下载目录',
-                    icon: const Icon(Icons.download_outlined),
-                    onPressed: () async {
-                      final d = await downloadTargetDir();
-                      if (!mounted || d == null) return;
-                      _local.text = d.path;
-                      setState(() => _dirty = true);
-                      toast(context, '已填：${d.path}');
-                    },
+                  // v1.7.0：用户要求本地文件夹也要有「选择」按钮。
+                  // 原来只有一个「用默认下载目录」的图标，没法挑别的目录。
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: '用默认下载目录',
+                        icon: const Icon(Icons.download_outlined),
+                        onPressed: () async {
+                          final d = await downloadTargetDir();
+                          if (!mounted || d == null) return;
+                          _local.text = d.path;
+                          setState(() => _dirty = true);
+                          toast(context, '已填：${d.path}');
+                        },
+                      ),
+                      IconButton(
+                        tooltip: '选择文件夹',
+                        icon: const Icon(Icons.folder_open),
+                        onPressed: () async {
+                          final picked =
+                              await pickLocalDir(context, start: _local.text);
+                          if (!mounted || picked == null) return;
+                          setState(() {
+                            _local.text = picked;
+                            _dirty = true;
+                          });
+                        },
+                      ),
+                    ],
                   ),
                 ),
                 onChanged: (_) => setState(() => _dirty = true),
@@ -144,11 +165,30 @@ class _FolderSyncPageState extends ConsumerState<FolderSyncPage> {
               const SizedBox(height: 10),
               TextField(
                 controller: _remote,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '服务器文件夹（资料库里的路径）',
                   hintText: 'notes/我的资料',
                   helperText: '相对资料根目录，不用写开头的 /StudyHub',
-                  border: OutlineInputBorder(),
+                  border: const OutlineInputBorder(),
+                  // v1.7.0：服务器文件夹也要有「选择」按钮（走 WebDAV 浏览）
+                  suffixIcon: IconButton(
+                    tooltip: '选择服务器文件夹',
+                    icon: const Icon(Icons.folder_open),
+                    onPressed: () async {
+                      final c = ref.read(davClientProvider);
+                      if (c == null) {
+                        toast(context, '先登录服务器再选');
+                        return;
+                      }
+                      final picked =
+                          await pickRemoteDir(context, c, start: _remote.text);
+                      if (!mounted || picked == null) return;
+                      setState(() {
+                        _remote.text = picked;
+                        _dirty = true;
+                      });
+                    },
+                  ),
                 ),
                 onChanged: (_) => setState(() => _dirty = true),
               ),

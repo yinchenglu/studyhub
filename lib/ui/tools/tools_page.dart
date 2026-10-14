@@ -26,32 +26,40 @@ import 'tool_pages_v15b.dart';
 ///
 /// 布局约定：
 ///   * 最上面单独一行是「服务器下载站」—— 直接进，不折叠、不藏在菜单里
-///   * 下面按用途分成 6 类，一共 41 个离线小工具
+///   * 下面按用途分成 5 类，一共 41 个离线小工具
 ///   * 最后再挂一个「服务器小工具」，识别服务器 tools 目录里的 html 小工具
 ///
 /// 分类的由来（每次加工具都要重申一遍，否则很容易按「技术实现」分类、
 /// 而不是按「用户想干什么」分类）：
 ///   时间与效率 ← 用户点名放第一位；翻页时钟排这类第一个（v1.6.0）
 ///   测量与设计 ← 原「测量与感官」。用户要求排第二位，并把
-///                SOS 手电筒 / 地图坐标转换 / 指南针 / 配色助手 /
+///                地图坐标转换 / 指南针 / 配色助手 /
 ///                颜色码转换 / 简易画板 / 高级计算器 一并挪进来 ——
 ///                这些的共性都是「对着实物或屏幕比划、调参数」，算设计与测量
-///   网络与编码 ← 原「文字与编码」。用户要求把 CIDR 子网计算并进来
+///   网络与编码 ← 原「文字与编码」。用户要求把 CIDR 子网计算并进来；
+///                v1.7.0 又把身份证查户籍并进来
 ///   生活与娱乐 ← 用户点名放第四位，并把 文件夹同步 / 后台录音录像 /
-///                应用管理 挪进来
-///   地理与定位 ← 只剩身份证查户籍（坐标转换和指南针已挪去「测量与设计」）
+///                应用管理 挪进来；v1.7.0 又把 SOS 手电筒挪进来
 ///   公卫小工具 ← 原「公卫数据」（v1.6.0 改名）。消杀计算器从这里起家，
 ///                扩成一组类 Epi Info StatCalc 的工具
 ///
 /// v1.6.0 起分类由 11 类压到 6 类 —— 用户反馈「类似一个木函」，
 /// 类别太多反而不好找，宁可每类工具多一点。
+/// v1.7.0 再把「地理与定位」压掉（唯一成员身份证查户籍挪去网络与编码），
+/// 剩 5 类。**分类只会越来越少，别再按细类拆回去。**
+///
+/// 卡片布局 v1.7.0 改版（用户要求）：
+///   * 分类标题：去掉前面的小图标，字号 13 → 16
+///   * 小工具格子：仍是一行 3 个；图标从「上方」挪到「文字左边」同一排；
+///     字号 11.5 → 12.5；格子高度钉死 34（原来是靠 childAspectRatio 随宽度变）
+///   * 名字长的格子用 FittedBox scaleDown 自动缩字，**不截断**（用户要求「显示全」）
 class ToolsPage extends ConsumerWidget {
   const ToolsPage({super.key});
 
   /// 全部离线小工具，按用途分类
   static const categories = <_Category>[
     // ① 时间与效率 —— 用户要求挪到第一位；翻页时钟排这类第一个
-    _Category('时间与效率', Icons.schedule, [
+    _Category('时间与效率', [
       // v1.5.0 新增的横屏大字号翻页时钟（带农历/星期/节气）。v1.6.0 提到第一个
       _ToolDef('翻页时钟', Icons.watch_later_outlined, Color(0xFF0C447C)),
       _ToolDef('番茄时钟', Icons.timer_outlined, Color(0xFFD85A30)),
@@ -64,14 +72,14 @@ class ToolsPage extends ConsumerWidget {
     ]),
 
     // ② 测量与设计 —— 原「测量与感官」，v1.6.0 起并入 7 个工具（用户点名）
-    _Category('测量与设计', Icons.straighten, [
+    _Category('测量与设计', [
       _ToolDef('直尺', Icons.straighten, Color(0xFF185FA5)),
       _ToolDef('量角器', Icons.architecture, Color(0xFF7F77DD)),
       _ToolDef('噪声测量', Icons.graphic_eq, Color(0xFF1D9E75)),
       _ToolDef('屏幕坏点检测', Icons.grid_on, Color(0xFFD4537E)),
       _ToolDef('挂画助手', Icons.straighten_outlined, Color(0xFF72243E)),
       // ↓ v1.6.0 从「生活与娱乐 / 地理与定位 / 颜色与设计 / 计算与网络」挪进来
-      _ToolDef('SOS 手电筒', Icons.flashlight_on, Color(0xFFB8860B)),
+      // v1.7.0：SOS 手电筒已按用户要求挪去「生活与娱乐」
       _ToolDef('地图坐标转换', Icons.swap_horiz, Color(0xFF1D9E75)),
       // 指南针：地磁方向 + 经纬度 + 海拔。
       // 方向靠磁力计（离线、不要权限），经纬度/海拔靠定位（要权限）。
@@ -83,7 +91,7 @@ class ToolsPage extends ConsumerWidget {
     ]),
 
     // ③ 网络与编码 —— 原「文字与编码」，v1.6.0 起并入 CIDR 子网计算
-    _Category('网络与编码', Icons.text_fields, [
+    _Category('网络与编码', [
       _ToolDef('摩斯电码', Icons.wifi_tethering, Color(0xFF0F6E56)),
       _ToolDef('加密编码', Icons.lock_outline, Color(0xFF993C1D)),
       _ToolDef('二维码生成', Icons.qr_code_2, Color(0xFF1D9E75)),
@@ -91,10 +99,13 @@ class ToolsPage extends ConsumerWidget {
       _ToolDef('条码生成器', Icons.view_week, Color(0xFF72243E)),
       // v1.6.0 从「计算与网络」挪进来
       _ToolDef('CIDR 子网计算', Icons.hub_outlined, Color(0xFF0C447C)),
+      // v1.7.0 从「地理与定位」挪进来（该分类因此清空、取消）
+      // 身份证前 6 位查户籍地（自带 2978 个区划码，不用联网）
+      _ToolDef('身份证查户籍', Icons.badge_outlined, Color(0xFFB8860B)),
     ]),
 
     // ④ 生活与娱乐 —— 用户要求排第四，并并入 3 个工具
-    _Category('生活与娱乐', Icons.sports_esports_outlined, [
+    _Category('生活与娱乐', [
       _ToolDef('抛硬币', Icons.casino_outlined, Color(0xFFE0A020)),
       // 快递查询要访问快递 100 的接口，是联网工具
       _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
@@ -104,16 +115,12 @@ class ToolsPage extends ConsumerWidget {
       // 后台录音录像：类似 Alibi
       _ToolDef('后台录音录像', Icons.fiber_manual_record, Color(0xFFD4537E)),
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
+      // v1.7.0 从「测量与设计」挪进来（用户点名）
+      _ToolDef('SOS 手电筒', Icons.flashlight_on, Color(0xFFB8860B)),
     ]),
 
-    // ⑤ 地理与定位 —— 坐标转换和指南针挪走后只剩这一个
-    _Category('地理与定位', Icons.explore_outlined, [
-      // 身份证前 6 位查户籍地（自带 2978 个区划码，不用联网）
-      _ToolDef('身份证查户籍', Icons.badge_outlined, Color(0xFFB8860B)),
-    ]),
-
-    // ⑥ 公卫小工具 —— 原「公卫数据」，v1.6.0 改名并扩容
-    _Category('公卫小工具', Icons.local_hospital_outlined, [
+    // ⑤ 公卫小工具 —— 原「公卫数据」，v1.6.0 改名并扩容
+    _Category('公卫小工具', [
       _ToolDef('消杀计算器', Icons.science_outlined, Color(0xFF0F7B6C)),
       // v1.6.0 新增：现场配药时设备该开多大流量
       _ToolDef('杀虫剂流量计算', Icons.opacity_outlined, Color(0xFF1D9E75)),
@@ -151,32 +158,38 @@ class ToolsPage extends ConsumerWidget {
           // ---------- 离线小工具 ----------
           for (final c in categories) ...[
             Padding(
-              padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
+              // v1.7.0：标题行不再放图标，上下留白压缩一点
+              padding: const EdgeInsets.fromLTRB(2, 14, 2, 7),
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
                 children: [
-                  Icon(c.icon, size: 16, color: scheme.primary),
-                  const SizedBox(width: 7),
                   Text(c.name,
                       style: TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w600, color: scheme.primary)),
+                          // 用户要求「字体要更大一些」
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: scheme.primary)),
                   const SizedBox(width: 7),
                   Text('${c.tools.length} 个',
-                      style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+                      style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
                 ],
               ),
             ),
-            GridView.count(
-              crossAxisCount: 3,
+            GridView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              // v1.6.0：用户要求「把行距压缩一下」——
-              // 格子间距 11 → 8，宽高比 0.98（近正方）→ 1.9（扁条），一行矮一大截
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: 1.9,
-              children: [
-                for (final t in c.tools) _toolCard(context, t),
-              ],
+              itemCount: c.tools.length,
+              // v1.7.0：用 mainAxisExtent 把格子高度**钉死**成 34，不再用
+              // childAspectRatio —— 后者算出来的高度会随屏幕宽度变，
+              // 「进一步压缩行距」就变成看运气了。间距 8 → 6。
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                mainAxisExtent: 34,
+                mainAxisSpacing: 6,
+                crossAxisSpacing: 6,
+              ),
+              itemBuilder: (_, i) => _toolCard(context, c.tools[i]),
             ),
           ],
 
@@ -214,28 +227,40 @@ class ToolsPage extends ConsumerWidget {
     return Card(
       margin: EdgeInsets.zero,
       child: InkWell(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => toolPageOf(t.name)),
         ),
         child: Stack(
           children: [
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+              // 联网工具右上角有小点，右边多让一点位，免得点压到字上
+              padding: EdgeInsets.only(
+                  left: 6, right: t.online ? 11 : 6, top: 3, bottom: 3),
+              child: Row(
                 children: [
-                  // v1.6.0：图标改成「文字大小的小图标」——
-                  // 去掉原来那圈 40×40 的底色方块，只留一个 17px 的裸图标
-                  Icon(t.icon, color: t.color, size: 17),
-                  const SizedBox(height: 3),
-                  Text(
-                    t.name,
-                    textAlign: TextAlign.center,
-                    // 名称压缩成单行、字号降到 11.5
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11.5, height: 1.15, color: scheme.onSurface),
+                  // v1.7.0：图标和文字放进**同一排**（原来是图标在上、文字在下）。
+                  // 图标保留，尺寸 17 → 14，把省下的宽度让给文字。
+                  Icon(t.icon, color: t.color, size: 14),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: FittedBox(
+                      // 「文字要显示全」——所以是 scaleDown（放不下就整体缩小），
+                      // 不是 ellipsis。最长的几个名字（7 个字或带字母的）会被
+                      // 缩到 11px 上下，这是「一行 3 个 + 名字不截断」的必然代价。
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        t.name,
+                        maxLines: 1,
+                        style: TextStyle(
+                          // 字号 11.5 → 12.5（用户要求「字体加大」）
+                          fontSize: 12.5,
+                          height: 1.0,
+                          color: scheme.onSurface,
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -243,11 +268,11 @@ class ToolsPage extends ConsumerWidget {
             // 联网工具：卡片右上角一个小圆点（用户要求「加一个网络的小点」）
             if (t.online)
               Positioned(
-                right: 7,
-                top: 7,
+                right: 5,
+                top: 5,
                 child: Container(
-                  width: 7,
-                  height: 7,
+                  width: 6,
+                  height: 6,
                   decoration: const BoxDecoration(
                     color: Color(0xFF185FA5),
                     shape: BoxShape.circle,
@@ -474,9 +499,12 @@ class _ServerToolsRow extends StatelessWidget {
 
 class _Category {
   final String name;
-  final IconData icon;
   final List<_ToolDef> tools;
-  const _Category(this.name, this.icon, this.tools);
+
+  /// v1.7.0：用户要求「主目录不需要图标」—— 分类标题前那个小图标删掉了
+  /// （下面的小工具格子里仍然保留图标，那条要求是「图标和文字放在一排」）。
+  /// 所以这里不再有 icon 字段，别再加回来。
+  const _Category(this.name, this.tools);
 }
 
 class _ToolDef {

@@ -19,11 +19,11 @@ class SettingsStore {
   static const _kExamCount = 'exam_count';
   static const _kExamMinutes = 'exam_minutes';
   static const _kCacheLimit = 'cache_limit_mb';
-  static const _kAutoNext = 'quiz_auto_next';
+  // v1.7.0 删掉了 _kAutoNext（'quiz_auto_next'）——「答完自动下一题」总开关撤了。
   static const _kShowAnswer = 'quiz_show_answer_now';
   // v1.3.0 新增：
-  //   _kAutoNextSec —— 「显示答案」模式下，答完停留几秒自动跳下一题（0 = 不自动跳）
-  //   _kWrongStaySec —— 「不带答案」模式下，答错后停留几秒再自动跳下一题
+  //   _kAutoNextSec —— 普通模式答完停留几秒自动跳下一题（0 = 不自动跳）
+  //   _kWrongStaySec —— 答错 / 看过答案后停留几秒再自动跳下一题（0 = 不自动跳）
   static const _kAutoNextSec = 'quiz_auto_next_sec';
   static const _kWrongStaySec = 'quiz_wrong_stay_sec';
   static const _kBrowseNextSec = 'quiz_browse_next_sec';
@@ -334,15 +334,10 @@ class SettingsStore {
     await p.setInt(_kCacheLimit, v);
   }
 
-  Future<bool> autoNext() async {
-    final p = await _prefs;
-    return p.getBool(_kAutoNext) ?? false;
-  }
-
-  Future<void> setAutoNext(bool v) async {
-    final p = await _prefs;
-    await p.setBool(_kAutoNext, v);
-  }
+  // v1.7.0：`autoNext()` / `setAutoNext()` 连同 `_kAutoNext` 一起删掉了。
+  // 用户要求设置里「只留 3 个时间设置」，「答完自动下一题」这个总开关
+  // 和菜单里的「不显示答案时也自动跳题」都撤了 —— 秒数 0 就是「不跳」。
+  // 磁盘上残留的旧键没人读，不影响。
 
   Future<bool> showAnswerNow() async {
     final p = await _prefs;
@@ -354,10 +349,14 @@ class SettingsStore {
     await p.setBool(_kShowAnswer, v);
   }
 
-  /// 「显示答案」模式下自动跳下一题的秒数。0 表示不自动跳。
+  /// 普通模式答完自动跳下一题的秒数。0 表示不自动跳。
+  ///
+  /// v1.7.0：读回来必须**归一到当前选项**，否则升级前存着 8 秒的用户
+  /// 会让设置页的 DropdownButton 直接断言崩（value 不在 items 里）。
   Future<int> autoNextSec() async {
     final p = await _prefs;
-    return p.getInt(_kAutoNextSec) ?? Defaults.autoNextSec;
+    final v = p.getInt(_kAutoNextSec) ?? Defaults.autoNextSec;
+    return Defaults.normalizeSec(v, Defaults.autoNextSecOptions);
   }
 
   Future<void> setAutoNextSec(int v) async {
@@ -365,10 +364,11 @@ class SettingsStore {
     await p.setInt(_kAutoNextSec, v);
   }
 
-  /// 「不带答案」模式下答错后停留的秒数（答对是立刻跳）
+  /// 答错 / 看过答案后停留的秒数（0 = 不自动跳）
   Future<int> wrongStaySec() async {
     final p = await _prefs;
-    return p.getInt(_kWrongStaySec) ?? Defaults.wrongStaySec;
+    final v = p.getInt(_kWrongStaySec) ?? Defaults.wrongStaySec;
+    return Defaults.normalizeSec(v, Defaults.wrongStaySecOptions);
   }
 
   Future<void> setWrongStaySec(int v) async {
@@ -376,13 +376,14 @@ class SettingsStore {
     await p.setInt(_kWrongStaySec, v);
   }
 
-  /// 「刷题模式（只看不做）」下自动翻页的秒数。0 表示不自动跳。
+  /// 「带答案刷题（只看不做）」模式自动翻页的秒数。0 表示不自动跳。
   ///
   /// v1.6.0 新增：原来是跟 `autoNextSec` 共用同一个值的，
   /// 用户要求三种模式各自独立设置。
   Future<int> browseNextSec() async {
     final p = await _prefs;
-    return p.getInt(_kBrowseNextSec) ?? Defaults.browseNextSec;
+    final v = p.getInt(_kBrowseNextSec) ?? Defaults.browseNextSec;
+    return Defaults.normalizeSec(v, Defaults.browseNextSecOptions);
   }
 
   Future<void> setBrowseNextSec(int v) async {

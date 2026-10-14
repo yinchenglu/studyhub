@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -9,6 +11,7 @@ import '../../data/dav/webdav_client.dart';
 import '../../data/local/db.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
+import '../common/favorite_action.dart';
 import '../common/html_view_page.dart';
 import '../common/pdf_view_page.dart';
 import '../common/sort_menu.dart';
@@ -240,6 +243,20 @@ class NotesPageState extends ConsumerState<NotesPage> {
   /// 屏幕上真正展示的顺序（排过序的）
   List<DavEntry> get _shown => sortEntries(_entries, _sort);
 
+  /// 当前目录里「能当笔记打开」的文件，**按用户当前排序**排好。
+  ///
+  /// v1.7.0 新增：阅读页要拿它做「上一篇 / 下一篇笔记」，
+  /// 打开单篇时也拿它做「列表」和左右滑动切换。
+  /// 顺序必须跟列表页看到的一致，否则「下一篇」会跳到用户没预期的文件。
+  List<String> get _readable => _shown
+      .where((e) =>
+          !e.isDir &&
+          (FileTypes.isMarkdown(e.name) ||
+              FileTypes.isReadableText(e.name) ||
+              FileTypes.ext(e.name) == 'epub'))
+      .map((e) => e.path)
+      .toList();
+
   // ------------------------------------------------------------- 多选
 
   void _enterSelect(DavEntry e) {
@@ -330,6 +347,14 @@ class NotesPageState extends ConsumerState<NotesPage> {
           ],
         ),
         actions: [
+          // v1.7.0：右上角原来是「刷新」，用户说底部主菜单点一下就能刷新，
+          // 这个按钮纯属重复 —— 换成查找。
+          if (logged)
+            IconButton(
+              tooltip: '查找笔记',
+              onPressed: _showFind,
+              icon: const Icon(Icons.search),
+            ),
           if (logged && _entries.length > 1)
             SortButton(
               value: _sort,
@@ -364,7 +389,6 @@ class NotesPageState extends ConsumerState<NotesPage> {
                         leading: Icon(Icons.image_outlined), title: Text('上传图片'), dense: true)),
               ],
             ),
-          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
         ],
       );
 
@@ -462,6 +486,240 @@ class NotesPageState extends ConsumerState<NotesPage> {
         ),
       ),
     );
+  }
+
+  /// 打开一条：目录就进去，文件按类型进对应的预览页。
+  ///
+  /// v1.7.0 抽成独立方法 —— 列表页右上角新加的「查找」结果也要走同一套
+  /// 打开逻辑，否则在搜索结果里点一下的行为会和列表里点不一样。
+  Future<void> _open(DavEntry e) async {
+    if (e.isDir) {
+      setState(() {
+        _sub = e.path.substring(AppDirs.notes.length + 1);
+      });
+      await _load();
+      return;
+    }
+    // 同目录里所有能读的文件（按当前排序）—— 交给阅读页做
+    // 「上一篇 / 下一篇」以及左划右划切换
+    final sib = _readable;
+    if (FileTypes.ext(e.name) == 'epub') {
+      // 电子书直接进阅读模式（没有别的打开方式）
+      await AppDb.instance.touchNote(e.path);
+      if (!mounted) return;
+      await Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => ReadingPage(path: e.path, siblings: sib)));
+      await _load();
+      return;
+    }
+    if (FileTypes.isMarkdown(e.name)) {
+      // 记一笔「这篇我看过」—— 下次进这个目录要定位到它
+      await AppDb.instance.touchNote(e.path);
+      if (!mounted) return;
+      await Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => NoteReadPage(path: e.path, siblings: sib)));
+      await _load();
+      return;
+    }
+    if (FileTypes.isPdf(e.name)) {
+      await _openPdf(e);
+      return;
+    }
+    if (FileTypes.isHtml(e.name)) {
+      await _openHtml(e);
+      return;
+    }
+    if (FileTypes.isImage(e.name)) {
+      if (!mounted) return;
+      await Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => NoteReadPage(path: e.path, imageOnly: true)));
+      return;
+    }
+    if (FileTypes.isReadableText(e.name)) {
+      if (!mounted) return;
+      await Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => NoteReadPage(path: e.path, plain: true, siblings: sib)));
+      return;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('这个文件类型暂不支持预览')));
+  }
+
+  // ------------------------------------------------------------- 查找
+
+  /// 在当前目录及其子目录里按**文件名**找。
+  ///
+  /// 为什么不做全文搜索：WebDAV 没有搜索接口，全文搜得把每个文件都下下来，
+  /// 一个几百篇的库要下几十兆，手机上等不起。文件名搜索只要列目录，
+  /// 秒出结果，覆盖「我记得有这么个笔记但忘了放哪」这个主要场景。
+  Future<List<DavEntry>> _searchIn(String base, String kw) async {
+    final repo = ref.read(noteRepoProvider);
+    if (repo == null) return const [];
+    final q = kw.toLowerCase();
+    final out = <DavEntry>[];
+    final queue = <String>[base];
+    var seen = 0;
+    // 上限两道：文件数 1500、目录数 200 —— 网络差时也不至于转到天荒地老
+    var dirs = 0;
+    while (queue.isNotEmpty && seen < 1500 && dirs < 200) {
+      final d = queue.removeAt(0);
+      dirs++;
+      List<DavEntry> list;
+      try {
+        list = await repo.listDir(d);
+      } catch (_) {
+        continue; // 某个子目录读不了（没权限之类）不该拖垮整次搜索
+      }
+      for (final e in list) {
+        seen++;
+        if (e.isDir) {
+          queue.add(e.path.substring(AppDirs.notes.length + 1));
+        } else if (e.name.toLowerCase().contains(q)) {
+          out.add(e);
+        }
+      }
+    }
+    return out;
+  }
+
+  Future<void> _showFind() async {
+    final scheme = Theme.of(context).colorScheme;
+    final scope = _sub.isEmpty ? AppDirs.notes : '${AppDirs.notes}/$_sub';
+    String kw = '';
+    bool busy = false;
+    String? err;
+    var hits = const <DavEntry>[];
+    Timer? deb;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx2, setSheet) {
+          Future<void> run() async {
+            final q = kw.trim();
+            if (q.isEmpty) {
+              setSheet(() {
+                hits = const [];
+                busy = false;
+                err = null;
+              });
+              return;
+            }
+            setSheet(() {
+              busy = true;
+              err = null;
+            });
+            try {
+              final r = await _searchIn(_sub, q);
+              if (!ctx2.mounted) return;
+              setSheet(() {
+                hits = r;
+                busy = false;
+              });
+            } catch (e) {
+              if (!ctx2.mounted) return;
+              setSheet(() {
+                err = e.toString();
+                busy = false;
+              });
+            }
+          }
+
+          return Padding(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx2).viewInsets.bottom),
+            child: SizedBox(
+              height: MediaQuery.of(ctx2).size.height * 0.66,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
+                    child: TextField(
+                      autofocus: true,
+                      textInputAction: TextInputAction.search,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        prefixIcon: const Icon(Icons.search, size: 20),
+                        hintText: '按文件名找',
+                        helperText: '范围：$scope 及其子目录',
+                        helperStyle: const TextStyle(fontSize: 11.5),
+                        border: const OutlineInputBorder(),
+                      ),
+                      onChanged: (v) {
+                        kw = v;
+                        deb?.cancel();
+                        deb = Timer(const Duration(milliseconds: 350), run);
+                      },
+                      onSubmitted: (_) => run(),
+                    ),
+                  ),
+                  if (busy)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 6),
+                      child: LinearProgressIndicator(minHeight: 2),
+                    ),
+                  if (err != null)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+                      child: Text(err!, style: TextStyle(fontSize: 12, color: scheme.error)),
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 2, 18, 6),
+                    child: Text(
+                      kw.trim().isEmpty
+                          ? '输入关键字后自动开始找'
+                          : (hits.isEmpty ? '没有找到' : '找到 ${hits.length} 个'),
+                      style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: hits.isEmpty
+                        ? Center(
+                            child: Text(
+                              kw.trim().isEmpty ? '找文件，不找内容' : '换个关键字试试',
+                              style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+                            ),
+                          )
+                        : ListView.builder(
+                            itemCount: hits.length,
+                            itemBuilder: (_, i) {
+                              final e = hits[i];
+                              final dir = parentOf(e.path);
+                              final isMd = FileTypes.isMarkdown(e.name);
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.article_outlined, size: 20),
+                                title: Text(
+                                  isMd ? titleFromFileName(e.name) : e.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: Text(
+                                  dir == AppDirs.notes ? '（笔记根目录）' : dir,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 11.5),
+                                ),
+                                onTap: () {
+                                  Navigator.pop(ctx2);
+                                  _open(e);
+                                },
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    deb?.cancel();
   }
 
   Widget _buildBody() {
@@ -615,45 +873,18 @@ class NotesPageState extends ConsumerState<NotesPage> {
               _toggle(e);
               return;
             }
-            if (e.isDir) {
-              setState(() {
-                _sub = e.path.substring(AppDirs.notes.length + 1);
-              });
-              await _load();
-            } else if (isEpub) {
-              // 电子书直接进阅读模式（没有别的打开方式）
-              await AppDb.instance.touchNote(e.path);
-              await Navigator.of(context)
-                  .push(MaterialPageRoute(builder: (_) => ReadingPage(path: e.path)));
-              await _load();
-            } else if (isMd) {
-              // 记一笔「这篇我看过」—— 下次进这个目录要定位到它
-              await AppDb.instance.touchNote(e.path);
-              await Navigator.of(context).push(MaterialPageRoute(builder: (_) => NoteReadPage(path: e.path)));
-              await _load();
-            } else if (isPdf) {
-              await _openPdf(e);
-            } else if (isHtml) {
-              await _openHtml(e);
-            } else if (isImg) {
-              Navigator.of(context)
-                  .push(MaterialPageRoute(builder: (_) => NoteReadPage(path: e.path, imageOnly: true)));
-            } else if (isTxt) {
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => NoteReadPage(path: e.path, plain: true)));
-            } else {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(const SnackBar(content: Text('这个文件类型暂不支持预览')));
-            }
+            await _open(e);
           },
           onLongPress: () {
             if (_selecting) {
               _toggle(e);
             } else if (e.isDir) {
-              // 目录：先弹菜单，里面有「加入多选 / 整个目录导出」
+              // 目录：先弹菜单，里面有「收藏 / 加入多选 / 整个目录导出」
               _showDirActions(e);
             } else {
-              // 文件：长按直接进入多选（就是这样选一篇或多篇笔记的）
-              _enterSelect(e);
+              // 文件：v1.7.0 起也是先弹菜单（第一项是收藏），
+              // 菜单里的「加入多选」就是原来的长按行为，老习惯只多一步
+              _showFileActions(e);
             }
           },
         );
@@ -753,8 +984,21 @@ class NotesPageState extends ConsumerState<NotesPage> {
     if (name == null || name.trim().isEmpty) return;
     final repo = ref.read(noteRepoProvider);
     if (repo == null) return;
+    final newName = name.trim();
+    final newPath = joinPath(parentOf(e.path), newName);
     try {
-      await repo.renameEntry(e.path, joinPath(parentOf(e.path), name.trim()));
+      await repo.renameEntry(e.path, newPath);
+      // v1.7.0：收藏里存的是完整路径，改了名得把收藏一起搬过去，
+      // 否则首页「我的收藏」里那条就点不开了
+      await AppDb.instance.moveFavoritesUnder(
+        e.path,
+        newPath,
+        newTitle: e.isDir
+            ? newName
+            : (FileTypes.isMarkdown(newName) ? titleFromFileName(newName) : newName),
+      );
+      ref.invalidate(favoriteProvider);
+      ref.invalidate(isFavoriteProvider);
       if (mounted) _exitSelect();
       await _load();
     } catch (err) {
@@ -792,11 +1036,17 @@ class NotesPageState extends ConsumerState<NotesPage> {
     for (final e in picked) {
       try {
         await repo.deleteEntry(e.path);
+        // 和单个删除一样，顺手清掉这些路径上的收藏
+        await AppDb.instance.removeFavoritesUnder(e.path);
       } catch (_) {
         failed++;
       }
     }
-    if (mounted) _exitSelect();
+    if (mounted) {
+      ref.invalidate(favoriteProvider);
+      ref.invalidate(isFavoriteProvider);
+      _exitSelect();
+    }
     await _load();
     if (failed > 0) _toast('有 $failed 项删除失败');
   }
@@ -806,56 +1056,156 @@ class NotesPageState extends ConsumerState<NotesPage> {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                      child: Text(e.name, style: const TextStyle(fontWeight: FontWeight.w600))),
-                ],
+      builder: (_) => Consumer(builder: (ctx, ref2, __) {
+        // v1.7.0：目录也能收藏，所以菜单要显示当前是不是已经收藏了
+        final on = ref2.watch(isFavoriteProvider(e.path)).valueOrNull ?? false;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                        child:
+                            Text(e.name, style: const TextStyle(fontWeight: FontWeight.w600))),
+                  ],
+                ),
               ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.checklist_rtl),
-              title: const Text('加入多选'),
-              subtitle: const Text('可以连同别的目录 / 笔记一起导出'),
-              onTap: () {
-                Navigator.pop(context);
-                _enterSelect(e);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.ios_share),
-              title: const Text('导出这个目录里的笔记'),
-              subtitle: const Text('里面的笔记会一起导出成一份'),
-              onTap: () {
-                Navigator.pop(context);
-                showNoteExportSheet(context, [e]);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.drive_file_rename_outline),
-              title: const Text('重命名'),
-              onTap: () {
-                Navigator.pop(context);
-                _rename(e);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline, color: Colors.red),
-              title: const Text('删除', style: TextStyle(color: Colors.red)),
-              onTap: () {
-                Navigator.pop(context);
-                _deleteOne(e);
-              },
-            ),
-          ],
-        ),
-      ),
+              // v1.7.0：收藏整个文件夹（用户第 6 条）
+              ListTile(
+                leading: Icon(favoriteIcon(on)),
+                title: Text(on ? '取消收藏' : '收藏这个文件夹'),
+                subtitle: const Text('收藏后首页「我的收藏」里能快速找到'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  // 用页面的 ref（不是 Consumer 的 ref2）：pop 之后
+                  // ref2 所在的那棵子树已经被拆了，再 invalidate 会炸
+                  toggleFavorite(context, ref,
+                      path: e.path, title: e.name, isNote: true, isFolder: true);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.checklist_rtl),
+                title: const Text('加入多选'),
+                subtitle: const Text('可以连同别的目录 / 笔记一起导出'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _enterSelect(e);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.ios_share),
+                title: const Text('导出这个目录里的笔记'),
+                subtitle: const Text('里面的笔记会一起导出成一份'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  showNoteExportSheet(context, [e]);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.drive_file_rename_outline),
+                title: const Text('重命名'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _rename(e);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Colors.red),
+                title: const Text('删除', style: TextStyle(color: Colors.red)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _deleteOne(e);
+                },
+              ),
+            ],
+          ),
+        );
+      }),
+    );
+  }
+
+  /// 文件长按菜单（v1.7.0）。
+  ///
+  /// 原来是「长按直接进多选」。用户要求「文件长按也要能收藏」——
+  /// 那就必须先出个菜单：把收藏藏在长按里、不告诉用户，谁也猜不到。
+  /// 收藏排第一项，第二项就是原来的「加入多选」，老习惯只多一步。
+  void _showFileActions(DavEntry e) {
+    final exportable = FileTypes.isMarkdown(e.name) ||
+        FileTypes.isReadableText(e.name) ||
+        FileTypes.isHtml(e.name);
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => Consumer(builder: (ctx, ref2, __) {
+        final on = ref2.watch(isFavoriteProvider(e.path)).valueOrNull ?? false;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                        child: Text(e.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontWeight: FontWeight.w600))),
+                  ],
+                ),
+              ),
+              ListTile(
+                leading: Icon(favoriteIcon(on)),
+                title: Text(on ? '取消收藏' : '收藏这一篇'),
+                subtitle: const Text('收藏后首页「我的收藏」里能快速打开'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  toggleFavorite(context, ref,
+                      path: e.path,
+                      title: FileTypes.isMarkdown(e.name) ? titleFromFileName(e.name) : e.name,
+                      isNote: true);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.checklist_rtl),
+                title: const Text('加入多选'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _enterSelect(e);
+                },
+              ),
+              if (exportable)
+                ListTile(
+                  leading: const Icon(Icons.ios_share),
+                  title: const Text('导出 / 分享'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    showNoteExportSheet(context, [e]);
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.drive_file_rename_outline),
+                title: const Text('重命名'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _rename(e);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Colors.red),
+                title: const Text('删除', style: TextStyle(color: Colors.red)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _deleteOne(e);
+                },
+              ),
+            ],
+          ),
+        );
+      }),
     );
   }
 
@@ -880,6 +1230,13 @@ class NotesPageState extends ConsumerState<NotesPage> {
     if (repo == null) return;
     try {
       await repo.deleteEntry(e.path);
+      // v1.7.0：删掉的东西连带把它的收藏一起清掉，
+      // 免得首页「我的收藏」里留一条点开报「文件不存在」的死条目
+      await AppDb.instance.removeFavoritesUnder(e.path);
+      if (mounted) {
+        ref.invalidate(favoriteProvider);
+        ref.invalidate(isFavoriteProvider);
+      }
       await _load();
     } catch (err) {
       _toast('删除失败：$err');
