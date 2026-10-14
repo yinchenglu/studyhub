@@ -13,10 +13,15 @@ import 'note_edit_page.dart';
 import 'note_export.dart';
 import 'reading_page.dart';
 
-/// 笔记阅读页：Markdown 渲染 + 图片 / 动图显示 + 纯文本查看
+/// 笔记阅读页：Markdown 渲染 + 纯文本查看
+///
+/// v1.7.0：**去掉了 `imageOnly`**。它原来负责「在笔记里点开一张图片」，
+/// 但只是一个 AppBar + InteractiveViewer 的简易页：不能左右滑、不能横竖屏切换、
+/// 不能下载 —— 而「视频」模块里点图片用的 `ImageViewerPage` 三样都有。
+/// 现在图片统一走 `ImageViewerPage`（入口在 `notes_page._openImage`），
+/// 这个参数就没人用了，留着只会让人以为还有第二条图片预览的路。
 class NoteReadPage extends ConsumerStatefulWidget {
   final String path;
-  final bool imageOnly;
 
   /// 纯文本查看（.txt / .csv / .json 之类）
   final bool plain;
@@ -33,7 +38,6 @@ class NoteReadPage extends ConsumerStatefulWidget {
   const NoteReadPage({
     super.key,
     required this.path,
-    this.imageOnly = false,
     this.plain = false,
     this.siblings = const [],
   });
@@ -58,7 +62,7 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
   @override
   void initState() {
     super.initState();
-    if (!widget.imageOnly) _load();
+    _load();
   }
 
   @override
@@ -102,6 +106,71 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
     final repo = ref.read(noteRepoProvider);
     if (repo == null) return Uri.parse(src);
     return Uri.parse(repo.resolveUrl(_path, src));
+  }
+
+  // ------------------------------------------------------- 正文里的图片
+
+  /// 这一篇正文里引用到的**所有**图片地址，按出现顺序、去重。
+  ///
+  /// 两种写法都认：
+  ///   * Markdown 图片：`![说明](image/a.png)` / `![说明](image/a.png "标题")`
+  ///   * 直接写 HTML：`<img src="image/a.png">`
+  ///
+  /// 为什么要凑齐一整份：点开一张图之后要能左右划着看本篇的其它图 ——
+  /// 「视频」模块里点图片就是这个行为。原来只塞一张（`images: [resolved]`），
+  /// 手势能划但没内容可划。
+  List<String> _imageUrls() {
+    final c = _content;
+    if (c == null || c.isEmpty) return const [];
+    final out = <String>[];
+    final seen = <String>{};
+
+    void add(String raw) {
+      // `![a](url "标题")` —— 取空格前那一段，别把标题当成路径的一部分
+      var s = raw.trim();
+      if (s.isEmpty) return;
+      final sp = s.indexOf(' ');
+      if (sp > 0 && !s.startsWith('<')) s = s.substring(0, sp);
+      s = s.replaceAll(RegExp(r'''^<|>$'''), '');
+      if (s.isEmpty || s.startsWith('data:')) return; // 内嵌 base64 不进画廊
+      // 已经是完整地址就原样用；否则按「相对本篇的路径」解析
+      final full = s.contains('://') ? s : _resolve(s).toString();
+      if (seen.add(full)) out.add(full);
+    }
+
+    for (final m in RegExp(r'!\[[^\]]*\]\(([^)]*)\)').allMatches(c)) {
+      add(m.group(1) ?? '');
+    }
+    for (final m in RegExp(r'''<img[^>]*?\bsrc\s*=\s*["']?([^"'>\s]+)''',
+            caseSensitive: false)
+        .allMatches(c)) {
+      add(m.group(1) ?? '');
+    }
+    return out;
+  }
+
+  /// 在画廊里找 [url] 是第几张。
+  ///
+  /// 不能直接比字符串：Markdown 解析器吐出来的 uri 对中文 / 空格是**百分号编码**
+  /// 过的，而我们从原文里抠出来的是原始字符，`==` 对不上（会退回到第一张，
+  /// 表现成「点了第三张却从第一张开始看」）。所以退一步比**末段文件名**。
+  int _galleryIndexOf(List<String> gallery, String url) {
+    final t = _urlTail(url);
+    for (var i = 0; i < gallery.length; i++) {
+      if (gallery[i] == url || _urlTail(gallery[i]) == t) return i;
+    }
+    return -1;
+  }
+
+  /// 从 URL 里取文件名（解码过 —— 中文名要能看到中文）
+  String _urlTail(String u) {
+    try {
+      final segs = Uri.parse(u).pathSegments;
+      if (segs.isNotEmpty) return segs.last;
+    } catch (_) {
+      // 解析不了就当普通路径处理
+    }
+    return baseName(u);
   }
 
   // ------------------------------------------------------- 上一篇 / 下一篇
@@ -335,23 +404,6 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
     final repo = ref.read(noteRepoProvider);
     final title = titleFromFileName(_path);
 
-    if (widget.imageOnly) {
-      return Scaffold(
-        appBar: AppBar(title: Text(baseName(_path))),
-        body: Center(
-          child: InteractiveViewer(
-            maxScale: 6,
-            child: CachedNetworkImage(
-              imageUrl: repo?.resolveUrl(_path, baseName(_path)) ?? '',
-              httpHeaders: repo?.authHeaders ?? const {},
-              placeholder: (_, __) => const CircularProgressIndicator(),
-              errorWidget: (_, __, ___) => const Icon(Icons.broken_image_outlined, size: 48),
-            ),
-          ),
-        ),
-      );
-    }
-
     return Scaffold(
       appBar: AppBar(
         title: Text(title, overflow: TextOverflow.ellipsis),
@@ -452,6 +504,13 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                           onTapLink: (text, href, title) {},
                           imageBuilder: (uri, title, alt) {
                             final resolved = uri.hasScheme ? uri : _resolve(uri.toString());
+                            final url = resolved.toString();
+                            // v1.7.0：点开一张图，能左右划着看**本篇的其它图**。
+                            // 原来这里写死 `images: [resolved]` —— 只有一张，滑不动；
+                            // 而「视频」模块里点图片是可以左右滑的。用户要求两边一致。
+                            final gallery = _imageUrls();
+                            final at = gallery.isEmpty ? 0 : _galleryIndexOf(gallery, url);
+                            final list = gallery.isEmpty ? <String>[url] : gallery;
                             return Padding(
                               padding: const EdgeInsets.symmetric(vertical: 8),
                               child: ClipRRect(
@@ -459,10 +518,10 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                                 child: GestureDetector(
                                   onTap: () => Navigator.of(context).push(MaterialPageRoute(
                                     builder: (_) => ImageViewerPage(
-                                      images: [resolved.toString()],
+                                      images: list,
                                       headers: repo?.authHeaders ?? const {},
-                                      initialIndex: 0,
-                                      titles: [baseName(resolved.path)],
+                                      initialIndex: at < 0 ? 0 : at,
+                                      titles: list.map(_urlTail).toList(),
                                     ),
                                   )),
                                   child: CachedNetworkImage(

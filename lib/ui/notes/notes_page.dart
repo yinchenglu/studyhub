@@ -16,6 +16,7 @@ import '../common/html_view_page.dart';
 import '../common/pdf_view_page.dart';
 import '../common/sort_menu.dart';
 import '../home/login_page.dart';
+import '../media/image_viewer_page.dart';
 import 'note_edit_page.dart';
 import 'note_export.dart';
 import 'note_read_page.dart';
@@ -530,9 +531,7 @@ class NotesPageState extends ConsumerState<NotesPage> {
       return;
     }
     if (FileTypes.isImage(e.name)) {
-      if (!mounted) return;
-      await Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => NoteReadPage(path: e.path, imageOnly: true)));
+      await _openImage(e);
       return;
     }
     if (FileTypes.isReadableText(e.name)) {
@@ -544,6 +543,36 @@ class NotesPageState extends ConsumerState<NotesPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(const SnackBar(content: Text('这个文件类型暂不支持预览')));
+  }
+
+  /// 预览图片（v1.7.0）。
+  ///
+  /// 以前这里走的是 `NoteReadPage(imageOnly: true)` —— 一个只会显示**这一张**
+  /// 图的简易页：没有左右滑动、没有横竖屏切换、没有下载。而「视频」模块里点图片
+  /// 用的是 `ImageViewerPage`，那三样都有。用户要求两边一致，所以改成同一个页面。
+  ///
+  /// 顺手把「同目录的所有图片」一起传进去：在视频模块里点一张图可以左右划着看
+  /// 同目录的其它图，笔记这边也照这个来 —— 否则「一样」只做到了一半。
+  /// 图片列表直接用**当前已加载的目录内容**（`_shown`，已按当前排序），
+  /// 不再多发一次列目录请求。
+  Future<void> _openImage(DavEntry e) async {
+    final repo = ref.read(noteRepoProvider);
+    if (repo == null) return;
+    final imgs =
+        _shown.where((x) => !x.isDir && FileTypes.isImage(x.name)).toList();
+    if (imgs.isEmpty) return;
+    var idx = imgs.indexWhere((x) => x.path == e.path);
+    if (idx < 0) idx = 0;
+    await AppDb.instance.touchNote(e.path);
+    if (!mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ImageViewerPage(
+        images: imgs.map((x) => repo.resolveUrl(x.path, baseName(x.path))).toList(),
+        headers: repo.authHeaders,
+        initialIndex: idx,
+        titles: imgs.map((x) => x.name).toList(),
+      ),
+    ));
   }
 
   // ------------------------------------------------------------- 查找
