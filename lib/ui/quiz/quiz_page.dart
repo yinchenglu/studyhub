@@ -462,7 +462,7 @@ class QuizPageState extends ConsumerState<QuizPage> {
                 child: Row(
                   children: [
                     Expanded(child: Text(ref0.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
-                    Text('${ref0.count} 题', style: const TextStyle(12)),
+                    Text('${ref0.count} 题', style: const TextStyle(fontSize: 12)),
                   ],
                 ),
               ),
