@@ -717,7 +717,7 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
           icon: Icon(q.isEssay ? Icons.menu_book_outlined : Icons.check),
           label: Text(q.isEssay ? '对照参考答案' : '确认答案'),
         ),
-      if (q.isEssay && _revealedHere && !_isExam) ...[
+      if (q.isEssay && _revealedHere && !_isExam && !_browseOn) ...[
         const SizedBox(height: 4),
         Text(
           '问答题没法自动判分，请你自己对照参考答案判断：',

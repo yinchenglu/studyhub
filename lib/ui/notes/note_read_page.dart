@@ -108,6 +108,16 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
     return Uri.parse(repo.resolveUrl(_path, src));
   }
 
+  /// 把 markdown 里的相对图片地址解析成多个候选 URL（多基准路径兜底）。
+  ///
+  /// 候选顺序：当前 md 目录 → 笔记根目录。
+  /// 用于图片加载：第一个能加载成功的就用。
+  List<String> _resolveCandidates(String src) {
+    final repo = ref.read(noteRepoProvider);
+    if (repo == null) return [src];
+    return repo.resolveUrlCandidates(_path, src);
+  }
+
   // ------------------------------------------------------- 正文里的图片
 
   /// 这一篇正文里引用到的**所有**图片地址，按出现顺序、去重。
@@ -521,14 +531,13 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                           selectable: true,
                           onTapLink: (text, href, title) {},
                           imageBuilder: (uri, title, alt) {
-                            final resolved = uri.hasScheme ? uri : _resolve(uri.toString());
-                            final url = resolved.toString();
-                            // v1.7.0：点开一张图，能左右划着看**本篇的其它图**。
-                            // 原来这里写死 `images: [resolved]` —— 只有一张，滑不动；
-                            // 而「视频」模块里点图片是可以左右滑的。用户要求两边一致。
+                            final raw = uri.toString();
+                            final candidates = uri.hasScheme ? [raw] : _resolveCandidates(raw);
+                            // gallery 用第一个候选建索引（左右划切换靠文件名匹配）
+                            final primaryUrl = candidates.first;
                             final gallery = _imageUrls();
-                            final at = gallery.isEmpty ? 0 : _galleryIndexOf(gallery, url);
-                            final list = gallery.isEmpty ? <String>[url] : gallery;
+                            final at = gallery.isEmpty ? 0 : _galleryIndexOf(gallery, primaryUrl);
+                            final list = gallery.isEmpty ? <String>[primaryUrl] : gallery;
                             return Padding(
                               padding: const EdgeInsets.symmetric(vertical: 8),
                               child: ClipRRect(
@@ -542,35 +551,10 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                                       titles: list.map(_urlTail).toList(),
                                     ),
                                   )),
-                                  child: CachedNetworkImage(
-                                    imageUrl: resolved.toString(),
-                                    httpHeaders: repo?.authHeaders ?? const {},
-                                    fit: BoxFit.contain,
-                                    placeholder: (_, __) => Container(
-                                      height: 120,
-                                      alignment: Alignment.center,
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHighest
-                                          .withValues(alpha: 0.4),
-                                      child: const SizedBox(
-                                          height: 20,
-                                          width: 20,
-                                          child: CircularProgressIndicator(strokeWidth: 2)),
-                                    ),
-                                    errorWidget: (_, url, err) => Container(
-                                      height: 90,
-                                      alignment: Alignment.center,
-                                      decoration: BoxDecoration(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .errorContainer
-                                            .withValues(alpha: 0.4),
-                                        borderRadius: BorderRadius.circular(10),
-                                      ),
-                                      child: Text('图片加载失败：${baseName(url)}',
-                                          style: const TextStyle(fontSize: 12)),
-                                    ),
+                                  child: _MultiCandidateImage(
+                                    candidates: candidates,
+                                    headers: repo?.authHeaders ?? const {},
+                                    baseName: baseName(primaryUrl),
                                   ),
                                 ),
                               ),
@@ -640,5 +624,108 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('删除失败：$e')));
     }
+  }
+}
+
+/// 多候选 URL 图片组件：按顺序尝试每个候选地址，第一个加载成功就显示。
+///
+/// 用途：解决第三方笔记库（如 knots3d）的图片路径是相对笔记根目录写的，
+/// 而 App 默认按「当前 md 所在目录」解析导致子目录里的 md 找不到根目录图片的问题。
+class _MultiCandidateImage extends StatefulWidget {
+  final List<String> candidates;
+  final Map<String, String> headers;
+  final String baseName;
+  const _MultiCandidateImage({
+    required this.candidates,
+    required this.headers,
+    required this.baseName,
+  });
+
+  @override
+  State<_MultiCandidateImage> createState() => _MultiCandidateImageState();
+}
+
+class _MultiCandidateImageState extends State<_MultiCandidateImage> {
+  int _idx = 0; // 当前正在试第几个候选
+  bool _loading = true;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 只有一个候选时不需要特殊处理，直接用 CachedNetworkImage
+    if (widget.candidates.length <= 1) {
+      _loading = false;
+    }
+  }
+
+  void _onError(Object err) {
+    if (!mounted) return;
+    if (_idx + 1 < widget.candidates.length) {
+      // 还有下一个候选，切过去
+      setState(() {
+        _idx++;
+        _loading = true;
+        _failed = false;
+      });
+    } else {
+      // 所有候选都失败了
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _failed = true;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final url = widget.candidates[_idx];
+    final scheme = Theme.of(context).colorScheme;
+
+    if (_failed) {
+      return Container(
+        height: 90,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: scheme.errorContainer.withValues(alpha: 0.4),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text('图片加载失败：${widget.baseName}',
+            style: const TextStyle(fontSize: 12)),
+      );
+    }
+
+    return CachedNetworkImage(
+      imageUrl: url,
+      httpHeaders: widget.headers,
+      fit: BoxFit.contain,
+      placeholder: (_, __) => Container(
+        height: 120,
+        alignment: Alignment.center,
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        child: const SizedBox(
+          height: 20,
+          width: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+      errorWidget: (_, __, ___) {
+        // 延迟一帧再切换候选，避免在 build 期间 setState
+        WidgetsBinding.instance.addPostFrameCallback((_) => _onError(__));
+        // 当前候选失败期间继续显示 placeholder
+        return Container(
+          height: 120,
+          alignment: Alignment.center,
+          color: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+          child: const SizedBox(
+            height: 20,
+            width: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        );
+      },
+    );
   }
 }

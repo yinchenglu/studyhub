@@ -23,6 +23,7 @@ class IdRegionData {
   final Map<String, String> p;
   final Map<String, String> c;
   final Map<String, String> d;
+  final Map<String, dynamic> history;
 
   const IdRegionData({
     required this.ver,
@@ -30,6 +31,7 @@ class IdRegionData {
     required this.p,
     required this.c,
     required this.d,
+    this.history = const {},
   });
 
   static IdRegionData? _cache;
@@ -54,6 +56,7 @@ class IdRegionData {
       p: asMap(m['p']),
       c: asMap(m['c']),
       d: asMap(m['d']),
+      history: m['history'] is Map ? (m['history'] as Map).cast<String, dynamic>() : <String, dynamic>{},
     );
     _cache = data;
     return data;
@@ -79,6 +82,7 @@ class IdInfo {
   /// district / city / province / none
   final String level;
   final bool changed;
+  final bool history;
   final String birth;
   final String gender;
   final int? age;
@@ -99,6 +103,7 @@ class IdInfo {
     this.addr = '',
     this.level = 'none',
     this.changed = false,
+    this.history = false,
     this.birth = '',
     this.gender = '',
     this.age,
@@ -176,13 +181,15 @@ IdInfo parseIdCard(String raw, IdRegionData reg) {
   final dateOk = y >= 1800 && y <= 2200 && _isValidDate(y, mo, da);
   final checkOk = given == want;
 
-  // -------- 区划码 -> 户籍地：逐级退，绝不瞎猜 --------
+  // -------- 区划码 -> 户籍地：先查现行，再查历史码，最后逐级退 --------
   var level = 'none';
   var changed = false;
   var addr = '未知（区划码 $area 不在表里）';
   var prov = '';
   var city = '';
   var dist = '';
+  var viaHistory = false;
+  var histNote = '';
   final hitD = reg.d[area];
   if (hitD != null) {
     addr = hitD;
@@ -192,23 +199,61 @@ IdInfo parseIdCard(String raw, IdRegionData reg) {
     dist = parts['dist'] ?? '';
     level = 'district';
   } else {
-    final c4 = area.substring(0, 4);
-    final hitC = reg.c[c4];
-    if (hitC != null) {
-      addr = hitC;
-      changed = true;
-      level = 'city';
-      prov = reg.p[area.substring(0, 2)] ?? '';
-      city = hitC;
-    } else {
-      final p2 = reg.p[area.substring(0, 2)];
-      if (p2 != null) {
-        addr = p2;
+    // 历史码：旧码 → 现归属（撤销 / 更名 / 合并）
+    final hist = reg.history[area];
+    if (hist is Map) {
+      final nowList = (hist['now'] as List?)?.cast<Map>() ?? [];
+      Map? pick;
+      for (final n in nowList) {
+        if (n['current'] == true) {
+          pick = n;
+          break;
+        }
+      }
+      pick ??= nowList.isNotEmpty ? nowList.first : null;
+      if (pick != null) {
+        final addrStr = (pick['addr'] as String?) ?? '';
+        final parts = _splitAddr(addrStr);
+        prov = parts['prov'] ?? '';
+        city = parts['city'] ?? '';
+        dist = parts['dist'] ?? '';
+        addr = addrStr;
         changed = true;
-        level = 'province';
-        prov = p2;
+        level = dist.isNotEmpty ? 'district' : (city.isNotEmpty ? 'city' : 'province');
+        final oldName = (hist['name'] as String?) ?? '';
+        final lastYear = (hist['lastYear']?.toString()) ?? '';
+        final desc = ((hist['desc'] as String?) ?? '').trim();
+        final multi = hist['multi'] == true;
+        final b = StringBuffer();
+        b.write('前 6 位『$area』是历史区划码');
+        if (oldName.isNotEmpty) b.write('（原 $oldName）');
+        if (lastYear.isNotEmpty) b.write('，约 $lastYear 年发生变更');
+        b.write('，现属 $addr。');
+        if (multi) b.write('（原区划已撤销或拆分，辖区现分属该市多个区县）');
+        if (desc.isNotEmpty) b.write(' 变更说明：$desc');
+        histNote = b.toString();
+        viaHistory = true;
+      }
+    }
+    if (!viaHistory) {
+      final c4 = area.substring(0, 4);
+      final hitC = reg.c[c4];
+      if (hitC != null) {
+        addr = hitC;
+        changed = true;
+        level = 'city';
+        prov = reg.p[area.substring(0, 2)] ?? '';
+        city = hitC;
       } else {
-        changed = true;
+        final p2 = reg.p[area.substring(0, 2)];
+        if (p2 != null) {
+          addr = p2;
+          changed = true;
+          level = 'province';
+          prov = p2;
+        } else {
+          changed = true;
+        }
       }
     }
   }
@@ -233,13 +278,17 @@ IdInfo parseIdCard(String raw, IdRegionData reg) {
   if (!dateOk) {
     notes.add('出生日期 ${s.substring(6, 14)} 不是一个合法日期，请核对。');
   }
-  if (changed && level != 'none') {
-    notes.add('前 6 位『$area』在现行区划表里查不到区县，只退到了'
-        '${level == 'city' ? '地级市' : '省级'}。'
-        '多半是这期间发生了撤县设区 / 撤地设市 / 更名，老号的区划码已经不在了。');
-  }
-  if (level == 'none') {
-    notes.add('前 6 位『$area』完全查不到，可能不是大陆户籍身份证。');
+  if (viaHistory) {
+    notes.add(histNote);
+  } else {
+    if (changed && level != 'none') {
+      notes.add('前 6 位『$area』在现行区划表里查不到区县，只退到了'
+          '${level == 'city' ? '地级市' : '省级'}。'
+          '多半是这期间发生了撤县设区 / 撤地设市 / 更名，老号的区划码已经不在了。');
+    }
+    if (level == 'none') {
+      notes.add('前 6 位『$area』完全查不到，可能不是大陆户籍身份证。');
+    }
   }
   final p2 = area.substring(0, 2);
   if (p2 == '71' || p2 == '81' || p2 == '82') {
@@ -263,6 +312,7 @@ IdInfo parseIdCard(String raw, IdRegionData reg) {
     addr: addr,
     level: level,
     changed: changed,
+    history: viaHistory,
     birth: '$yy-$mm-$dd',
     gender: seq % 2 == 1 ? '男' : '女',
     age: age,
@@ -344,7 +394,9 @@ class _IdCardPageState extends State<IdCardPage> with SingleTickerProviderStateM
     final reg = _reg;
     return ToolScaffold(
       title: '身份证查户籍',
-      subtitle: reg == null ? '正在读取区划码表…' : '区划码表 ${reg.ver} · 2978 个区县',
+      subtitle: reg == null
+          ? '正在读取区划码表…'
+          : '区划码表 ${reg.ver} · 现行 ${reg.d.length} 区县 + ${reg.history.length} 历史码',
       actions: [
         IconButton(
           tooltip: '说明',
@@ -446,7 +498,15 @@ class _IdCardPageState extends State<IdCardPage> with SingleTickerProviderStateM
                 ),
               ],
             ),
-            if (r.changed && r.level != 'none')
+            if (r.history)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  '历史区划码 · 已顺着变更链查到现属',
+                  style: TextStyle(fontSize: 12, color: scheme.tertiary),
+                ),
+              )
+            else if (r.changed && r.level != 'none')
               Padding(
                 padding: const EdgeInsets.only(top: 2),
                 child: Text(
@@ -600,8 +660,10 @@ class _IdCardPageState extends State<IdCardPage> with SingleTickerProviderStateM
       '· 15 位老号会先补成 18 位（出生年补「19」，重算校验位），前 6 位不动。',
       '',
       '查不到 / 对不上是正常的',
-      '· 行政区划会撤并改名，老号码里的区划码在现行表里可能已经不存在；'
-          '撤并的对应关系没有公开权威对照表，所以只能退到上一级，不能假装知道。',
+      '· 行政区划会撤并改名，老号码里的区划码在现行表里可能已经不存在。'
+          '本工具内置了 1981–2025 全量变更数据，绝大多数历史码（如秭归县旧码 422727）'
+          '都能顺着变更链查到现属哪里，并附上变更说明（批复文号 / 日期）。',
+      '· 极少数无权威记录的旧码仍可能只退到上一级，已明确标注，不会假装知道。',
       '· 查得到也不代表这个号码真实存在，只说明格式和校验位合法。',
       '· 港澳台前两位是 71 / 81 / 82，不适用大陆居民身份证号规则。',
       '',

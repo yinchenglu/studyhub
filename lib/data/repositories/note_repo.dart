@@ -116,6 +116,27 @@ class NoteRepo {
     return dav.urlFor(joinPath(dir, clean));
   }
 
+  /// 把 markdown 里的相对图片路径解析成**多个候选** WebDAV 地址。
+  ///
+  /// 按优先级返回候选列表：
+  ///   1. 当前 md 所在目录（App 自己上传的图片在这里）
+  ///   2. 笔记根目录（第三方笔记库如 knots3d，图片常放在根目录的 image/ 下）
+  ///
+  /// 调用方（如 CachedNetworkImage）按顺序尝试，第一个能加载的就用。
+  List<String> resolveUrlCandidates(String notePath, String src) {
+    if (src.startsWith('http://') || src.startsWith('https://')) return [src];
+    final clean = src.replaceAll(RegExp(r'^\./'), '');
+    final dir = parentOf(notePath);
+    final candidates = <String>[];
+    // 候选1：当前 md 目录
+    candidates.add(dav.urlFor(joinPath(dir, clean)));
+    // 候选2：笔记根目录（当 md 在子目录但图片相对根目录写时）
+    if (dir.isNotEmpty) {
+      candidates.add(dav.urlFor(clean));
+    }
+    return candidates;
+  }
+
   /// 笔记里用到的图片域名（给 cached_network_image 带鉴权头）
   Map<String, String> get authHeaders => dav.headers;
 

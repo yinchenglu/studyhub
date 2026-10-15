@@ -63,22 +63,39 @@ class _PdfViewPageState extends State<PdfViewPage> {
   String? _error;
   bool _ready = false;
 
+  /// v1.8.0：翻页阅读模式（一页一页翻，而不是连续滚动）
+  bool _pageMode = false;
+  int _currentPage = 1; // 1-based，和 SfPdfViewer.jumpToPage 一致
+  int _totalPages = 0;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title, overflow: TextOverflow.ellipsis),
         actions: [
-          IconButton(
-            tooltip: '回到第 1 页',
-            onPressed: _ready ? () => _controller.jumpToPage(1) : null,
-            icon: const Icon(Icons.vertical_align_top),
-          ),
-          IconButton(
-            tooltip: '适应宽度',
-            onPressed: _ready ? () => _controller.zoomLevel = 1 : null,
-            icon: const Icon(Icons.fit_screen_outlined),
-          ),
+          if (_ready && !_pageMode)
+            IconButton(
+              tooltip: '回到第 1 页',
+              onPressed: () => _controller.jumpToPage(1),
+              icon: const Icon(Icons.vertical_align_top),
+            ),
+          if (_ready)
+            IconButton(
+              tooltip: _pageMode ? '切换到滚动模式' : '切换到翻页模式',
+              onPressed: () => setState(() {
+                _pageMode = !_pageMode;
+                if (_pageMode) _syncPageNumber();
+              }),
+              icon: Icon(_pageMode ? Icons.view_stream_outlined : Icons.menu_book_outlined),
+            ),
+          if (!_pageMode) ...[
+            IconButton(
+              tooltip: '适应宽度',
+              onPressed: () => _controller.zoomLevel = 1,
+              icon: const Icon(Icons.fit_screen_outlined),
+            ),
+          ],
         ],
       ),
       body: _error != null ? _errorView() : _viewer(),
@@ -86,6 +103,50 @@ class _PdfViewPageState extends State<PdfViewPage> {
   }
 
   Widget _viewer() {
+    // 翻页模式：SfPdfViewer 仍然在底层渲染，但外层用 Column 包住，
+    // 底部加一个固定的翻页工具栏；并捕获 SfPdfViewer 的 scrollView
+    // 监听翻页（通过 pageNumber 变化）。
+    final viewer = _buildViewer();
+    if (!_pageMode) return viewer;
+
+    // 翻页模式下的布局
+    return Column(
+      children: [
+        Expanded(
+          child: Stack(
+            children: [
+              // 底部指示器提示
+              if (_ready) ...[
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 12,
+                  child: IgnorePointer(
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          '第 $_currentPage / $_totalPages 页',
+                          style: const TextStyle(color: Colors.white, fontSize: 13),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        _pageNavBar(),
+      ],
+    );
+  }
+
+  Widget _buildViewer() {
     // 本地文件直接读，最稳
     final f = widget.file;
     if (f != null) {
@@ -122,9 +183,77 @@ class _PdfViewPageState extends State<PdfViewPage> {
     );
   }
 
+  /// 翻页模式下的底部工具栏
+  Widget _pageNavBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        border: Border(
+          top: BorderSide(
+            color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5),
+            width: 0.6,
+          ),
+        ),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Row(
+          children: [
+            IconButton(
+              tooltip: '第一页',
+              onPressed: _currentPage > 1 ? () => _goPage(-_currentPage + 1) : null,
+              icon: const Icon(Icons.first_page),
+            ),
+            IconButton(
+              tooltip: '上一页',
+              onPressed: _currentPage > 1 ? () => _goPage(-1) : null,
+              icon: const Icon(Icons.chevron_left, size: 28),
+            ),
+            const Spacer(),
+            Text('第 $_currentPage / $_totalPages 页', style: const TextStyle(fontSize: 14)),
+            const Spacer(),
+            IconButton(
+              tooltip: '下一页',
+              onPressed: _currentPage < _totalPages ? () => _goPage(1) : null,
+              icon: const Icon(Icons.chevron_right, size: 28),
+            ),
+            IconButton(
+              tooltip: '最后一页',
+              onPressed: _currentPage < _totalPages
+                  ? () => _goPage(_totalPages - _currentPage)
+                  : null,
+              icon: const Icon(Icons.last_page),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _setReady() {
     if (!mounted) return;
-    setState(() => _ready = true);
+    // 获取总页数（SfPdfViewer 加载完成后才能读到）
+    _totalPages = _controller.pageCount;
+    setState(() {
+      _ready = true;
+      if (_pageMode) _syncPageNumber();
+    });
+  }
+
+  /// 同步当前页码（翻页模式下使用）
+  void _syncPageNumber() {
+    try {
+      setState(() => _currentPage = _controller.pageNumber);
+    } catch (_) {}
+  }
+
+  /// 翻页：上一页 / 下一页
+  void _goPage(int delta) {
+    final target = _currentPage + delta;
+    if (target < 1 || target > _totalPages) return;
+    _controller.jumpToPage(target);
+    setState(() => _currentPage = target);
   }
 
   void _onFail(String desc) {

@@ -567,7 +567,7 @@ class _FavoriteSection extends ConsumerWidget {
 
     return fav.maybeWhen(
       data: (list) {
-        if (list.isEmpty) return const SizedBox.shrink();
+        // v1.8.0：即使收藏为空也始终显示「我的收藏」区域（用户要求）
         final notes = list.where((e) => e.isNote).toList();
         final media = list.where((e) => !e.isNote).toList();
         return Padding(
@@ -611,7 +611,32 @@ class _FavoriteSection extends ConsumerWidget {
           ),
         );
       },
-      orElse: () => const SizedBox.shrink(),
+      orElse: () => Padding(
+        padding: const EdgeInsets.only(top: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text('我的收藏', style: text.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+                const SizedBox(width: 6),
+                Text('0 项 · 长按可取消',
+                    style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Center(
+                  child: Text('还没有收藏，在笔记或视频里长按文件/文件夹即可收藏',
+                      style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

@@ -431,7 +431,23 @@ class QuizPageState extends ConsumerState<QuizPage> {
   // ---------------------------------------------------------------- 菜单
 
   /// 单套题库的菜单：既能只刷这一套，也能把整个目录合并起来刷
-  void _openBankMenu(QuizBankRef ref0) {
+  ///
+  /// v1.8.0：题库只含填空/问答题时，只显示"刷题模式"一项 ——
+  /// 这种题没法机判对错，做题模式天然不合适（填空能半判、问答完全不能自评）。
+  /// 既然用户也明说"只支持刷题模式"，菜单就别再让人误选了。
+  void _openBankMenu(QuizBankRef ref0) async {
+    bool browseOnly = false;
+    try {
+      final repo = ref.read(quizRepoProvider);
+      if (repo != null) {
+        final bank = await repo.loadBankFile(ref0.path);
+        final qs = bank.allQuestions();
+        if (qs.isNotEmpty && qs.every((q) => q.isTextInput)) {
+          browseOnly = true;
+        }
+      }
+    } catch (_) {}
+    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -446,9 +462,14 @@ class QuizPageState extends ConsumerState<QuizPage> {
                 child: Row(
                   children: [
                     Expanded(child: Text(ref0.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
-                    Text('${ref0.count} 题', style: const TextStyle(fontSize: 12)),
+                    Text('${ref0.count} 题', style: const TextStyle(12)),
                   ],
                 ),
+              ),
+              if (browseOnly) Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Text('这套题库只含填空 / 简答题，只支持「刷题模式」',
+                    style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
               ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
@@ -458,24 +479,30 @@ class QuizPageState extends ConsumerState<QuizPage> {
                   borderRadius: BorderRadius.circular(3),
                 ),
               ),
-              const _SheetLabel('刷这一套'),
-              _mode(Icons.list_alt, '顺序练', '按题库原顺序，每次 ${ref.read(quizPrefsProvider).perRound} 题', () => _startSingle(ref0, _Mode.order)),
-              _mode(Icons.shuffle, '随机练', '打乱顺序，每次 ${ref.read(quizPrefsProvider).perRound} 题', () => _startSingle(ref0, _Mode.random)),
-              _mode(Icons.auto_awesome, '智能复习', '错题优先 + 没做过的题优先', () => _startSingle(ref0, _Mode.smart)),
-              _mode(Icons.fiber_new_outlined, '只刷没刷过的', '跳过已经刷过的题目', () => _startSingle(ref0, _Mode.fresh)),
-              _mode(Icons.replay, '只练错题', '把这一套的错题重做一遍', () => _startSingle(ref0, _Mode.wrongOnly)),
-              // v1.5.0 新增：刷题模式。放在「只练错题」之后、「模拟考试」之前 ——
-              // 前五个都是「做题」，这个是「不作曲只看」，用图标和措辞隔开。
-              _mode(Icons.menu_book_outlined, '刷题模式（只看不做）',
-                  '题目、正确答案、解析一起摊开，像看书一样一页页翻', () => _startBrowse(ref0)),
-              _mode(Icons.timer_outlined, '模拟考试', '${ref.read(quizPrefsProvider).examCount} 题 / ${ref.read(quizPrefsProvider).examMinutes} 分钟', () => _setupExam(ref0)),
-              if (_banks.length > 1) ...[
+              if (browseOnly) ...[
+                const _SheetLabel('刷这一套'),
+                _mode(Icons.menu_book_outlined, '刷题模式（只看不做）',
+                    '题目、正确答案、解析一起摊开，像看书一样一页页翻', () => _startBrowse(ref0)),
+              ] else ...[
+                const _SheetLabel('刷这一套'),
+                _mode(Icons.list_alt, '顺序练', '按题库原顺序，每次 ${ref.read(quizPrefsProvider).perRound} 题', () => _startSingle(ref0, _Mode.order)),
+                _mode(Icons.shuffle, '随机练', '打乱顺序，每次 ${ref.read(quizPrefsProvider).perRound} 题', () => _startSingle(ref0, _Mode.random)),
+                _mode(Icons.auto_awesome, '智能复习', '错题优先 + 没做过的题优先', () => _startSingle(ref0, _Mode.smart)),
+                _mode(Icons.fiber_new_outlined, '只刷没刷过的', '跳过已经刷过的题目', () => _startSingle(ref0, _Mode.fresh)),
+                _mode(Icons.replay, '只练错题', '把这一套的错题重做一遍', () => _startSingle(ref0, _Mode.wrongOnly)),
+                // v1.5.0 新增：刷题模式。放在「只练错题」之后、「模拟考试」之前 ——
+                // 前五个都是「做题」，这个是「不作曲只看」，用图标和措辞隔开。
+                _mode(Icons.menu_book_outlined, '刷题模式（只看不做）',
+                    '题目、正确答案、解析一起摊开，像看书一样一页页翻', () => _startBrowse(ref0)),
+                _mode(Icons.timer_outlined, '模拟考试', '${ref.read(quizPrefsProvider).examCount} 题 / ${ref.read(quizPrefsProvider).examMinutes} 分钟', () => _setupExam(ref0)),
+                if (_banks.length > 1) ...[
+                  const Divider(height: 18),
+                  const _SheetLabel('跨题库'),
+                  _mode(Icons.merge_type, '合并整个目录一起刷', '把这 ${_banks.length} 套题库（共 ${_banks.fold<int>(0, (a, b) => a + b.count)} 题）混在一起练', _openDirMenu),
+                ],
                 const Divider(height: 18),
-                const _SheetLabel('跨题库'),
-                _mode(Icons.merge_type, '合并整个目录一起刷', '把这 ${_banks.length} 套题库（共 ${_banks.fold<int>(0, (a, b) => a + b.count)} 题）混在一起练', _openDirMenu),
+                _mode(Icons.restart_alt, '重置这一套的进度', '把「已刷」清零，错题本不受影响', () => _resetProgress([ref0.path]), danger: true),
               ],
-              const Divider(height: 18),
-              _mode(Icons.restart_alt, '重置这一套的进度', '把「已刷」清零，错题本不受影响', () => _resetProgress([ref0.path]), danger: true),
               const SizedBox(height: 8),
             ],
           ),
