@@ -198,4 +198,38 @@ flutter:
     # gb2260.json 是 GB/T 2260 的行政区划三级码表（34 省 / 342 市 / 2978 区县，
     # 压缩后 75 KB），给「身份证查户籍」用。放在 assets 里而不是写成 Dart 常量，
     # 是为了以后行政区划调整时**只换这一个 json**，不用改代码。
+    #
+    # v1.8.0 又加了三个（都在这个目录下，目录声明会自动带上，不用逐条列）：
+    #   pinyin_sort.txt   6763 个 GB2312 常用字的拼音表（46 KB），
+    #                     给「按名称排序要和电脑一致」用。见 core/natural_sort.dart。
+    #   id_region.json    身份证户籍用的区县表
+    #   kin.json          亲戚称呼全表（约 300 KB）—— 由 mumuy/relationship
+    #                     （MIT）离线跑出来再压过的**静态**表，App 里只查表、
+    #                     不做关系推理。生成链路见 .workbuddy/gen_kin_part.js
+    #                     + .workbuddy/gen_kin.py。只有点进「单位换算 → 亲戚
+    #                     称呼」才懒加载（kin_data.dart），冷启动不付这个代价。
     - assets/data/
+
+  # ---------- 翻页时钟的字体（v1.8.0 新增）----------
+  #
+  # 用户第 8 条要求「翻页时钟换一下比较方正的字体」。这里打包两款
+  # 数字方正的显示体（都是 Google Fonts 的 OFL 授权，可自由随包分发），
+  # 页面右上角给一个「字体」按钮现场切换 —— 到底哪款算「方正」
+  # 各人标准不同，让用户自己挑比替他猜稳。
+  #
+  #   FlipSquare = Chakra Petch Bold：方块感最强，转角平直、笔画厚重
+  #   FlipTall   = Bebas Neue        ：瘦高条，出发牌 / 记分牌那种老式翻页钟味道
+  #
+  # ⚠️ 这两款只**拉丁字形**（数字 + 冒号足够用），中文那两行日期不受影响，
+  #    仍然走系统字体。字体只通过 TextStyle.fontFamily 显式引用，
+  #    不会变成全局 UI 字体 —— 跟上面 NotoSansSC「只当资源不当字体」是一个道理。
+  # ⚠️ 加新字体：文件丢进 assets/fonts/，这里加一组 family 即可；
+  #    但 HTML 版（tool_web）那边要同步，它是把 ttf 转 base64 内嵌的。
+  fonts:
+    - family: FlipSquare
+      fonts:
+        - asset: assets/fonts/ChakraPetch-Bold.ttf
+          weight: 700
+    - family: FlipTall
+      fonts:
+        - asset: assets/fonts/BebasNeue-Regular.ttf

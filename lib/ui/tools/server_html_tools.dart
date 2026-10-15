@@ -7,6 +7,7 @@ import '../../data/dav/webdav_client.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
 import '../common/html_view_page.dart';
+import 'tools_page.dart';
 
 /// 服务器上的一个 html 小工具
 class ServerToolEntry {
@@ -225,15 +226,19 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
         ),
         for (final k in keys) ...[
           Padding(
-            // v1.7.0：分类标题的上下留白也压一档（16/8 → 12/6）
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+            // v1.8.0 按用户要求「各个类别之间的间隔太远，缩小一些」：
+            // 上下留白 12/6 → 5/3（合计砍掉 10px）。
+            // 这个间距之所以显眼，是因为它 = 上内边距 + 标题整行高 + 下内边距
+            // ≈ 5 + 18 + 3 = 26px，而一张卡片本身才 34px 高 ——
+            // 近乎一整个卡片的高度都用来当分类之间的空白了。
+            padding: const EdgeInsets.fromLTRB(16, 5, 16, 3),
             child: Row(
               children: [
-                Icon(Icons.folder_rounded, size: 16, color: scheme.primary),
-                const SizedBox(width: 6),
+                Icon(Icons.folder_rounded, size: 15, color: scheme.primary),
+                const SizedBox(width: 5),
                 Text(k,
                     style: TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600, color: scheme.primary)),
+                        fontSize: 12.5, fontWeight: FontWeight.w600, color: scheme.primary)),
                 const SizedBox(width: 6),
                 Text('${_groups[k]!.length} 个',
                     style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
@@ -243,6 +248,7 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
           // v1.7.0：卡片布局跟内置工具箱**完全对齐** ——
           // 一行 3 个、图标与文字同一排、格子高度用 mainAxisExtent 钉死 34。
           // 之前用的是 childAspectRatio，高度会随屏幕宽度变，「压缩行距」看运气。
+          // v1.8.0：行间距 6 → 5，配合上面的留白一起收紧。
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: GridView.builder(
@@ -252,7 +258,7 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 3,
                 mainAxisExtent: 34,
-                mainAxisSpacing: 6,
+                mainAxisSpacing: 5,
                 crossAxisSpacing: 6,
               ),
               itemBuilder: (_, i) => _tile(_groups[k]![i], scheme),
@@ -265,7 +271,13 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
 
   Widget _tile(ServerToolEntry t, ColorScheme scheme) {
     final loose = t.category == '独立小工具';
-    final accent = loose ? const Color(0xFFEF9F27) : const Color(0xFF7F77DD);
+    // v1.8.0 按用户要求：图标换成**和内置小工具一样的那一套**。
+    // 名字能对上内置工具（`日期计算` / `二维码生成` / `LED屏幕`…）就直接借它的
+    // 图标和配色；对不上才用兜底的 web_asset —— 见 ToolsPage.iconForName 的注释。
+    final builtinIcon = ToolsPage.iconForName(t.name);
+    final builtinColor = ToolsPage.colorForName(t.name);
+    final icon = builtinIcon ?? (loose ? Icons.html : Icons.web_asset);
+    final accent = builtinColor ?? (loose ? const Color(0xFFEF9F27) : const Color(0xFF7F77DD));
     return Tooltip(
       // 卡片太小放不下完整路径，用 tooltip 补上（想知道服务器上的原文件名时能看到）
       message: baseName(t.path),
@@ -290,7 +302,7 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
             // 图标和文字放同一排（与内置工具箱一致）；文字放不下就整体缩小
             child: Row(
               children: [
-                Icon(loose ? Icons.html : Icons.web_asset, size: 14, color: accent),
+                Icon(icon, size: 16, color: accent),
                 const SizedBox(width: 4),
                 Expanded(
                   child: FittedBox(
@@ -299,7 +311,12 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
                     child: Text(
                       t.name,
                       maxLines: 1,
-                      style: TextStyle(fontSize: 12.5, height: 1.0, color: scheme.onSurface),
+                      softWrap: false,
+                      // v1.8.0 需求13：和内置工具页保持一致 —— 基准字号
+                      // 12.5 → 24（FittedBox 是 scaleDown，永远不会放大，
+                      // 所以基准字号就是字号上限），短名字顶满 34 高的格子，
+                      // 长名字照样按宽度自动缩。见 tools_page.dart 里的长注释。
+                      style: TextStyle(fontSize: 24, height: 1.05, color: scheme.onSurface),
                     ),
                   ),
                 ),

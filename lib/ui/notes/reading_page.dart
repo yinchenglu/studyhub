@@ -701,12 +701,18 @@ class _ReadingPageState extends ConsumerState<ReadingPage> {
                 hasPrev ? () => _siblingStep(-1) : null,
               ),
               _barBtn(Icons.chevron_left, '上一页', () => _turn(-1)),
-              // v1.7.0：图标原来标反了 —— 翻页状态给的是书本图标、滚动状态给的是
-              // 上下箭头，跟提示文字说的「当前模式」对不上。
-              // 现在统一成「点一下会切成什么」，跟 tooltip 一致。
+              // ★ v1.8.0 按用户明确要求再翻回来：图标表示**当前是哪种模式**。
+              //   上下滚动 → 上下箭头（swap_vert）
+              //   左右翻页 → 书本（menu_book）
+              //
+              // v1.7.0 那版是按「点一下会切成什么」做的（翻页时显示 swap_vert），
+              // 用户这次直接说「搞反了」—— 所以以**当前模式**为准。
+              // tooltip 里两种信息都写上，既不歧义也不用猜。
               _barBtn(
-                p.paged ? Icons.swap_vert : Icons.menu_book,
-                p.paged ? '现在是左右翻页，点一下切成上下滚动' : '现在是上下滚动，点一下切成左右翻页',
+                p.paged ? Icons.menu_book : Icons.swap_vert,
+                p.paged
+                    ? '当前是左右翻页，点一下切成上下滚动'
+                    : '当前是上下滚动，点一下切成左右翻页',
                 () => ref.read(readPrefsProvider.notifier).setPaged(!p.paged),
               ),
               _barBtn(

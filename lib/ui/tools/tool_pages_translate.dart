@@ -7,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'dict_view.dart';
 import 'tool_pages.dart';
 
 /// 在线翻译 / 词典
@@ -78,6 +79,21 @@ class _TranslatePageState extends State<TranslatePage> {
   bool _busy = false;
   String? _error;
   String _query = '';
+
+  /// 当前分页（v1.8.0 新增）。0=翻译 / 1=在线字典 / 2=在线词典。
+  ///
+  /// 用户第 11 条：「翻译、在线字典、在线词典**可以放一个界面一起，
+  /// 进行切换**」。所以这一页从「只做翻译」变成了三合一，
+  /// 后两页的内容在 `dict_view.dart` 里（那边是另一套完全不同的解析，
+  /// 见那个文件顶部的说明）。
+  int _tab = 0;
+
+  /// 分页的标题与副标题，顺序和 [_tab] 对应。
+  static const List<(String, String)> _tabInfo = <(String, String)>[
+    ('翻译', '英汉词典 + 句子翻译，可切换数据源'),
+    ('在线字典', '查单个汉字的读音、部首、笔画、字形、释义'),
+    ('在线词典', '查词语的意思、出处、例句、近反义词'),
+  ];
 
   _Youdao? _youdao;
   List<(String, String)> _baidu = const [];
@@ -288,17 +304,9 @@ class _TranslatePageState extends State<TranslatePage> {
         _ => code,
       };
 
-  static String _short(Object e) {
-    if (e is DioException) {
-      final t = e.type;
-      if (t == DioExceptionType.connectionTimeout) return '连接超时，检查一下网络';
-      if (t == DioExceptionType.receiveTimeout) return '等待响应超时';
-      if (t == DioExceptionType.connectionError) return '连不上（可能被网络环境拦了）';
-      return '${e.message ?? e}';
-    }
-    final s = e.toString();
-    return s.length > 90 ? '${s.substring(0, 90)}…' : s;
-  }
+  /// v1.8.0：实现搬到 `tool_pages.dart` 的 [shortErr] 了（字典/词典页也要用），
+  /// 这里保留这个名字只是为了不动文件里十几处调用点。
+  static String _short(Object e) => shortErr(e);
 
   /// 解 JSON；接口偶尔会带 BOM 或前后空白，这里统一处理
   Map<String, dynamic> _decode(String? body) {
@@ -462,11 +470,61 @@ class _TranslatePageState extends State<TranslatePage> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final info = _tabInfo[_tab];
 
     return ToolScaffold(
-      title: '翻译',
-      subtitle: '英汉词典 + 句子翻译，可切换数据源',
-      child: ListView(
+      // v1.8.0：标题跟着当前分页走，进工具时一眼能看出现在在哪一页。
+      title: info.$1,
+      subtitle: info.$2,
+      // 分页条固定在顶部（不跟着列表滚），让「切换」这件事一直看得见；
+      // 下面那部分用 Expanded 占剩下的高度，两页各自滚自己的。
+      child: Column(
+        children: <Widget>[
+          _tabBar(),
+          Expanded(
+            child: _tab == 0
+                ? _translateBody(scheme)
+                : DictLookupView(
+                    // 给一个带 tab 号的 key：切页时 Flutter 会当成不同的
+                    // State，于是两页各有一份独立的输入框 / 数据源 / 结果，
+                    // 来回切不会互相覆盖。
+                    key: ValueKey<int>(_tab),
+                    mode: _tab == 1 ? DictMode.hanzi : DictMode.ci,
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 顶部的「翻译 / 在线字典 / 在线词典」切换条。
+  ///
+  /// 用 SegmentedButton（Material 3 的分段控件）而不是 TabBar：
+  /// TabBar 要配 TabController + TabBarView，还要处理生命周期，
+  /// 而这里只有三个互斥的静态页，分段控件一个 `selected` 就够了。
+  Widget _tabBar() => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+        child: SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<int>(
+            // 不放图标：三个中文标签加上图标在 360dp 的窄屏上会挤出去
+            segments: const <ButtonSegment<int>>[
+              ButtonSegment<int>(value: 0, label: Text('翻译')),
+              ButtonSegment<int>(value: 1, label: Text('在线字典')),
+              ButtonSegment<int>(value: 2, label: Text('在线词典')),
+            ],
+            selected: <int>{_tab},
+            // 关掉选中时的对勾：它对勾一出现/消失会改变各段宽度，
+            // 点起来整条会左右抖一下
+            showSelectedIcon: false,
+            onSelectionChanged: (Set<int> s) => setState(() => _tab = s.first),
+          ),
+        ),
+      );
+
+  /// 原来那一套「翻译」界面，整体挪进来当一个分页用，逻辑一行没动。
+  Widget _translateBody(ColorScheme scheme) {
+    return ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
           // ---------------- 输入 ----------------
@@ -549,8 +607,7 @@ class _TranslatePageState extends State<TranslatePage> {
           const SizedBox(height: 14),
           _notes(scheme),
         ],
-      ),
-    );
+      );
   }
 
   static String _srcName(_Src s) => switch (s) {

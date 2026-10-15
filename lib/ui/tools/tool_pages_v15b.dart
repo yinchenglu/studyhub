@@ -683,6 +683,26 @@ class _BarcodePageState extends State<BarcodePage> {
 ///   * 可翻转（点一下把整个表盘转 180°，躺着 / 支架反着放也能看）
 ///   * 完整公历日期 + 农历 + 星期
 ///   * 秒用小字
+///
+/// ── v1.8.0 用户第 8 条：「进一步美化，换一下比较方正的字体」────────
+/// 这一次动的是**观感**，功能性东西一个没删。三件事：
+///
+///   1. **真的做成「翻页」牌。** 每半小时 / 每小时两块牌子，
+///      深灰渐变圆角卡片 + 描边 + 投影，正中间一道横向切缝 ——
+///      这道缝是翻页钟最醒目、也最容易被认出来的特征（原来只是两串白字
+///      飘在黑底上，说它是「翻页时钟」有点名不副实）。
+///      缝画在数字**之上**：落在卡片底色上几乎看不见，压过白色笔画时
+///      立刻显出「上下两半」的味道。
+///   2. **换字体。** 打包了两款数字方正的显示体（OFL 授权，可随包分发）：
+///        · FlipSquare = Chakra Petch Bold —— 方块感最强，转角平直
+///        · FlipTall   = Bebas Neue       —— 瘦高条，老式出发牌那种味道
+///      「方正」这事各人标准不同，所以**做成按钮现场切换**（连系统字体
+///      一共三档），替用户猜不如让他自己挑。
+///   3. 几处小润色：时间背后一圈几乎看不见的径向光晕（纯黑纯白对比太硬）、
+///      冒号跟秒闪烁（秒关了也看得出表在走）、日期与星期之间加个圆点分隔。
+///
+/// ⚠️ 字体只通过 `TextStyle.fontFamily` 显式引用，**没有**全局替换 UI 字体，
+///    中文那两行日期照旧走系统字体（打包的两款都只有拉丁字形）。
 class FlipClockPage extends StatefulWidget {
   const FlipClockPage({super.key});
 
@@ -738,14 +758,30 @@ class _FlipClockPageState extends State<FlipClockPage> {
     super.dispose();
   }
 
-  String get _timeText {
+  /// 时钟可选字体（v1.8.0 新增）。`null` = 系统默认字体。
+  ///
+  /// 顺序就是右上角「字体」按钮的点击循环顺序 —— 第一项是默认值，
+  /// 也就是用户进来看到的那一款。放 FlipSquare（方块感最强的那款）打头，
+  /// 因为第 8 条要求的就是「比较方正」。
+  static const List<String?> _fontFamilies = <String?>[
+    'FlipSquare', // Chakra Petch Bold
+    'FlipTall', // Bebas Neue
+    null, // 系统字体（v1.7.0 及以前的样子）
+  ];
+  static const List<String> _fontLabels = <String>['方形', '窄高', '系统'];
+  int _fontIdx = 0;
+  String? get _fontFamily => _fontFamilies[_fontIdx];
+
+  String get _hourText {
     var h = _now.hour;
     if (!_use24h) {
       h = h % 12;
       if (h == 0) h = 12;
     }
-    return '${h.toString().padLeft(2, '0')}:${_now.minute.toString().padLeft(2, '0')}';
+    return h.toString().padLeft(2, '0');
   }
+
+  String get _minuteText => _now.minute.toString().padLeft(2, '0');
 
   String get _secondText => _now.second.toString().padLeft(2, '0');
 
@@ -756,8 +792,8 @@ class _FlipClockPageState extends State<FlipClockPage> {
     final lunar = solarToLunar(_now);
     final term = solarTermOf(_now);
 
-    final dateLine = '${_now.year} 年 ${_now.month} 月 ${_now.day} 日'
-        '  星期${weekdayCn(_now)}';
+    final dateLine = '${_now.year} 年 ${_now.month} 月 ${_now.day} 日';
+    final weekLine = '星期${weekdayCn(_now)}';
     final lunarLine = '农历 ${lunar.ganZhi}【${lunar.zodiac}】年 '
         '${lunar.monthName}${lunar.dayName}'
         '${term == null ? '' : '  ·  $term'}';
@@ -769,16 +805,32 @@ class _FlipClockPageState extends State<FlipClockPage> {
       color: Colors.black,
       child: Stack(
         children: [
+          // ---- 时间背后一圈极淡的径向光晕（v1.8.0 新增）----
+          // 纯黑底压纯白字，对比太硬，看着「生」。补一层几乎察觉不到的光晕
+          // 把中间托一下，整幅画面会润很多。它是**静态**渐变、不随秒重绘，
+          // 所以不额外费电 —— 省电是这个页面一半的意义。
+          // 调暗模式（夜间床头用）下直接不画。
+          if (!_dim)
+            const Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: RadialGradient(
+                    radius: 0.85,
+                    colors: <Color>[Color(0x1A3B6FE0), Color(0x00000000)],
+                  ),
+                ),
+              ),
+            ),
           Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // ---- 主时间 ----
-                // v1.6.0：用户要求「时间的字体加粗加大」。
-                //   加粗：FontWeight.w200 → w700
-                //   加大：132 → 176
-                // 外面套 FittedBox(scaleDown) 兜底：窄屏放不下时自动缩，
-                // 不会溢出；宽屏就按 176 铺开。左右各留 20 不贴边。
+                // ---- 主时间：两块翻页牌 + 冒号 + 小秒 ----
+                // v1.6.0：用户要求「时间的字体加粗加大」（w200→w700、132→176）。
+                // v1.8.0：字号 176 保持不变，改成装进翻页牌里。
+                // 外面这层 FittedBox(scaleDown) **必须留着** ——
+                // 加了牌的左右内边距后整体更宽，窄屏上全靠它兜底自动缩，
+                // 不然会横向溢出（横屏手机上尤其容易撞上）。
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: FittedBox(
@@ -786,56 +838,46 @@ class _FlipClockPageState extends State<FlipClockPage> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          _timeText,
-                          style: TextStyle(
-                            color: fg,
-                            fontSize: 176,
-                            height: 1.0,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 2,
-                            fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 26),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              // 秒刻意做小：不至于喧宾夺主，又能看出表在走
-                              if (_showSecond)
-                                Text(
-                                  _secondText,
-                                  style: TextStyle(
-                                    color: fg.withValues(alpha: 0.8),
-                                    fontSize: 44,
-                                    height: 1.0,
-                                    fontWeight: FontWeight.w600,
-                                    fontFeatures: const <FontFeature>[
-                                      FontFeature.tabularFigures()
-                                    ],
-                                  ),
-                                ),
-                              if (!_use24h)
-                                Text(_ampm,
-                                    style: TextStyle(
-                                        color: fg.withValues(alpha: 0.6), fontSize: 15)),
-                            ],
-                          ),
-                        ),
+                      children: <Widget>[
+                        _flipCard(_hourText, fg),
+                        _colon(fg),
+                        _flipCard(_minuteText, fg),
+                        // 秒那一列一直挂着（即使秒关了也要留位置给「上午/下午」），
+                        // 只是关掉秒时不再多留那段间距。
+                        if (_showSecond) const SizedBox(width: 16),
+                        _secondCol(fg),
                       ],
                     ),
                   ),
                 ),
-                const SizedBox(height: 14),
-                Text(dateLine,
-                    style: TextStyle(
-                        color: fg.withValues(alpha: 0.92),
-                        fontSize: 22,
-                        letterSpacing: 1.5)),
+                const SizedBox(height: 18),
+                // ---- 公历日期 · 星期 ----
+                // v1.8.0：原来日期和星期挤在一句话里用空格隔开，这里拆成
+                // 「日期 · 星期」，中间用一个小圆点，层次清楚一点。
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(dateLine,
+                        style: TextStyle(
+                            color: fg.withValues(alpha: 0.92),
+                            fontSize: 22,
+                            letterSpacing: 1.5)),
+                    Container(
+                      width: 5,
+                      height: 5,
+                      margin: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: fg.withValues(alpha: 0.35),
+                      ),
+                    ),
+                    Text(weekLine,
+                        style: TextStyle(
+                            color: fg.withValues(alpha: 0.92),
+                            fontSize: 22,
+                            letterSpacing: 1.5)),
+                  ],
+                ),
                 const SizedBox(height: 6),
                 Text(lunarLine,
                     style: TextStyle(
@@ -871,6 +913,14 @@ class _FlipClockPageState extends State<FlipClockPage> {
                     '12/24 小时', () => setState(() => _use24h = !_use24h)),
                 _iconBtn(_dim ? Icons.brightness_low : Icons.brightness_high,
                     '夜间调暗', () => setState(() => _dim = !_dim)),
+                // 字体切换（v1.8.0 新增，对应第 8 条「换一下比较方正的字体」）。
+                // 点一下换下一款、循环。长按能看见当前是哪一款。
+                // 「方正」各人标准不同，做成可切比替用户猜稳。
+                _iconBtn(
+                    Icons.text_fields,
+                    '字体：${_fontLabels[_fontIdx]}（点一下换下一款）',
+                    () => setState(
+                        () => _fontIdx = (_fontIdx + 1) % _fontFamilies.length)),
               ],
             ),
           ),
@@ -884,6 +934,122 @@ class _FlipClockPageState extends State<FlipClockPage> {
 
     return Scaffold(backgroundColor: Colors.black, body: body);
   }
+
+  // ---------------- v1.8.0 新增的三个零件 ----------------
+
+  /// 一块「翻页牌」。
+  ///
+  /// 见类注释：正中间那道横向切缝是翻页钟最醒目的特征。缝画在数字**之上** ——
+  /// 落在卡片底色上几乎看不见，压过白色笔画时立刻显出「上下两半」的味道。
+  ///
+  /// 配色写死不跟主题：这个页面本来就是「黑底白字当桌面钟」，
+  /// 跟着浅色主题走会变成一坨白，整页的意义就没了。
+  Widget _flipCard(String text, Color fg) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            // 上浅下深：模拟「上半张牌迎着光、下半张落在阴影里」
+            colors: _dim
+                ? const <Color>[Color(0xFF1C1C1C), Color(0xFF0B0B0B)]
+                : const <Color>[Color(0xFF2C323C), Color(0xFF0E1116)],
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          boxShadow: const <BoxShadow>[
+            BoxShadow(
+              color: Color(0x8C000000),
+              blurRadius: 20,
+              offset: Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: <Widget>[
+            Text(
+              text,
+              style: TextStyle(
+                color: fg,
+                fontFamily: _fontFamily,
+                fontSize: 176,
+                height: 1.0,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 2,
+                fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
+              ),
+            ),
+            // 翻页缝。用 Positioned.fill 让它铺满整块牌，所以这条线正好落在
+            // 「牌的竖直中线」上 —— 也是数字高度的一半，切得齐。
+            Positioned.fill(
+              child: Center(
+                child: Container(
+                  height: 2.5,
+                  width: double.infinity,
+                  color: const Color(0xE6000000),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
+  /// 中间的冒号：跟着秒闪烁。
+  ///
+  /// 为什么要闪：这是个**静止**的大钟，秒一关掉（`_showSecond = false`）
+  /// 就完全看不出它还在走，跟一张截图没区别。偶数秒亮、奇数秒压暗，
+  /// 瞟一眼就知道表是活的。
+  ///
+  /// 底下那句 `bottom: 26` 和 [_secondCol] 用的是同一个数 ——
+  /// 两者都以「牌的底边」为基准，这样冒号才会落在数字的竖直中线上。
+  Widget _colon(Color fg) => Padding(
+        padding: const EdgeInsets.only(bottom: 26),
+        child: SizedBox(
+          width: 34,
+          child: Center(
+            child: Text(
+              ':',
+              style: TextStyle(
+                color: _now.second.isEven ? fg : fg.withValues(alpha: 0.14),
+                fontFamily: _fontFamily,
+                fontSize: 132,
+                height: 1.0,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ),
+      );
+
+  /// 秒那一列：小字秒 + （12 小时制时）上午/下午。
+  ///
+  /// `bottom: 26` 与 [_colon] 对齐，让秒贴着牌的底边而不是飘在中间。
+  Widget _secondCol(Color fg) => Padding(
+        padding: const EdgeInsets.only(bottom: 26),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            // 秒刻意做小：不至于喧宾夺主，又能看出表在走
+            if (_showSecond)
+              Text(
+                _secondText,
+                style: TextStyle(
+                  color: fg.withValues(alpha: 0.8),
+                  fontFamily: _fontFamily,
+                  fontSize: 44,
+                  height: 1.0,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
+                ),
+              ),
+            if (!_use24h)
+              Text(_ampm,
+                  style: TextStyle(color: fg.withValues(alpha: 0.6), fontSize: 15)),
+          ],
+        ),
+      );
 
   Widget _iconBtn(IconData icon, String tip, VoidCallback onTap) => IconButton(
         icon: Icon(icon, size: 19),

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_device_apps/flutter_device_apps.dart';
@@ -116,6 +117,27 @@ void toast(BuildContext context, String s) {
 void copyText(BuildContext context, String text) {
   Clipboard.setData(ClipboardData(text: text));
   toast(context, '已复制：${text.length > 24 ? '${text.substring(0, 24)}…' : text}');
+}
+
+/// 把网络异常翻译成人话（v1.8.0 从 `tool_pages_translate.dart` 提到这里共用）。
+///
+/// 为什么值得提出来：这个项目里凡是连外部接口的页面都要回答同一个问题
+/// ——「为什么请求失败了」。直接 `$e` 甩出去，用户看到的是
+/// `DioException [connection timeout]: The request connection took longer...`，
+/// 一句有用的都没有。超时和「连不上」完全是两回事，必须分开说。
+///
+/// 注意：`tool_pages_translate.dart` 里还有一个同逻辑的私有 `_short`，
+/// 已改成直接转调这里，别再各写一份。
+String shortErr(Object e) {
+  if (e is DioException) {
+    final t = e.type;
+    if (t == DioExceptionType.connectionTimeout) return '连接超时，检查一下网络';
+    if (t == DioExceptionType.receiveTimeout) return '等待响应超时';
+    if (t == DioExceptionType.connectionError) return '连不上（可能被网络环境拦了）';
+    return '${e.message ?? e}';
+  }
+  final s = e.toString();
+  return s.length > 90 ? '${s.substring(0, 90)}…' : s;
 }
 
 /// 把文本写进手机下载目录，返回路径

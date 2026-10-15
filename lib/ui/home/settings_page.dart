@@ -30,6 +30,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _saveHistory = true;
   String _downloadDir = '';
 
+  /// 播放时自动隐藏控制栏（v1.8.0）。默认 false —— 菜单一直显示。
+  bool _autoHideUi = false;
+
   @override
   void initState() {
     super.initState();
@@ -43,6 +46,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final limit = await SettingsStore.instance.cacheLimitMb();
     final saveHist = await SettingsStore.instance.saveViewHistory();
     final dlDir = await CacheManager.instance.downloadDirPath();
+    final autoHide = await SettingsStore.instance.autoHidePlayerUi();
     if (!mounted) return;
     setState(() {
       _cacheBytes = cache;
@@ -51,6 +55,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _cacheLimit = limit;
       _saveHistory = saveHist;
       _downloadDir = dlDir;
+      _autoHideUi = autoHide;
     });
   }
 
@@ -262,6 +267,22 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   ),
                 ),
                 const Divider(height: 1),
+                // v1.8.0：用户要求「播放时菜单默认一直显示」，只有点全屏、
+                // 或点菜单外的画面区域才收起。想恢复成「几秒后自动淡出」
+                // 就打开这个开关（默认关）。
+                SwitchListTile(
+                  secondary: const Icon(Icons.visibility_off_outlined),
+                  title: const Text('自动隐藏菜单'),
+                  subtitle: Text(_autoHideUi
+                      ? '播放中控制栏会在 3.5 秒后自动隐藏，点屏幕再呼出'
+                      : '控制栏一直显示；点全屏或点画面空白处才会收起'),
+                  value: _autoHideUi,
+                  onChanged: (v) async {
+                    await SettingsStore.instance.setAutoHidePlayerUi(v);
+                    if (mounted) setState(() => _autoHideUi = v);
+                  },
+                ),
+                const Divider(height: 1),
                 // v1.5.0 起，播放器底栏那行小字（手势说明）挪到了这里。
                 // 底栏本来就挤，那行字长期占着一行、又小又看不清，
                 // 放在设置里想看的时候再点开，内容还能写得更全。
@@ -346,72 +367,47 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 // v1.7.0：这里原来还有个「答完自动下一题」总开关（连带答题页菜单里的
                 // 「不显示答案时也自动跳题」），用户要求撤掉 —— 只留三个时间设置，
                 // 秒数选「不自动跳」就等于关。整段的行高也压了一档。
-                ListTile(
-                  dense: true,
-                  visualDensity: const VisualDensity(vertical: -2),
-                  leading: const Icon(Icons.timelapse),
-                  title: const Text('自动跳题秒数'),
-                  subtitle: Text(prefs.autoNextSec == 0
+                //
+                // ★ v1.8.0 用户又反馈「那 3 个自动跳题秒数的选项行距还是太宽」。
+                //   上一版只是把 ListTile 设成 dense + visualDensity(-2)，
+                //   但 ListTile 有 title **和** subtitle 时最少也要两行 + 上下内边距，
+                //   压到 ~56px 就到头了。
+                //   现在改成自己拼的**一行**：图标 + 标题 + 灰色说明 + 右侧下拉，
+                //   整行高度降到 ~30px（说明文字跟标题同一行、字号小一档），
+                //   在同一个屏幕里一眼能看全这三项，不用来回扫。
+                _secRow(
+                  icon: Icons.timelapse,
+                  title: '自动跳题秒数',
+                  hint: prefs.autoNextSec == 0
                       ? '普通模式：不自动跳'
-                      : '普通模式：答完 ${prefs.autoNextSec} 秒跳下一题'),
-                  trailing: DropdownButton<int>(
-                    value: prefs.autoNextSec,
-                    isDense: true,
-                    underline: const SizedBox.shrink(),
-                    items: [
-                      for (final s in Defaults.autoNextSecOptions)
-                        DropdownMenuItem(value: s, child: Text(s == 0 ? '不自动跳' : '$s 秒')),
-                    ],
-                    onChanged: (v) {
-                      if (v != null) ref.read(quizPrefsProvider.notifier).setAutoNextSec(v);
-                    },
-                  ),
+                      : '普通模式：答完 ${prefs.autoNextSec} 秒跳下一题',
+                  value: prefs.autoNextSec,
+                  options: Defaults.autoNextSecOptions,
+                  onChanged: (v) => ref.read(quizPrefsProvider.notifier).setAutoNextSec(v),
                 ),
                 const Divider(height: 1),
-                ListTile(
-                  dense: true,
-                  visualDensity: const VisualDensity(vertical: -2),
-                  leading: const Icon(Icons.timer_off_outlined),
-                  title: const Text('答错和显示答案跳题秒数'),
-                  subtitle: Text(prefs.wrongStaySec == 0
+                _secRow(
+                  icon: Icons.timer_off_outlined,
+                  title: '答错和显示答案跳题秒数',
+                  hint: prefs.wrongStaySec == 0
                       ? '答错、或点了「显示答案」之后：不自动跳'
-                      : '答错、或点了「显示答案」之后：停留 ${prefs.wrongStaySec} 秒再跳'),
-                  trailing: DropdownButton<int>(
-                    value: prefs.wrongStaySec,
-                    isDense: true,
-                    underline: const SizedBox.shrink(),
-                    items: [
-                      for (final s in Defaults.wrongStaySecOptions)
-                        DropdownMenuItem(value: s, child: Text(s == 0 ? '不自动跳' : '$s 秒')),
-                    ],
-                    onChanged: (v) {
-                      if (v != null) ref.read(quizPrefsProvider.notifier).setWrongStaySec(v);
-                    },
-                  ),
+                      : '答错、或点了「显示答案」之后：停留 ${prefs.wrongStaySec} 秒再跳',
+                  value: prefs.wrongStaySec,
+                  options: Defaults.wrongStaySecOptions,
+                  onChanged: (v) => ref.read(quizPrefsProvider.notifier).setWrongStaySec(v),
                 ),
                 const Divider(height: 1),
                 // 第三个时间 —— 「带答案刷题（只看不做）」自己的翻页间隔。
                 // 答题页顶栏那个切换按钮切过去之后，就按这个秒数自动翻。
-                ListTile(
-                  dense: true,
-                  visualDensity: const VisualDensity(vertical: -2),
-                  leading: const Icon(Icons.menu_book_outlined),
-                  title: const Text('只看不做跳题秒数'),
-                  subtitle: Text(prefs.browseNextSec == 0
+                _secRow(
+                  icon: Icons.menu_book_outlined,
+                  title: '只看不做跳题秒数',
+                  hint: prefs.browseNextSec == 0
                       ? '带答案刷题（只看不做）：不自动跳'
-                      : '带答案刷题（只看不做）：每 ${prefs.browseNextSec} 秒翻一页'),
-                  trailing: DropdownButton<int>(
-                    value: prefs.browseNextSec,
-                    isDense: true,
-                    underline: const SizedBox.shrink(),
-                    items: [
-                      for (final s in Defaults.browseNextSecOptions)
-                        DropdownMenuItem(value: s, child: Text(s == 0 ? '不自动跳' : '$s 秒')),
-                    ],
-                    onChanged: (v) {
-                      if (v != null) ref.read(quizPrefsProvider.notifier).setBrowseNextSec(v);
-                    },
-                  ),
+                      : '带答案刷题（只看不做）：每 ${prefs.browseNextSec} 秒翻一页',
+                  value: prefs.browseNextSec,
+                  options: Defaults.browseNextSecOptions,
+                  onChanged: (v) => ref.read(quizPrefsProvider.notifier).setBrowseNextSec(v),
                 ),
               ],
             ),
@@ -568,6 +564,96 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
         ),
       );
+
+  /// v1.8.0：刷题那三个「跳题秒数」的紧凑行。
+  ///
+  /// 为什么不用 `ListTile(title:, subtitle:, trailing: DropdownButton)` ——
+  /// 上一版就是这么写的（dense + visualDensity(-2)），用户连续两版都在说
+  /// 「行距太宽」。两个原因：
+  ///   1. ListTile 只要有 subtitle，最少也是两行文字 + 上下内边距，压到 ~56px 到头；
+  ///   2. `DropdownButton.itemHeight` 有硬断言
+  ///      `assert(itemHeight == null || itemHeight >= kMinInteractiveDimension)`，
+  ///      48 是允许的最小值 —— 只要用它，整行就别想低于 48。
+  ///
+  /// 所以这里两件事一起改：
+  ///   * 说明文字跟标题放**同一行**（字号小一档、灰色、放不下省略），省掉一整行；
+  ///   * 下拉换成 `PopupMenuButton` + 自绘小胶囊（`PopupMenuItem.height` 可自由设，
+  ///     v1.7.0 答题页那三个菜单已经用 height: 34 跑在真机上了，是验证过的写法）。
+  ///
+  /// 结果：一行从 ~56px 降到 ~32px，三项在一屏里能同时看全。
+  Widget _secRow({
+    required IconData icon,
+    required String title,
+    required String hint,
+    required int value,
+    required List<int> options,
+    required ValueChanged<int> onChanged,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 3, 8, 3),
+      child: Row(
+        children: [
+          Icon(icon, size: 17, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(title, style: const TextStyle(fontSize: 13.5)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    hint,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 10.5, color: scheme.onSurfaceVariant),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          PopupMenuButton<int>(
+            tooltip: '选择秒数',
+            padding: EdgeInsets.zero,
+            onSelected: onChanged,
+            itemBuilder: (_) => [
+              for (final s in options)
+                PopupMenuItem<int>(
+                  value: s,
+                  height: 34,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(s == 0 ? '不自动跳' : '$s 秒',
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                      if (s == value) const Icon(Icons.check, size: 16),
+                    ],
+                  ),
+                ),
+            ],
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(9, 3, 5, 3),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest.withValues(alpha: 0.7),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(value == 0 ? '不自动跳' : '$value 秒',
+                      style: const TextStyle(fontSize: 12.5)),
+                  const Icon(Icons.arrow_drop_down, size: 18),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   /// 修改下载目录：可以手填，也可以一键选「系统下载目录 / 应用专属目录」
   Future<void> _editDownloadDir() async {

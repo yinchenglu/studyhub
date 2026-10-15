@@ -4,6 +4,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'app.dart';
+import 'core/natural_sort.dart';
 import 'core/sync_service.dart';
 import 'data/local/db.dart';
 import 'data/local/settings_store.dart';
@@ -16,6 +17,9 @@ import 'data/local/settings_store.dart';
 /// 4. v1.5.0：把「文件夹同步」服务的配置读回来。上次开着的话这里就会
 ///    把定时器接上 —— 它挂在单例上，跟任何页面都没关系，
 ///    这样用户切到别的页面、甚至退到后台都不会停。
+/// 5. v1.8.0：把拼音表读进来，给「按名称排序要和电脑一致」用。
+///    必须在这里读、不能等到用的时候再读 —— 排序是比较器，是**同步**调用的，
+///    没有 await 的余地。表本身只在内存里查，46 KB，几百毫秒都不到。
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
@@ -23,5 +27,6 @@ Future<void> main() async {
   await SettingsStore.instance.init();
   await AppDb.instance.init();
   await SyncService.instance.boot();
+  await PinyinTable.init();
   runApp(const ProviderScope(child: StudyHubApp()));
 }

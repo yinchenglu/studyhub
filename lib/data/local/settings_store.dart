@@ -31,6 +31,8 @@ class SettingsStore {
   static const _kSaveHistory = 'save_view_history';
   static const _kDownloadDir = 'download_dir';
   static const _kRecentServers = 'recent_servers';
+  // v1.8.0 新增：播放时自动隐藏控制栏。默认 **false** —— 见下面的注释。
+  static const _kAutoHideUi = 'player_auto_hide_ui';
 
   // 后台录音录像（v1.6.0）
   static const _kRecDir = 'recorder_dir';
@@ -414,6 +416,21 @@ class SettingsStore {
     await p.setBool(_kSaveHistory, v);
   }
 
+  /// 播放视频时控制栏要不要「几秒后自动隐藏」（v1.8.0）。
+  ///
+  /// 默认 **false**（用户明确要求「默认菜单一直显示不隐藏」）：
+  /// 只有点全屏按钮、或点菜单外的画面区域才会收起控制栏。
+  /// 打开这个开关后才恢复成「播放几秒后自动淡出」的老行为。
+  Future<bool> autoHidePlayerUi() async {
+    final p = await _prefs;
+    return p.getBool(_kAutoHideUi) ?? false;
+  }
+
+  Future<void> setAutoHidePlayerUi(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kAutoHideUi, v);
+  }
+
   /// 自定义下载目录。null / 空串表示用默认目录
   Future<String?> downloadDirPath() async {
     final p = await _prefs;
@@ -507,6 +524,75 @@ class SettingsStore {
   Future<void> setVideoBackground(bool v) async {
     final p = await _prefs;
     await p.setBool(_kVideoBg, v);
+  }
+
+  // ------------------------------------------- 工具页自定义（v1.8.0）
+
+  /// 用户自定义的工具顺序：`{"分类名": ["工具原名", …]}`。
+  /// 没被自定义过的分类不在表里（那些分类照用代码里的内置顺序）。
+  ///
+  /// 为什么按分类存、而不是存一个全局大列表：工具页是**按分类分组**渲染的，
+  /// 全局顺序一旦和分组叠在一起，「这个工具到底会落到哪个分类里」就说不清了。
+  /// 按分类存，拖动只在分类内部生效，行为和看到的一模一样。
+  static const _kToolOrder = 'tools_order';
+
+  /// 工具**显示名**的自定义：`{"原名": "显示名"}`。
+  /// 只改工具页列表里显示的那几个字；点进去之后的页面标题仍然用原名。
+  static const _kToolAlias = 'tools_alias';
+
+  Future<Map<String, List<String>>> toolOrder() async {
+    final p = await _prefs;
+    final raw = p.getString(_kToolOrder);
+    if (raw == null || raw.isEmpty) return <String, List<String>>{};
+    try {
+      final d = jsonDecode(raw);
+      if (d is Map) {
+        final out = <String, List<String>>{};
+        d.forEach((k, v) {
+          if (v is List) out['$k'] = v.map((e) => '$e').toList();
+        });
+        return out;
+      }
+    } catch (_) {
+      // 存坏了就当没自定义过。**绝不能因为一份顺序让整个工具页打不开** ——
+      // 这个页面是很多人的入口，宁可丢掉一点个性化。
+    }
+    return <String, List<String>>{};
+  }
+
+  Future<void> setToolOrder(Map<String, List<String>> v) async {
+    final p = await _prefs;
+    final clean = <String, List<String>>{};
+    v.forEach((k, l) {
+      if (l.isNotEmpty) clean[k] = l;
+    });
+    await p.setString(_kToolOrder, jsonEncode(clean));
+  }
+
+  Future<Map<String, String>> toolAliases() async {
+    final p = await _prefs;
+    final raw = p.getString(_kToolAlias);
+    if (raw == null || raw.isEmpty) return <String, String>{};
+    try {
+      final d = jsonDecode(raw);
+      if (d is Map) {
+        return d.map((k, v) => MapEntry('$k', '$v'));
+      }
+    } catch (_) {
+      // 同上：坏数据只当没设置
+    }
+    return <String, String>{};
+  }
+
+  Future<void> setToolAliases(Map<String, String> v) async {
+    final p = await _prefs;
+    // 空的、以及和原名一样的，都不必存 —— 存了反而让「恢复原名」找不到干净的默认态
+    final clean = <String, String>{};
+    v.forEach((k, val) {
+      final t = val.trim();
+      if (t.isNotEmpty && t != k) clean[k] = t;
+    });
+    await p.setString(_kToolAlias, jsonEncode(clean));
   }
 
   // ----------------------------------------------------------- 阅读模式（v1.5.0）

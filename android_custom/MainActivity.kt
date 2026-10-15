@@ -147,6 +147,7 @@ class MainActivity : FlutterActivity() {
                     "physicalDpi" -> result.success(readPhysicalDpi())
                     "lockOrientation" -> result.success(lockCurrentOrientation())
                     "followOrientation" -> result.success(followOrientation())
+                    "landscapeOrientation" -> result.success(landscapeOrientation())
                     else -> result.notImplemented()
                 }
             }
@@ -445,6 +446,30 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
+     * v1.8.0 新增：切到横屏并**保持在横屏**（左右两个横屏都行）。
+     *
+     * 场景：播放器打开一个「宽 > 高」的视频时，用户要求「默认横屏」——
+     * 竖着拿手机看横屏视频，画面只占中间一条，上下全是黑边，很难受。
+     *
+     * 为什么用 `SCREEN_ORIENTATION_SENSOR_LANDSCAPE` 而不是
+     * `SCREEN_ORIENTATION_LANDSCAPE`：
+     *   LANDSCAPE 把方向钉死在「左横屏」那一个物理方向，手机往另一侧转
+     *   画面就直接倒过来 180°；SENSOR_LANDSCAPE 允许左右两个横屏，
+     *   系统按传感器选最近的那个，转来转去都不会倒。
+     *
+     * 想回竖屏：点播放器右上角的「锁定」→ 再点一次「解锁」，
+     * 就回到跟随手机方向（`followOrientation`）了。
+     */
+    private fun landscapeOrientation(): Boolean {
+        return try {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            true
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /**
      * 后台录音服务。
      *
      * 状态全放在 companion object 上（进程内单例）：Dart 侧每秒钟问一次 `status`，
@@ -706,6 +731,9 @@ class MainActivity : FlutterActivity() {
         private var wakeLock: PowerManager.WakeLock? = null
         private var stopRunnable: Runnable? = null
 
+        /** 「相机开会话」的看门狗定时器（v1.8.0 新增），见 armOpenTimeout()。 */
+        private var openTimeout: Runnable? = null
+
         override fun onBind(intent: Intent?): IBinder? = null
 
         override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -723,11 +751,13 @@ class MainActivity : FlutterActivity() {
                 acquireWakeLock()
                 startBackgroundThread()
                 val h = handler ?: throw IllegalStateException("录像线程没起来")
-                openAndRecord(path, front, withAudio, h)
-                running = true
-                lastError = null
-                startedAt = System.currentTimeMillis()
-                scheduleAutoStop(maxMs, h)
+                // ★ v1.8.0 改：running / startedAt / 时长上限**不再在这里设**。
+                //   原来这里一返回就 running = true，可相机是**异步**开的 ——
+                //   Dart 侧那几秒轮询立刻就看到「在录」，于是真的失败也看不出来，
+                //   用户看到的是「点了开始录像、界面说在录、结果没有文件」。
+                //   现在要等会话真的配好、rec.start() 真的成功才算在录，
+                //   见 openAndRecord() 里的 onConfigured。
+                openAndRecord(path, front, withAudio, maxMs, h)
                 START_STICKY
             } catch (t: Throwable) {
                 lastError = t.message ?: t.javaClass.simpleName
@@ -820,7 +850,9 @@ class MainActivity : FlutterActivity() {
 
         // ------------------------------------------------ 录制
 
-        private fun openAndRecord(path: String, front: Boolean, withAudio: Boolean, h: Handler) {
+        private fun openAndRecord(
+            path: String, front: Boolean, withAudio: Boolean, maxMs: Long, h: Handler
+        ) {
             val cm = getSystemService(Context.CAMERA_SERVICE) as? CameraManager
                 ?: throw IllegalStateException("这台设备没有相机服务")
             val wantFacing = if (front) {
@@ -836,34 +868,100 @@ class MainActivity : FlutterActivity() {
             val size = pickSize(map.getOutputSizes(MediaRecorder::class.java))
                 ?: throw IllegalStateException("这台设备的摄像头不支持录像")
 
-            val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                MediaRecorder(this)
-            } else {
-                @Suppress("DEPRECATION")
-                MediaRecorder()
+            // ── MediaRecorder 参数配置 ──────────────────────────────
+            // ★★ v1.8.0 修的就是这里，也正是「后台录像提示 illegalStateException」的根因 ★★
+            //
+            //   v1.7.0 发现「设了 setAudioSource 却**没设** setAudioEncoder」是对的
+            //   ——音频源和音频编码器必须成对出现，缺一个 prepare() 就废。
+            //   但那一行**插错了位置**：插在了 setOutputFormat() **之前**。
+            //
+            //   官方文档写得很死（AOSP 里 MediaRecorder.setAudioEncoder 的注释原文）：
+            //       Call this after setOutputFormat() but before prepare().
+            //       @throws IllegalStateException if it is called before
+            //               setOutputFormat() or after prepare().
+            //   setVideoEncoder 同样有这一条。也就是说这两个编码器 setter
+            //   **必须在 setOutputFormat() 之后**。
+            //
+            //   违反时原生直接抛一个 **message 为空的 IllegalStateException** ——
+            //   这就是用户看到那个光秃秃的 "IllegalStateException" 的来源：
+            //   lastError 走的是 `t.message ?: t.javaClass.simpleName`，
+            //   消息为空时只剩一个类名，看不出是哪一行、也不知道为什么。
+            //
+            //   正确顺序（官方 Camera2 录像示例是这个顺序；本文件里一直能正常工作
+            //   的 RecorderService.startRecorder 也恰好是这个顺序）：
+            //       1. setVideoSource / setAudioSource      先定「源」
+            //       2. setOutputFormat                      再定「容器」
+            //       3. setVideoEncoder / setAudioEncoder    然后才是「编码器」
+            //       4. setVideoSize / 帧率 / 码率 / 方向
+            //       5. setOutputFile
+            //       6. prepare()
+            //   ⚠️ 别再调换 2 和 3。
+            //
+            //   另外每一步都记了名字（`step`）：任何一步失败，抛出来的消息都能
+            //   说清「卡在哪一步 + 异常类名 + 原生消息」。之前只有一个类名，
+            //   远程根本没法定位——这次的 bug 就是这么被藏了一整版的。
+            var step = "创建 MediaRecorder"
+            val rec: MediaRecorder = try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    MediaRecorder(this)
+                } else {
+                    @Suppress("DEPRECATION")
+                    MediaRecorder()
+                }
+            } catch (t: Throwable) {
+                throw stepError(step, t)
             }
-            rec.setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            if (withAudio) {
-                rec.setAudioSource(MediaRecorder.AudioSource.MIC)
-                // ★ v1.7.0 修的这个 bug，害「后台录像」从 v1.6.0 起就没成功过：
-                //   设了 setAudioSource 却**没设 setAudioEncoder**，prepare() 会直接
-                //   抛 IllegalStateException（message 是空的，所以用户只看到光秃秃的
-                //   一个 "IllegalStateException"，文件也建不出来）。
-                //   MediaRecorder 的状态机要求音频源和音频编码器成对出现，
-                //   下面 RecorderService（录音那条路）一直是两个都设的，这边漏了。
-                //   别再删掉这行。
-                rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                rec.setAudioChannels(1)
-                rec.setAudioSamplingRate(44100)
-                rec.setAudioEncodingBitRate(96000)
+            // 先记到字段上：万一下面的配置抛了，onStartCommand 的 catch 会走
+            // releaseAll()，那条路就是靠这个字段把原生实例释放掉的。
+            recorder = rec
+            try {
+                // 1) 源
+                step = "setVideoSource"
+                rec.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                if (withAudio) {
+                    step = "setAudioSource"
+                    rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+                }
+                // 2) 容器
+                step = "setOutputFormat"
+                rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                // 3) 编码器 —— 必须排在上面那行之后，别往上挪
+                step = "setVideoEncoder"
+                rec.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+                if (withAudio) {
+                    step = "setAudioEncoder"
+                    rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                    step = "setAudioChannels"
+                    rec.setAudioChannels(1)
+                    step = "setAudioSamplingRate"
+                    rec.setAudioSamplingRate(44100)
+                    step = "setAudioEncodingBitRate"
+                    rec.setAudioEncodingBitRate(96000)
+                }
+                // 4) 画面参数
+                step = "setVideoSize"
+                rec.setVideoSize(size.width, size.height)
+                step = "setVideoFrameRate"
+                rec.setVideoFrameRate(30)
+                step = "setVideoEncodingBitRate"
+                rec.setVideoEncodingBitRate(bitrateFor(size))
+                step = "setOrientationHint"
+                rec.setOrientationHint(orientationHint(chars, front))
+                // 5) 落地路径
+                step = "setOutputFile"
+                rec.setOutputFile(path)
+                // 6) 顺手挂个错误监听（必须在 prepare() 之前挂）。
+                //    编码器**中途**抽风（码率不被这台机器支持、麦克风被别的 App
+                //    抢走、存储写满…）原来只会静悄悄录出一个坏文件；
+                //    现在能写进 lastError，Dart 侧每秒轮询就会把原因显示出来。
+                step = "setOnErrorListener"
+                rec.setOnErrorListener { _, what, extra ->
+                    lastError = "录像器中途报错（what=$what，extra=$extra）"
+                    running = false
+                }
+            } catch (t: Throwable) {
+                throw stepError(step, t)
             }
-            rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            rec.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            rec.setVideoSize(size.width, size.height)
-            rec.setVideoFrameRate(30)
-            rec.setVideoEncodingBitRate(bitrateFor(size))
-            rec.setOrientationHint(orientationHint(chars, front))
-            rec.setOutputFile(path)
             try {
                 rec.prepare()
             } catch (t: Throwable) {
@@ -883,7 +981,6 @@ class MainActivity : FlutterActivity() {
                     t
                 )
             }
-            recorder = rec
 
             // 假 Surface：给会话凑一个「不消费」的 target，见类注释
             val tex = SurfaceTexture(10)
@@ -892,8 +989,27 @@ class MainActivity : FlutterActivity() {
             dummySurface = dummy
             val targets = listOf<Surface>(rec.surface, dummy)
 
+            // ★ v1.8.0 新增看门狗。
+            //   openCamera 的回调「理论上」一定会来，但实测有的 ROM 在相机被别的
+            //   App 占着时**永远不回调** —— 那时候 running 一直是 false，
+            //   Dart 侧只看到「没起来」，却一个字的原因都没有，跟这次报的
+            //   「点了没反应 / 只有个 IllegalStateException」是同一类体验。
+            //   6 秒还没配上会话就直接定案，理由写清楚。
+            armOpenTimeout(h)
+
             cm.openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(dev: CameraDevice) {
+                    // 看门狗可能已经先定案并收摊了（recorder 被 releaseAll 清成 null）。
+                    // 迟到的回调不能再往下走，否则会去 start() 一个已经释放的
+                    // MediaRecorder，报出来的错跟真实原因完全无关，反而误导排查。
+                    if (recorder == null) {
+                        try {
+                            dev.close()
+                        } catch (_: Throwable) {
+                            // 忽略
+                        }
+                        return
+                    }
                     camera = dev
                     try {
                         @Suppress("DEPRECATION")
@@ -901,6 +1017,14 @@ class MainActivity : FlutterActivity() {
                             targets,
                             object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(s: CameraCaptureSession) {
+                                    if (recorder == null) {
+                                        try {
+                                            s.close()
+                                        } catch (_: Throwable) {
+                                            // 忽略
+                                        }
+                                        return
+                                    }
                                     session = s
                                     try {
                                         val req = dev.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
@@ -916,6 +1040,16 @@ class MainActivity : FlutterActivity() {
                                         s.setRepeatingRequest(req.build(), null, h)
                                         // 会话跑起来了才真正开始写文件
                                         rec.start()
+                                        // ★ 到这里才算「真的在录」：会话配好了、
+                                        //   MediaRecorder 也进了 Recording 态。
+                                        //   running / startedAt / 时长上限都放在这一刻，
+                                        //   Dart 侧那几秒轮询等的就是这件真事；
+                                        //   任何一步失败都会走 fail()，原因一定落进 lastError。
+                                        cancelOpenTimeout()
+                                        running = true
+                                        lastError = null
+                                        startedAt = System.currentTimeMillis()
+                                        scheduleAutoStop(maxMs, h)
                                     } catch (t: Throwable) {
                                         fail(t)
                                     }
@@ -946,10 +1080,63 @@ class MainActivity : FlutterActivity() {
 
         /** 相机侧失败：把原因留下来，让 Dart 侧轮询时能看到，然后收摊。 */
         private fun fail(t: Throwable) {
-            lastError = t.message ?: t.javaClass.simpleName
+            // ★ v1.8.0：改成 `isNullOrBlank()` 判断。
+            //   MediaRecorder 的不少原生方法抛的是**空消息**异常，`t.message`
+            //   是 ""（空字符串、不是 null）时 `?:` 不生效，lastError 就成了一片空白，
+            //   等于对用户什么都没说。空消息时至少退回类名。
+            val m = t.message
+            lastError = if (m.isNullOrBlank()) t.javaClass.simpleName else m
             running = false
             releaseAll()
             stopSelf()
+        }
+
+        /**
+         * 把「卡在哪一步 + 异常类名 + 原生消息」拼成一句能直接定位的话（v1.8.0 新增）。
+         *
+         * 为什么非这么做不可：MediaRecorder 违反调用顺序时抛的是**空消息**的
+         * IllegalStateException，只看类名完全不知道是哪一行。v1.7.0 到 v1.8.0
+         * 之间那个「后台录像报 illegalStateException」就是这么被藏住的 ——
+         * 用户手里只有三个字，排查只能靠猜。现在失败会直说到哪一步。
+         */
+        private fun stepError(step: String, t: Throwable): IllegalStateException =
+            IllegalStateException(
+                "录像参数配置失败，卡在「$step」这一步（${t.javaClass.simpleName}" +
+                    (if (t.message.isNullOrBlank()) "" else "：${t.message}") +
+                    "）。这多半是 MediaRecorder 的调用顺序问题，把这句话连同机型一起反馈即可",
+                t
+            )
+
+        /**
+         * 给「相机开会话」上个闹钟（v1.8.0 新增），到点还没配上就定案。
+         *
+         * 为什么需要：openCamera 的回调理论上一定会来，但有的 ROM 在相机被别的
+         * App 占着时**永远不回调**。那时候服务既不成功也不报错，
+         * 前台通知挂着、界面一直转圈，用户完全不知道发生了什么。
+         */
+        private fun armOpenTimeout(h: Handler) {
+            cancelOpenTimeout()
+            val r = Runnable {
+                if (!running) {
+                    fail(
+                        IllegalStateException(
+                            "相机打开超时（6 秒）：多半是相机被别的应用占着，或相机权限没给全"
+                        )
+                    )
+                }
+            }
+            openTimeout = r
+            h.postDelayed(r, OPEN_TIMEOUT_MS)
+        }
+
+        private fun cancelOpenTimeout() {
+            val r = openTimeout ?: return
+            openTimeout = null
+            try {
+                handler?.removeCallbacks(r)
+            } catch (t: Throwable) {
+                // 忽略：录像线程可能已经退了
+            }
         }
 
         private fun scheduleAutoStop(maxMs: Long, h: Handler) {
@@ -968,6 +1155,7 @@ class MainActivity : FlutterActivity() {
 
         private fun releaseAll() {
             cancelAutoStop()
+            cancelOpenTimeout()
             try {
                 session?.stopRepeating()
             } catch (t: Throwable) {
@@ -1082,6 +1270,14 @@ class MainActivity : FlutterActivity() {
             const val EXTRA_MAX_MS = "maxMs"
             private const val CHANNEL_ID = "studyhub_videorec"
             private const val NOTIF_ID = 4102
+
+            /**
+             * 相机开会话的看门狗时长（v1.8.0 新增）。
+             * 取 6 秒：正常机型开会话在 1 秒以内，留足余量又不会让用户干等。
+             * Dart 侧那个「等起来」的轮询窗口必须 ≥ 这个值，否则会在看门狗之前
+             * 就误报「没起来」—— 两边都改了记得一起看。
+             */
+            private const val OPEN_TIMEOUT_MS = 6000L
 
             @Volatile
             var running: Boolean = false

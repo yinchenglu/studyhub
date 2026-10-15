@@ -197,6 +197,26 @@ jobs:
           ls -la assets/fonts/ || { echo "!!! assets/fonts 目录不存在"; exit 1; }
           test -s assets/fonts/NotoSansSC-Regular.ttf || { echo "!!! 中文字体缺失或为空"; exit 1; }
           echo "字体大小：$(stat -c%s assets/fonts/NotoSansSC-Regular.ttf) 字节"
+          # v1.8.0 新增：翻页时钟的两款数字字体（pubspec 的 fonts: 段引用了它们）。
+          # 少了任何一个，pubspec 里的 fonts 声明就会指向不存在的文件，
+          # `flutter pub get` 或 assembleRelease 直接失败 —— 这里提前说清楚是哪个。
+          for f in ChakraPetch-Bold.ttf BebasNeue-Regular.ttf; do
+            test -s "assets/fonts/$f" || { echo "!!! 翻页时钟字体缺失或为空：assets/fonts/$f"; exit 1; }
+            echo "  时钟字体 $f：$(stat -c%s "assets/fonts/$f") 字节"
+          done
+          grep -nE "^  fonts:|family: Flip" pubspec.yaml || { echo "!!! pubspec 里的 fonts: 段不见了"; exit 1; }
+          # v1.8.0：拼音排序表 + 户籍区县表。
+          # 拼音表要是漏了，App 只会**静默降级**成码点序（不崩、不报错，
+          # 就是中文排得跟电脑不一样）—— 这种错最不该留到用户手里，
+          # 所以在这里硬拦。行数一并核一下，防的是文件被截断/空了。
+          test -s assets/data/pinyin_sort.txt || { echo "!!! assets/data/pinyin_sort.txt 缺失或为空"; exit 1; }
+          PYLINES=$(wc -l < assets/data/pinyin_sort.txt)
+          echo "  拼音表 $PYLINES 行（应约 6763 行）"
+          if [ "$PYLINES" -lt 6000 ]; then
+            echo "!!! 拼音表行数只有 $PYLINES，明显不完整"
+            exit 1
+          fi
+          test -s assets/data/id_region.json || { echo "!!! assets/data/id_region.json 缺失或为空"; exit 1; }
           echo "--- 清单关键项（只应有 usesCleartextTraffic，绝不能有 extractNativeLibs）---"
           grep -nE "usesCleartextTraffic|extractNativeLibs" android/app/src/main/AndroidManifest.xml || true
           grep -nE "RECORD_AUDIO|QUERY_ALL_PACKAGES|FLASHLIGHT" android/app/src/main/AndroidManifest.xml || echo "(提示：工具类权限没读到)"
@@ -243,6 +263,146 @@ jobs:
           fi
           echo "=========================="
 
+      # ---------- 5.5 注入固定签名（v1.8.0 新增）----------
+      # 为什么必须做
+      # ============
+      # 原来压根没配 signingConfig，`flutter build apk --release` 就落到
+      # flutter create 模板自带的那句 `signingConfig = signingConfigs.getByName("debug")`
+      # —— 用 **debug 密钥**签名。而 debug keystore（~/.android/debug.keystore）
+      # **不在 Gradle 缓存里**，GitHub Actions 每次都是全新机器，
+      # 于是每个 run 都现场 `keytool -genkeypair` 生成一对全新的密钥。
+      #
+      # 实测（`.workbuddy/apk_sig.py` 把历史包的证书全抠出来比对）：
+      #   v1.1.0 ~ v1.7.0 共 7 个包 = **7 个完全不同的证书**，主题都是 CN=Android Debug。
+      # Android 只认证书、不认版本号 —— 证书变了就当是另一个 App，直接拒绝覆盖安装，
+      # 这就是「提示签名不一致」的唯一原因。
+      #
+      # 修法：keystore 固定在仓库外，base64 进 Secrets，CI 每次解码同一个文件。
+      #
+      # Secrets 缺了怎么办
+      # ==================
+      # **不阻断构建**，退回 debug 签名（否则整条流水线会被卡死），
+      # 但把「本包不能覆盖安装」写进 GITHUB_ENV，让 Release 正文顶上一行醒目警告。
+      - name: 注入固定签名
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -e
+          if [ -z "$SIGNING_KEYSTORE_BASE64" ]; then
+            echo "::warning::没配 SIGNING_KEYSTORE_BASE64 —— 本次仍用 debug 签名，产出的 APK 无法覆盖安装"
+            echo "SIGN_NOTE=⚠️ **本包用临时 debug 密钥签名，不能覆盖安装**（Secrets 里缺 SIGNING_KEYSTORE_BASE64）" >> "$GITHUB_ENV"
+            echo "SIGNED=no" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > /tmp/studyhub-release.jks
+          test -s /tmp/studyhub-release.jks || { echo "!!! keystore 解码为空，检查 SIGNING_KEYSTORE_BASE64"; exit 1; }
+          KS_BYTES=$(stat -c%s /tmp/studyhub-release.jks)
+          echo "keystore 解码完成：$KS_BYTES 字节"
+          if [ "$KS_BYTES" -lt 500 ]; then
+            echo "!!! keystore 只有 $KS_BYTES 字节，base64 大概是错的"
+            exit 1
+          fi
+
+          cat > android/key.properties <<EOF
+          storeFile=/tmp/studyhub-release.jks
+          storePassword=$SIGNING_STORE_PASSWORD
+          keyAlias=$SIGNING_KEY_ALIAS
+          keyPassword=$SIGNING_KEY_PASSWORD
+          EOF
+          echo "已写 android/key.properties（storeFile 走绝对路径，省得算相对位置）"
+
+          python3 - <<'PY'
+          import os
+          import re
+
+          path = None
+          for c in ("android/app/build.gradle.kts", "android/app/build.gradle"):
+              if os.path.exists(c):
+                  path = c
+                  break
+          assert path, "找不到 android/app/build.gradle(.kts)"
+          kotlin = path.endswith(".kts")
+          src = open(path, encoding="utf-8").read()
+
+          if "STUDYHUB_SIGNING" in src:
+              print("已注入过签名配置，跳过")
+          else:
+              if kotlin:
+                  head = (
+                      "import java.util.Properties\n"
+                      "import java.io.FileInputStream\n"
+                      "\n"
+                      "// STUDYHUB_SIGNING —— key.properties 由 CI 用 Secrets 现场生成\n"
+                      "val _shKp = Properties()\n"
+                      "val _shKpFile = rootProject.file(\"key.properties\")\n"
+                      "if (_shKpFile.exists()) { _shKp.load(FileInputStream(_shKpFile)) }\n"
+                      "\n"
+                  )
+                  sig = (
+                      "    signingConfigs {\n"
+                      "        create(\"release\") {\n"
+                      "            keyAlias = _shKp[\"keyAlias\"] as String\n"
+                      "            keyPassword = _shKp[\"keyPassword\"] as String\n"
+                      "            storeFile = file(_shKp[\"storeFile\"] as String)\n"
+                      "            storePassword = _shKp[\"storePassword\"] as String\n"
+                      "        }\n"
+                      "    }\n"
+                  )
+              else:
+                  head = (
+                      "// STUDYHUB_SIGNING —— key.properties 由 CI 用 Secrets 现场生成\n"
+                      "def _shKp = new Properties()\n"
+                      "def _shKpFile = rootProject.file('key.properties')\n"
+                      "if (_shKpFile.exists()) { _shKp.load(new FileInputStream(_shKpFile)) }\n"
+                      "\n"
+                  )
+                  sig = (
+                      "    signingConfigs {\n"
+                      "        release {\n"
+                      "            keyAlias _shKp['keyAlias']\n"
+                      "            keyPassword _shKp['keyPassword']\n"
+                      "            storeFile file(_shKp['storeFile'])\n"
+                      "            storePassword _shKp['storePassword']\n"
+                      "        }\n"
+                      "    }\n"
+                  )
+              src = head + src
+              before = src
+              src = src.replace("android {", "android {\n" + sig, 1)
+              assert src != before, "注入 signingConfigs 失败：找不到 android { 块"
+              print("已注入 signingConfigs.release")
+
+          # buildTypes.release 的签名从 debug 换成 release
+          before = src
+          src = re.sub(r'signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)',
+                       'signingConfig = signingConfigs.getByName("release")', src)
+          if src == before:
+              src = re.sub(r'signingConfig\s+signingConfigs\.debug',
+                           'signingConfig signingConfigs.release', src)
+          assert src != before, "替换 release 的 signingConfig 失败（模板可能变了）"
+
+          open(path, "w", encoding="utf-8").write(src)
+          print("写入完成 ->", path)
+          PY
+
+          echo "========== 签名注入自检 =========="
+          grep -nE "STUDYHUB_SIGNING|signingConfigs|getByName\(\"release\"\)|signingConfigs\.release" android/app/build.gradle* \
+            || { echo "!!! 签名注入没生效"; exit 1; }
+          if grep -qE 'getByName\("debug"\)|signingConfigs\.debug' android/app/build.gradle*; then
+            echo "!!! release 还在用 debug 签名"
+            exit 1
+          fi
+          echo "--- key.properties（隐去密码）---"
+          sed -E 's/(Password=).*/\1****/' android/key.properties
+          echo "=================================="
+
+          echo "SIGN_NOTE=✅ 已用固定 release 密钥签名，可直接覆盖安装" >> "$GITHUB_ENV"
+          echo "SIGNED=yes" >> "$GITHUB_ENV"
+
       # ---------- 6. 装依赖 ----------
       # 一定要 tee 到 pub-get.log：pub get 一旦冲突，报错是唯一有用的线索，
       # 而失败时 8~12 步全被跳过，analyze.log / build.log 根本不会生成。
@@ -285,6 +445,49 @@ jobs:
           set -o pipefail
           flutter build apk --release --split-per-abi 2>&1 | tee build.log
 
+      # ---------- 9.5 核对签名证书 ----------
+      # 只靠「注入脚本没报错」还不够 —— 万一 Gradle 没吃那份 key.properties
+      # （比如路径写成相对、或者被 AGP 的新语法绕过去），产物照样是 debug 签名的。
+      # 这里直接读**产物里的证书指纹**，对不上就失败。
+      # 期望值和 签名密钥/README-必读.md 里记的是同一个。
+      - name: 核对签名证书
+        run: |
+          set +e
+          EXPECT_SHA256="06:1b:e4:e1:99:cb:90:e0:a9:75:11:b2:a5:55:54:2b:4c:be:5a:58:cf:03:d8:ce:d3:9a:e0:85:a7:65:7f:3d"
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          AS=$(ls -d "$SDK"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          if [ ! -x "$AS" ]; then
+            echo "::warning::没找到 apksigner（SDK=$SDK），跳过签名核对"
+            exit 0
+          fi
+          echo "apksigner: $AS"
+          BAD=0
+          for f in build/app/outputs/flutter-apk/*-release.apk; do
+            echo "----- $f -----"
+            OUT=$("$AS" verify --print-certs "$f" 2>&1)
+            echo "$OUT" | grep -E "certificate (SHA-256|SHA-1) digest|Verified using" || true
+            GOT=$(echo "$OUT" | grep -m1 -i "certificate SHA-256 digest" | awk '{print $NF}' | tr 'A-F' 'a-f')
+            if [ -z "$GOT" ]; then
+              echo "!!! 读不到证书指纹"; BAD=1; continue
+            fi
+            if [ "$GOT" = "$EXPECT_SHA256" ]; then
+              echo "  -> 指纹匹配 ✅"
+            else
+              echo "  -> 指纹不匹配 ❌"
+              echo "     期望 $EXPECT_SHA256"
+              echo "     实得 $GOT"
+              BAD=1
+            fi
+          done
+          if [ "$BAD" = "1" ]; then
+            if [ "$SIGNED" = "yes" ]; then
+              echo "::error::产物签名和固定密钥对不上，这个包装不上旧版本，中止发布"
+              exit 1
+            fi
+            echo "::warning::签名不是固定密钥（本次没配 Secrets），不中止但不要拿它覆盖安装"
+          fi
+          echo "签名核对结束"
+
       # ---------- 10. 上传产物 ----------
       - name: 上传 APK
         uses: actions/upload-artifact@v4
@@ -301,14 +504,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: 学聚 APK v${{ github.run_number }}（1.7.0）
+          name: 学聚 APK v${{ github.run_number }}（1.8.0）
           body: |
+            ${{ env.SIGN_NOTE }}
+
             自动构建产出，可直接下载安装。
 
             - `app-arm64-v8a-release.apk` —— 64 位 ARM，**近几年的手机基本都是这个，优先装它**
             - `app-armeabi-v7a-release.apk` —— 32 位 ARM，老机型（约 2016 年前）才需要
 
-            **v1.7.0 更新**
+            **v1.8.0 更新**
 
             笔记（这一版改动最多的一块）
             - 列表页：去掉右上角「刷新」（往下拉就能刷新，两个入口反而容易误点），

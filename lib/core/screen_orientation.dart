@@ -104,4 +104,29 @@ class ScreenOrientation {
       );
     } catch (_) {}
   }
+
+  /// v1.8.0 新增：切到横屏并**保持横屏**（左右都行）。
+  ///
+  /// 用途只有一处：播放器打开「宽 > 高」的横屏视频时，按用户要求默认横屏。
+  /// 走原生 `SCREEN_ORIENTATION_SENSOR_LANDSCAPE` —— 左右两个横屏都允许，
+  /// 手机往哪边转都不会出现画面倒转 180°。
+  ///
+  /// 降级分支用 `landscapeLeft + landscapeRight`：能转到横屏，
+  /// 代价是在系统「自动旋转」关掉时可能不生效（和 followDevice 同一个道理）。
+  static Future<void> lockLandscape() async {
+    try {
+      final ok = await _ch.invokeMethod<bool>('landscapeOrientation');
+      if (ok == true) return;
+    } catch (_) {
+      // 原生侧没这个方法（非 Android 平台、或 MainActivity 没跟上），走降级。
+    }
+    try {
+      await SystemChrome.setPreferredOrientations(
+        const <DeviceOrientation>[
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ],
+      );
+    } catch (_) {}
+  }
 }

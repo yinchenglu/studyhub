@@ -1,4 +1,5 @@
 import '../data/models/models.dart';
+import 'natural_sort.dart';
 
 /// 列表排序方式（笔记页 / 媒体库共用）
 ///
@@ -40,6 +41,14 @@ class SortPref {
 /// 约定：**目录永远排在文件前面**。这是文件管理器的通用习惯；
 /// 不这样做的話，「按大小排序」时目录会按大小散落在文件中间，找目录很累。
 /// 所以先按「是不是目录」分组，组内再按选定键排。
+///
+/// v1.8.0：按名称排序换成了 [naturalCompare]（见 core/natural_sort.dart）。
+/// 用户原话是「你的默认按照名称排序的方式，跟电脑的怎么不一样」，
+/// 原来这里是一句 `a.name.toLowerCase().compareTo(b.name.toLowerCase())`，
+/// 纯字典序，跟 Windows 资源管理器差两处：
+///   ① 数字按字符比 → `第10章` 排在 `第2章` 前面（电脑上是 2 在 10 前）；
+///   ② 中文按 Unicode 码点比（≈ 部首笔画序），电脑上按**拼音**排。
+/// 现在两个都对上了。
 List<DavEntry> sortEntries(List<DavEntry> list, SortPref pref) {
   final out = List<DavEntry>.from(list);
   out.sort((a, b) {
@@ -47,7 +56,7 @@ List<DavEntry> sortEntries(List<DavEntry> list, SortPref pref) {
     int c;
     switch (pref.key) {
       case SortKey.byName:
-        c = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        c = naturalCompare(a.name, b.name);
         break;
       case SortKey.byTime:
         final x = a.modified?.millisecondsSinceEpoch ?? 0;

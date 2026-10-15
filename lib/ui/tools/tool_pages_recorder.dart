@@ -395,10 +395,20 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
         if (mounted) setState(() => _videoErr = '没有相机权限，录不了像。');
         return;
       }
-      if (_vAudio) {
+      // ★ v1.8.0 修：麦克风没授权时要**真的降级成无声录像**。
+      //   原来这里只是弹个提示（还写着「画面正常录」），audio 照样传 true ——
+      //   于是原生侧仍然去 startForeground(… | FOREGROUND_SERVICE_TYPE_MICROPHONE)
+      //   并 setAudioSource(MIC)。Android 14 上这会直接抛 SecurityException，
+      //   **连画面都一起录不成**，跟提示说的完全不是一回事。
+      //   现在改成：没权限就 withAudio = false，提示也改成「这次录成无声的」。
+      var withAudio = _vAudio;
+      if (withAudio) {
         final ms = await Permission.microphone.request();
-        if (!ms.isGranted && mounted) {
-          setState(() => _videoErr = '没有麦克风权限，录出来的视频会没声音。（画面正常录）');
+        if (!ms.isGranted) {
+          withAudio = false;
+          if (mounted) {
+            setState(() => _videoErr = '没有麦克风权限，这次录成无声的（画面照录）。');
+          }
         }
       }
       // 相机在同一时刻只能有一个持有者 —— 把前台预览那条路先让开
@@ -417,17 +427,24 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
       await VideoRecorder.start(
         file: f,
         lens: _lens,
-        audio: _vAudio,
+        audio: withAudio,
         maxDurationMs: _videoMaxMin * 60 * 1000,
       );
       if (mounted) setState(() => _vPending = f);
-      // 服务是异步起来的（要先 startForeground 再开相机），轮着问几次。
+      // 服务是异步起来的（要先 startForeground 再开相机、再配会话），轮着问几次。
       // v1.7.0 修：原来只等 1.2 秒问一次，而且**只有在「既没在跑、也没报错」
       // 时才提示** —— 一旦原生日志里带了 lastError，这里就一个字都不说，
       // 用户看到的就是「点了开始录像，什么都没发生」。
       // 现在无论哪种失败都必须出话，而且额外弹一条 SnackBar，跑不掉。
+      //
+      // v1.8.0 修：窗口从 4 秒拉到 7 秒。原生侧现在也是「会话真的配好、
+      // `MediaRecorder.start()` 真的成功」才把 running 置真（以前一进服务就置真，
+      // 于是这里永远看到「在录」，真失败反而看不出来），
+      // 另外原生侧挂了一个 6 秒的「相机打开超时」看门狗 ——
+      // 这个窗口必须比看门狗长，否则会在看门狗定案之前就先误报「没起来」。
+      // 两边一起改：`MainActivity.kt` 的 OPEN_TIMEOUT_MS。
       String? failMsg;
-      for (var i = 0; i < 8; i++) {
+      for (var i = 0; i < 14; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 500));
         if (!mounted) return;
         await _refreshStatus();
@@ -436,7 +453,9 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
       if (mounted && !_vst.running) {
         failMsg = _vst.hasError
             ? '后台录像没起来：${_vst.error}'
-            : '录像服务没起来。若是第一次用，请检查是否允许了「相机」「录音」权限和通知权限。';
+            : '录像服务没起来（等了 7 秒）。若是第一次用，'
+                '请检查是否允许了「相机」「录音」权限和通知权限；'
+                '也可能是相机被别的应用占着。';
         setState(() => _videoErr = failMsg);
         toast(context, failMsg);
       }

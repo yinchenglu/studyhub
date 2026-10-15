@@ -42,6 +42,16 @@ class ServerGuidePage extends StatelessWidget {
           const SizedBox(height: 8),
           ...AppDirs.all.map((d) => _DirTile(dir: d)),
           const SizedBox(height: 16),
+          Text('每个目录支持哪些格式', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          Text(
+            '下面的清单直接读 App 内置的判定表，改代码就会跟着变，不会过时。'
+            '放错目录一般也能看，但分门别类放体验最好。',
+            style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 8),
+          _FormatCard(),
+          const SizedBox(height: 16),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -131,6 +141,125 @@ class _TreeCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 「每个目录支持哪些格式」卡片（v1.8.0 需求2）。
+///
+/// 清单**不写死**：视频/音频/图片/文档四类是直接读 [FileTypes] 的常量集合，
+/// 以后往 FileTypes 里加后缀，这一页自动跟着更新，不会变成过期文档。
+class _FormatCard extends StatelessWidget {
+  const _FormatCard();
+
+  static String _join(Set<String> s) {
+    final list = s.toList()..sort();
+    return list.join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final rows = <(String, String, String, String)>[
+      // (目录, 图标, 类型, 后缀清单)
+      (AppDirs.notes, '笔记正文', 'md', '一篇 .md 就是一篇笔记'),
+      (AppDirs.media, '视频', _join(FileTypes.video), '点开就是内置播放器，支持全屏 / 倍速 / 进度记忆'),
+      (AppDirs.media, '音频', _join(FileTypes.audio), '同一个播放器，封面按文件名匹配'),
+      (AppDirs.media, '图片', _join(FileTypes.image), '相册里左右翻；笔记里也能直接引用'),
+      (AppDirs.quiz, '题库', 'json', '一个 .json 一套题，字段见下面的说明'),
+      (AppDirs.notes, '文档', 'pdf · epub', 'pdf 内置阅读器；epub 走电子书模式'),
+      (AppDirs.tools, 'html 小工具', 'html · htm', '一个子文件夹一个分类，入口文件名 index.html / main.html'),
+      (AppDirs.download, '下载站', '不限', '想在手机上下载什么就放什么'),
+      (AppDirs.backup, '备份', 'json · md', 'App 自动写，一般不用手动放'),
+    ];
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var i = 0; i < rows.length; i++) ...[
+              if (i > 0) const Divider(height: 18),
+              _FormatRow(
+                dir: rows[i].$1,
+                kind: rows[i].$2,
+                exts: rows[i].$3,
+                note: rows[i].$4,
+                scheme: scheme,
+              ),
+            ],
+            const Divider(height: 18),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.text_snippet_outlined, size: 16, color: scheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '可以直接在 App 里当文本读的还有：log · xml · yaml · yml · csv。'
+                    '后缀不认识的文件会走系统「用其他应用打开」，不影响下载。',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FormatRow extends StatelessWidget {
+  final String dir;
+  final String kind;
+  final String exts;
+  final String note;
+  final ColorScheme scheme;
+
+  const _FormatRow({
+    required this.dir,
+    required this.kind,
+    required this.exts,
+    required this.note,
+    required this.scheme,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: scheme.primaryContainer.withValues(alpha: 0.6),
+                borderRadius: BorderRadius.circular(5),
+              ),
+              child: Text(dir, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+            ),
+            const SizedBox(width: 8),
+            Text(kind, style: text.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Padding(
+          padding: const EdgeInsets.only(left: 2),
+          child: SelectableText(
+            exts,
+            style: TextStyle(fontFamily: 'monospace', fontSize: 11.5, height: 1.5, color: scheme.primary),
+          ),
+        ),
+        const SizedBox(height: 2),
+        Padding(
+          padding: const EdgeInsets.only(left: 2),
+          child: Text(note, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
+        ),
+      ],
     );
   }
 }

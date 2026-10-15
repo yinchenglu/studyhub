@@ -11,6 +11,7 @@ import 'server_html_tools.dart';
 import 'tool_pages.dart';
 import 'tool_pages_calc.dart';
 import 'tool_pages_compass.dart';
+import 'tool_pages_convert.dart';
 import 'tool_pages_ext.dart';
 import 'tool_pages_id.dart';
 import 'tool_pages_ph.dart';
@@ -53,7 +54,13 @@ import 'tool_pages_v15b.dart';
 ///   * 小工具格子：仍是一行 3 个；图标从「上方」挪到「文字左边」同一排；
 ///     字号 11.5 → 12.5；格子高度钉死 34（原来是靠 childAspectRatio 随宽度变）
 ///   * 名字长的格子用 FittedBox scaleDown 自动缩字，**不截断**（用户要求「显示全」）
-class ToolsPage extends ConsumerWidget {
+/// v1.8.0 需求13：从 `ConsumerWidget` 改成 `ConsumerStatefulWidget`，
+/// 因为「拖动换顺序 / 重命名」要有一份可变状态（用户自定义的顺序与显示名）。
+///
+/// 注意：`categories` / `iconForName` / `colorForName` 必须**留在 ToolsPage 上**
+/// ——`server_html_tools.dart` 是按 `ToolsPage.iconForName(名字)` 调的，
+/// 挪进 State 类就直接编译不过了。
+class ToolsPage extends ConsumerStatefulWidget {
   const ToolsPage({super.key});
 
   /// 全部离线小工具，按用途分类
@@ -88,6 +95,9 @@ class ToolsPage extends ConsumerWidget {
       _ToolDef('颜色码转换', Icons.colorize_outlined, Color(0xFF0C447C)),
       _ToolDef('简易画板', Icons.brush_outlined, Color(0xFF7F77DD)),
       _ToolDef('高级计算器', Icons.functions, Color(0xFF534AB7)),
+      // v1.8.0 新增：18 类单位换算 + 人民币大小写 + 亲戚称呼，
+      // 全部集中在一个界面里用顶部分类切换（用户点名要「集中在一个界面」）
+      _ToolDef('单位换算', Icons.transform, Color(0xFF0F6E56)),
     ]),
 
     // ③ 网络与编码 —— 原「文字与编码」，v1.6.0 起并入 CIDR 子网计算
@@ -138,13 +148,204 @@ class ToolsPage extends ConsumerWidget {
     ]),
   ];
 
+  /// v1.8.0 按用户要求：**服务器小工具复用内置小工具那一套图标**。
+  ///
+  /// 背景：服务器上的 html 小工具是用户自己传上去的（多数就是内置工具导出的
+  /// html 版），在「服务器小工具」页里原来所有格子共用一个 `Icons.web_asset`，
+  /// 一眼看过去分不清谁是谁。既然名字能对上，就直接借内置的图标 + 配色。
+  ///
+  /// 名字要**归一后再比**，因为两边写法经常不一致：
+  ///   * 服务器侧会带上 `01_` 前缀（已经在 `_prettyName` 里剥掉了）
+  ///   * 空格写法不同：内置叫 `LED 屏幕`，文件名常写 `LED屏幕`
+  ///   * 用户可能写成全角空格
+  /// 所以统一去掉半角/全角空格再比。
+  ///
+  /// 对不上就返回 null，由调用方用自己的兜底图标 ——
+  /// **不要硬凑一个近似图标**：随机配的图标比统一兜底更难认。
+  static IconData? iconForName(String name) => _find(name)?.icon;
+
+  static Color? colorForName(String name) => _find(name)?.color;
+
+  /// 内部查表。`_ToolDef` 是私有类型，不能当公共方法的返回类型，
+  /// 所以只在类内用，对外只露 iconForName / colorForName 两个。
+  static _ToolDef? _find(String name) {
+    final key = _normToolName(name);
+    if (key.isEmpty) return null;
+    for (final c in categories) {
+      for (final t in c.tools) {
+        if (_normToolName(t.name) == key) return t;
+      }
+    }
+    return null;
+  }
+
+  static String _normToolName(String s) =>
+      s.replaceAll(' ', '').replaceAll('\u3000', '').toLowerCase();
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ToolsPage> createState() => _ToolsPageState();
+}
+
+class _ToolsPageState extends ConsumerState<ToolsPage> {
+  // ------------------------------------------------------------------
+  // 用户自定义（v1.8.0 需求13）
+  //
+  //   _order : {分类名: [工具原名, …]} —— 只在这一类内部换顺序
+  //   _alias : {工具原名: 显示名}     —— 只改列表里显示的字，
+  //                                        `toolPageOf(原名)` 完全不受影响
+  //   _editing : 是否处于「自定义」模式（这个模式下格子可以拖、点了是重命名）
+  //
+  // 两份表都从 SettingsStore 读，坏数据一律吞掉当没设置过 ——
+  // 工具页是很多人的入口，绝不能因为一份存坏的自定义让整页打不开。
+  // ------------------------------------------------------------------
+  Map<String, List<String>> _order = <String, List<String>>{};
+  Map<String, String> _alias = <String, String>{};
+  bool _editing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final s = ref.read(settingsProvider);
+    final o = await s.toolOrder();
+    final a = await s.toolAliases();
+    if (!mounted) return;
+    setState(() {
+      _order = o;
+      _alias = a;
+    });
+  }
+
+  /// 某个分类**当前实际**要显示的工具顺序。
+  ///
+  /// 关键在最后那段「补齐」：用户自定义过顺序之后，如果 App 升级又加了新工具，
+  /// 新工具不在存下来的名字表里，必须原样追加到末尾 ——
+  /// 否则升级一次新工具就「消失」了，这种 bug 很难查。
+  List<_ToolDef> _sortedTools(_Category c) {
+    final saved = _order[c.name];
+    if (saved == null || saved.isEmpty) return c.tools;
+    final pending = <String, _ToolDef>{for (final t in c.tools) t.name: t};
+    final out = <_ToolDef>[];
+    for (final n in saved) {
+      final t = pending.remove(n);
+      if (t != null) out.add(t);
+    }
+    for (final t in c.tools) {
+      if (pending.containsKey(t.name)) out.add(t);
+    }
+    return out;
+  }
+
+  Future<void> _drop(String cat, String from, String to) async {
+    if (from == to) return;
+    final c = ToolsPage.categories.firstWhere((x) => x.name == cat);
+    final names = _sortedTools(c).map((t) => t.name).toList();
+    final i = names.indexOf(from);
+    if (i < 0) return;
+    names.removeAt(i);
+    // 注意两件事（自测 `.workbuddy/test_tool_order.py` 的分支 E/F 就是钉这两条）：
+    //   1. 删掉 from 之后 to 的下标会往前挪一格，所以必须**重新取一次**
+    //      下标，不能沿用拖动前的值；
+    //   2. 往后拖要插到目标的**后面**，往前拖插到**前面**。
+    //      统一插到前面的话，「把 A 拖到它右边紧邻的那一格」会插回原处、
+    //      看起来就是「拖了没反应」—— 这是自测第一版抓出来的。
+    //      判据必须是 `i <= j`（而不是 `i < j`）：删除之后目标的下标
+    //      已经左移了一格，相邻后拖时会出现 i == j，用 `<` 又退回原处。
+    final j = names.indexOf(to);
+    if (j < 0) return;
+    names.insert(i <= j ? j + 1 : j, from);
+    setState(() => _order[cat] = names);
+    await ref.read(settingsProvider).setToolOrder(_order);
+  }
+
+  Future<void> _rename(_ToolDef t) async {
+    final v = await _askText(
+      '重命名',
+      '只改工具页里显示的名字，点进去之后的标题不变',
+      initial: _alias[t.name] ?? t.name,
+    );
+    if (v == null || !mounted) return;
+    final s = v.trim();
+    setState(() {
+      // 留空、或者改回原名 —— 都等于「没改」。删掉键而不是存一份
+      // 和原名一样的值，这样「恢复默认」才有一个干净的默认态。
+      if (s.isEmpty || s == t.name) {
+        _alias.remove(t.name);
+      } else {
+        _alias[t.name] = s;
+      }
+    });
+    await ref.read(settingsProvider).setToolAliases(_alias);
+  }
+
+  Future<void> _resetAll() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('恢复默认'),
+        content: const Text('把工具的顺序和显示名都恢复成默认？'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true), child: const Text('恢复')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final s = ref.read(settingsProvider);
+    await s.setToolOrder(<String, List<String>>{});
+    await s.setToolAliases(<String, String>{});
+    if (!mounted) return;
+    setState(() {
+      _order = <String, List<String>>{};
+      _alias = <String, String>{};
+    });
+  }
+
+  Future<String?> _askText(String title, String hint, {String initial = ''}) async {
+    final c = TextEditingController(text: initial);
+    return showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: c,
+          autofocus: true,
+          maxLength: 12,
+          // counterText 置空是为了不显示「0/12」那行，对话框会矮一大截
+          decoration: InputDecoration(hintText: hint, counterText: ''),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, c.text), child: const Text('确定')),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final logged = ref.watch(accountProvider).isLoggedIn;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('工具')),
+      appBar: AppBar(
+        title: Text(_editing ? '改名字' : '工具'),
+        actions: [
+          if (_editing)
+            TextButton(onPressed: _resetAll, child: const Text('恢复默认')),
+          IconButton(
+            icon: Icon(_editing ? Icons.check : Icons.edit_outlined),
+            tooltip: _editing ? '完成' : '给工具改显示名',
+            onPressed: () => setState(() => _editing = !_editing),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
@@ -155,42 +356,48 @@ class ToolsPage extends ConsumerWidget {
           // ---------- 服务器 html 小工具 ----------
           _ServerToolsRow(logged: logged),
 
+          // ---------- 自定义模式的操作提示 ----------
+          if (_editing) _editHint(scheme),
+
           // ---------- 离线小工具 ----------
-          for (final c in categories) ...[
+          for (final c in ToolsPage.categories) ...[
             Padding(
               // v1.7.0：标题行不再放图标，上下留白压缩一点
+              // v1.8.0：按用户要求去掉类别后面的「N 个」个数统计。
+              // 原来的写法是 name + SizedBox(7) + Text('${c.tools.length} 个')，
+              // 三个都要删干净 —— 只删 Text 会留下那 7px 的悬空间距。
               padding: const EdgeInsets.fromLTRB(2, 14, 2, 7),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.baseline,
-                textBaseline: TextBaseline.alphabetic,
-                children: [
-                  Text(c.name,
-                      style: TextStyle(
-                          // 用户要求「字体要更大一些」
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: scheme.primary)),
-                  const SizedBox(width: 7),
-                  Text('${c.tools.length} 个',
-                      style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
-                ],
-              ),
+              child: Text(c.name,
+                  style: TextStyle(
+                      // 用户要求「字体要更大一些」
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: scheme.primary)),
             ),
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: c.tools.length,
-              // v1.7.0：用 mainAxisExtent 把格子高度**钉死**成 34，不再用
-              // childAspectRatio —— 后者算出来的高度会随屏幕宽度变，
-              // 「进一步压缩行距」就变成看运气了。间距 8 → 6。
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                mainAxisExtent: 34,
-                mainAxisSpacing: 6,
-                crossAxisSpacing: 6,
-              ),
-              itemBuilder: (_, i) => _toolCard(context, c.tools[i]),
-            ),
+            // 包一层 LayoutBuilder 只为拿到**格子的真实宽度**：
+            // 拖动时那个跟着手指走的「影子卡片」要按同样的尺寸画，
+            // 不然会在半空中变形。宽度 = (整行宽 - 两个 6px 间距) / 3。
+            LayoutBuilder(builder: (_, cons) {
+              final list = _sortedTools(c);
+              final cellW = (cons.maxWidth - 12) / 3;
+              return GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: list.length,
+                // v1.7.0：用 mainAxisExtent 把格子高度**钉死**成 34，不再用
+                // childAspectRatio —— 后者算出来的高度会随屏幕宽度变，
+                // 「进一步压缩行距」就变成看运气了。间距 8 → 6。
+                // v1.8.0 需求13：尺寸一个字没动（用户明确要求「框框大小不变」），
+                // 放大的是里面的字，见 _toolCard。
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  mainAxisExtent: 34,
+                  mainAxisSpacing: 6,
+                  crossAxisSpacing: 6,
+                ),
+                itemBuilder: (_, i) => _cell(c, list, i, cellW, scheme),
+              );
+            }),
           ],
 
           const SizedBox(height: 22),
@@ -209,6 +416,8 @@ class ToolsPage extends ConsumerWidget {
                   child: Text(
                     '卡片右上角带蓝色小点的，是需要联网的工具；'
                     '没有小点的都能离线用。\n'
+                    '长按任意格子拖动可以换顺序，拖动只在同一类里生效；'
+                    '想给工具改个显示名，点右上角那个按钮进自定义模式。\n'
                     '上面两个按钮需要连上你的 WebDAV 服务器：'
                     '「下载站」读 /${AppDirs.download}，「小工具」读 /${AppDirs.tools}。',
                     style: TextStyle(fontSize: 11.5, height: 1.7, color: scheme.onSurfaceVariant),
@@ -222,15 +431,116 @@ class ToolsPage extends ConsumerWidget {
     );
   }
 
-  Widget _toolCard(BuildContext context, _ToolDef t) {
+  /// 自定义模式下的顶栏提示条
+  Widget _editHint(ColorScheme scheme) {
+    return Container(
+      margin: const EdgeInsets.only(top: 14),
+      padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.drag_indicator, size: 17, color: scheme.primary),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              '现在点一下格子是「改名字」；点进去用工具请先点右上角 ✓ 退出。\n'
+              '长按格子拖动可换顺序（任何时候都能用，只在同一类里换）。',
+              style: TextStyle(
+                  fontSize: 11.5, height: 1.65, color: scheme.onSurfaceVariant),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 一个格子。
+  ///
+  /// 拖动换顺序**任何时候都能用**（长按格子拖），不要求先点进自定义模式 ——
+  /// 少一步就少一次抱怨；「改名」才需要进自定义模式，因为改名要抢「点一下」
+  /// 这个手势，普通模式下点一下必须是打开工具。
+  ///
+  /// 用核心库的 `DragTarget` / `LongPressDraggable` 自己拼，而不是
+  /// `ReorderableListView` —— 后者是**线性**列表，摆不出「一行三个」的网格
+  /// （`GridView` 的 `.reorderable` 只支持动态列数，不支持
+  /// `SliverGridDelegateWithFixedCrossAxisCount`）。
+  Widget _cell(_Category c, List<_ToolDef> list, int i, double cellW,
+      ColorScheme scheme) {
+    final t = list[i];
+    final label = _alias[t.name] ?? t.name;
+    final inCat = <String>{for (final x in list) x.name};
+    final onTap = _editing
+        ? () => _rename(t)
+        : () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => toolPageOf(t.name)),
+            );
+
+    return DragTarget<String>(
+      // 只接**同一类**里的小工具：跨类拖过来一律不收，
+      // 否则会闪出一个「能放」的高亮，松手却什么也没发生。
+      onWillAcceptWithDetails: (d) => d.data != t.name && inCat.contains(d.data),
+      onAcceptWithDetails: (d) => _drop(c.name, d.data, t.name),
+      builder: (ctx, cand, rejected) {
+        final hot = cand.isNotEmpty;
+        return LongPressDraggable<String>(
+          data: t.name,
+          // 自定义模式下用户已经明确知道自己在拖动，短一点更跟手；
+          // 普通模式下要 400ms，否则一边滑一边就误触成拖动了。
+          delay: Duration(milliseconds: _editing ? 160 : 400),
+          // 让影子卡片跟着**手指**走（默认跟着按下点走，长按一会儿再拖会偏很远）
+          dragAnchorStrategy: pointerDragAnchorStrategy,
+          feedback: Material(
+            color: Colors.transparent,
+            child: SizedBox(
+              width: cellW,
+              height: 34,
+              // 影子卡片和「拖走后留下的空位」都不该响应点击
+              child: _toolCard(context, t, label: label, onTap: () {}, shadow: true),
+            ),
+          ),
+          childWhenDragging: Opacity(
+              opacity: 0.25,
+              child: _toolCard(context, t, label: label, onTap: () {})),
+          child: DecoratedBox(
+            // foreground：描边画在卡片**上面**，不占布局尺寸 ——
+            // 格子高度是钉死的 34，加一圈 padding 会把它撑高、把行距改了。
+            position: DecorationPosition.foreground,
+            decoration: (_editing || hot)
+                ? BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: hot
+                          ? scheme.primary
+                          : scheme.primary.withValues(alpha: 0.32),
+                      width: hot ? 2 : 1,
+                    ),
+                  )
+                : const BoxDecoration(),
+            child: _toolCard(context, t, label: label, onTap: onTap),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _toolCard(BuildContext context, _ToolDef t,
+      {required String label, VoidCallback? onTap, bool shadow = false}) {
     final scheme = Theme.of(context).colorScheme;
     return Card(
       margin: EdgeInsets.zero,
+      elevation: shadow ? 8 : null,
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
-        onTap: () => Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => toolPageOf(t.name)),
-        ),
+        // onTap 为 null（拖动影子、或者自定义模式下漏传）时 InkWell 不响应，
+        // 正好是想要的效果。
+        onTap: onTap ??
+            () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => toolPageOf(t.name)),
+                ),
         child: Stack(
           children: [
             Padding(
@@ -240,23 +550,36 @@ class ToolsPage extends ConsumerWidget {
               child: Row(
                 children: [
                   // v1.7.0：图标和文字放进**同一排**（原来是图标在上、文字在下）。
-                  // 图标保留，尺寸 17 → 14，把省下的宽度让给文字。
-                  Icon(t.icon, color: t.color, size: 14),
+                  // v1.8.0 需求13：字被放大之后 14 的图标显得太小，跟着提到 16。
+                  Icon(t.icon, color: t.color, size: 16),
                   const SizedBox(width: 4),
                   Expanded(
                     child: FittedBox(
-                      // 「文字要显示全」——所以是 scaleDown（放不下就整体缩小），
-                      // 不是 ellipsis。最长的几个名字（7 个字或带字母的）会被
-                      // 缩到 11px 上下，这是「一行 3 个 + 名字不截断」的必然代价。
+                      // v1.8.0 需求13：用户要求「字体放大到填充整个边框」。
+                      //
+                      // 做法是把基准字号直接提到 24 —— FittedBox 是 scaleDown，
+                      // 只在放不下时缩小、绝不会放大，所以「基准字号」就是字号
+                      // 上限。基准 12.5 的时候，不管格子多空，字永远只有 12.5；
+                      // 提到 24 之后：
+                      //   1~3 个字 → 顶到 24，把 34 高的格子填满（这才是用户要的）
+                      //   4 个字   → 约 18
+                      //   5 个字   → 约 15
+                      //   6 个字   → 约 12.5（与改之前持平，不会更差）
+                      // 宽屏（平板）上横向更宽，6 个字也能顶到 24。
+                      // 想更整齐可以用「长按改名」把名字改短。
+                      //
+                      // height 给 1.05 而不是 1.0：CJK 字形顶到 em 框边缘，
+                      // 行高太紧容易看到上下被切掉一点点的错觉。
                       fit: BoxFit.scaleDown,
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        t.name,
+                        label,
                         maxLines: 1,
+                        softWrap: false,
                         style: TextStyle(
-                          // 字号 11.5 → 12.5（用户要求「字体加大」）
-                          fontSize: 12.5,
-                          height: 1.0,
+                          fontSize: 24,
+                          height: 1.05,
+                          fontWeight: FontWeight.w500,
                           color: scheme.onSurface,
                         ),
                       ),
@@ -373,6 +696,9 @@ Widget toolPageOf(String name) {
       return const CompassPage();
     case '后台录音录像':
       return const AudioRecorderPage();
+    // ---- v1.8.0 ----
+    case '单位换算':
+      return const UnitConvertPage();
     default:
       return const Scaffold(body: Center(child: Text('这个工具还没做好')));
   }

@@ -422,41 +422,45 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
       appBar: AppBar(
         title: Text(title, overflow: TextOverflow.ellipsis),
         actions: [
-          // v1.7.0 工具栏顺序（用户指定）：列表 → 查找 → 编辑 → 导出/分享+删除 → 阅读模式。
-          // 「查找 / 编辑」紧挨在「导出 / 分享、删除笔记」之前 —— 这是用户明确要的
-          // 「放到导出/分享、删除笔记那里并且排第一个、第二个」。
+          // v1.8.0 按用户要求「上面的按钮太多」：把**查找**和**编辑**收进 ⋮ 菜单，
+          // 位置排在「导出 / 分享」「删除笔记」**上面**（用户点名）。
+          // AppBar 上只留两个图标 + 一个 ⋮：
+          //   [本目录的笔记] [⋮ 查找/编辑/导出分享/删除] [阅读模式]
+          //   菜单内顺序：在本文中查找 → 编辑 → 导出 / 分享 → 删除笔记
           if (_hasSibs)
             IconButton(
               tooltip: '本目录的笔记（第 ${_sibIndex + 1} / ${widget.siblings.length} 篇）',
               icon: const Icon(Icons.list_alt),
               onPressed: _showList,
             ),
-          IconButton(
-            tooltip: '在本文中查找',
-            icon: const Icon(Icons.search),
-            onPressed: _showFind,
-          ),
-          if (!widget.plain)
-            IconButton(
-              tooltip: '编辑',
-              icon: const Icon(Icons.edit_outlined),
-              onPressed: () async {
+          PopupMenuButton<String>(
+            tooltip: '更多',
+            onSelected: (v) async {
+              if (v == 'find') await _showFind();
+              if (v == 'edit') {
                 await Navigator.of(context)
                     .push(MaterialPageRoute(builder: (_) => NoteEditPage(path: _path)));
                 _load();
-              },
-            ),
-          PopupMenuButton<String>(
-            onSelected: (v) async {
+              }
               if (v == 'export') await _export();
               if (v == 'delete') await _delete();
             },
-            itemBuilder: (_) => const [
-              PopupMenuItem(
+            itemBuilder: (_) => [
+              const PopupMenuItem(
+                  value: 'find',
+                  child: ListTile(
+                      leading: Icon(Icons.search), title: Text('在本文中查找'), dense: true)),
+              // plain 模式（比如导出用的只读视图）不提供编辑
+              if (!widget.plain)
+                const PopupMenuItem(
+                    value: 'edit',
+                    child: ListTile(
+                        leading: Icon(Icons.edit_outlined), title: Text('编辑'), dense: true)),
+              const PopupMenuItem(
                   value: 'export',
                   child: ListTile(
                       leading: Icon(Icons.ios_share), title: Text('导出 / 分享'), dense: true)),
-              PopupMenuItem(
+              const PopupMenuItem(
                   value: 'delete',
                   child: ListTile(
                       leading: Icon(Icons.delete_outline), title: Text('删除笔记'), dense: true)),

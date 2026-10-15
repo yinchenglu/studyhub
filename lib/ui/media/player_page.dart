@@ -103,11 +103,29 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   double _dim = 0; // 亮度遮罩：0 全亮，0.7 最暗
   bool _uiVisible = true;
 
+  /// 控制栏要不要「几秒后自动隐藏」（v1.8.0）。
+  /// 默认 false：菜单一直显示，只有点全屏、或点画面空白处才收起。
+  /// 用户在「设置 → 自动隐藏菜单」里可以打开，打开后才是老行为。
+  bool _autoHideUi = false;
+
   /// 屏幕方向是否被钉死（v1.4.0 起替代了 v1.3.0 那个手动的横/竖屏开关）。
   /// 锁定时：不跟随重力翻转，并且点击屏幕不再呼出控制栏。
   bool _locked = false;
 
   String? _error;
+
+  // ---- 播放错误的「虚警」过滤（v1.8.0）----
+  //
+  // media_kit / mpv 在**能继续播**的情况下也会往 error 流里丢东西：
+  // 某个轨道探测失败、内嵌字幕流 404、HLS 分片重试、容器尾部有多余数据……
+  // 这些都不影响播放，但直接弹遮罩就会出现用户报的那句
+  // 「提示播放不了、其实画面在正常播」。
+  //
+  // 做法：错误先**挂起**，记下此刻的播放位置；2 秒后回看播放位置有没有
+  // 往前走 —— 走了就说明是虚警，直接丢掉；没走才真的把遮罩弹出来。
+  String? _pendingError;
+  Timer? _errProbeTimer;
+  Duration _errAnchor = Duration.zero;
 
   /// 播放模式（v1.7.0 新增）。见 PlayMode 的注释。
   PlayMode _playMode = PlayMode.sequential;
@@ -141,6 +159,16 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   Timer? _saveTimer;
   final List<StreamSubscription> _subs = [];
 
+  /// 当前视频的宽高（v1.8.0）。media_kit 的 `stream.width/height` 是 `Stream<int?>`，
+  /// 拿不到时存 0，`_maybeAutoLandscape` 会跳过。
+  int _vidW = 0;
+  int _vidH = 0;
+
+  /// 当前这一集是不是已经被我们自动切成横屏了 —— 只在**状态真的变了**的时候
+  /// 才调一次原生方法，否则每来一个 width/height 事件都要 setRequestedOrientation，
+  /// 系统会反复重建 Activity，画面会闪。
+  bool _autoLandscape = false;
+
   MediaItem get _current => widget.playlist[_index];
 
   @override
@@ -157,6 +185,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   Future<void> _init() async {
     _rate = await SettingsStore.instance.playbackSpeed();
+    // v1.8.0：控制栏默认常显（false）。读设置要在 `_scheduleHide()` 之前，
+    // 否则第一次进播放页会拿着默认值把菜单藏掉。
+    _autoHideUi = await SettingsStore.instance.autoHidePlayerUi();
 
     // 先问一次系统媒体音量，拿到就用它当初始音量。
     // 播放器自己的系数固定拉满 —— 音量完全交给系统，
@@ -174,7 +205,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     } catch (_) {}
 
     _subs.add(_player.stream.position.listen((p) {
-      if (!_seeking && mounted) setState(() => _position = p);
+      if (!mounted) return;
+      // 画面其实在往前走 → 不管之前弹没弹过错误遮罩，都判定为「能播」，
+      // 把遮罩收掉。用户报的「提示播不了、其实在正常播」就靠这条兜底。
+      if (_error != null && p > _errAnchor + const Duration(milliseconds: 600)) {
+        setState(() => _error = null);
+      }
+      if (!_seeking) setState(() => _position = p);
     }));
     _subs.add(_player.stream.duration.listen((d) {
       if (mounted) setState(() => _duration = d);
@@ -186,8 +223,20 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       if (mounted) setState(() => _buffering = b);
     }));
     _subs.add(_player.stream.error.listen((e) {
-      if (mounted && e.isNotEmpty) setState(() => _error = e);
+      if (mounted && e.isNotEmpty) _onPlayerError(e);
     }));
+
+    // v1.8.0：横屏视频默认横屏（见 _maybeAutoLandscape）。
+    // 这两个流在 open() 之前会先来一轮 null，所以判据里必须排除 <= 0。
+    _subs.add(_player.stream.width.listen((w) {
+      _vidW = w ?? 0;
+      _maybeAutoLandscape();
+    }));
+    _subs.add(_player.stream.height.listen((h) {
+      _vidH = h ?? 0;
+      _maybeAutoLandscape();
+    }));
+
     _subs.add(_player.stream.completed.listen((done) {
       if (done && mounted) {
         _saveProgress();
@@ -239,6 +288,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     if (client == null) return;
     _index = i;
     final item = _current;
+    // v1.8.0：换集要把上一集的宽高清掉，否则新视频还没报尺寸时
+    // `_maybeAutoLandscape` 会拿旧值去比，横竖屏判断错一次（画面会抖一下）。
+    _vidW = 0;
+    _vidH = 0;
     if (mounted) setState(() => _error = null);
 
     var start = Duration.zero;
@@ -276,8 +329,37 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   void _scheduleHide() {
     _hideTimer?.cancel();
+    // v1.8.0：默认**不自动隐藏**。控制栏一直挂着，只有点全屏或点画面空白处
+    // 才会收起。用户在「设置 → 自动隐藏菜单」打开后才走下面这条 3.5 秒计时。
+    if (!_autoHideUi) return;
     _hideTimer = Timer(const Duration(milliseconds: 3500), () {
       if (mounted && _playing) setState(() => _uiVisible = false);
+    });
+  }
+
+  /// 收到播放器错误的统一入口。
+  ///
+  /// 关键点：media_kit 对「不影响播放的小毛病」也会报 error，
+  /// 所以不能收到就弹遮罩。先挂起，等 2 秒看画面有没有真的在走，
+  /// 走了就是虚警（丢掉），没走才把遮罩弹出来。
+  void _onPlayerError(String e) {
+    _pendingError = e;
+    _errAnchor = _position;
+    _errProbeTimer?.cancel();
+    // 只有「连位置都不动」才需要等满 2 秒去确认；已经在播的直接快速判定。
+    final delay = (_playing && _duration > Duration.zero)
+        ? const Duration(milliseconds: 900)
+        : const Duration(seconds: 2);
+    _errProbeTimer = Timer(delay, () {
+      if (!mounted) return;
+      // 位置往前走了 = 真的在播 → 这条错误是虚警，静默丢掉
+      if (_position > _errAnchor + const Duration(milliseconds: 400)) {
+        _pendingError = null;
+        return;
+      }
+      final msg = _pendingError;
+      _pendingError = null;
+      if (msg != null) setState(() => _error = msg);
     });
   }
 
@@ -352,43 +434,66 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   }
 
   /// 播放模式菜单（v1.7.0）。写法与倍速菜单保持一致。
+  ///
+  /// ★ v1.8.0 修「横屏时最后一项『全目录循环播放』被遮住看不见」：
+  ///   根因不在我们这段代码，而在 `showModalBottomSheet` 的默认布局 ——
+  ///   `isScrollControlled` 为 false 时，底部弹窗的**高度上限是屏幕高度的 9/16**
+  ///   （`_ModalBottomSheetLayout` 里的 `maxHeight * 9.0 / 16.0`）。
+  ///   竖屏 800dp 高时上限 450dp，装得下；横屏只剩约 360dp 高，
+  ///   上限掉到 202dp，而「标题 + 4 个 ListTile」差不多 276dp ——
+  ///   于是第 4 项直接被裁掉，而且因为原来是 `Column` 不是滚动列表，
+  ///   连「滚一下」的机会都没有。
+  ///
+  ///   修法两条一起上：
+  ///     1. `isScrollControlled: true` —— 解除 9/16 上限，弹窗可以用满屏高；
+  ///     2. 内容换成 `SingleChildScrollView` —— 万一屏幕再矮（分屏、小屏横屏）
+  ///        也能滚，不至于又白改一遍。
+  ///   顺带把每项压紧一点（dense + visualDensity），横屏里更好点。
   Future<void> _showPlayModeSheet() async {
     _hideTimer?.cancel();
     final picked = await showModalBottomSheet<PlayMode>(
       context: context,
       backgroundColor: const Color(0xFF1C1C1E),
+      isScrollControlled: true,
+      showDragHandle: true,
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 14),
-              child: Text('播放模式',
-                  style: TextStyle(
-                      color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-            ),
-            for (final m in PlayMode.values)
-              ListTile(
-                leading: Icon(playModeIcon(m),
-                    color: m == _playMode ? Colors.lightBlueAccent : Colors.white70),
-                title: Text(playModeName(m),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(bottom: 6),
+                child: Text('播放模式',
                     style: TextStyle(
-                        fontSize: 14,
-                        color: m == _playMode ? Colors.lightBlueAccent : Colors.white)),
-                trailing: m == _playMode
-                    ? const Icon(Icons.check, color: Colors.lightBlueAccent, size: 20)
-                    : null,
-                onTap: () => Navigator.of(ctx).pop(m),
+                        color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
               ),
-            const SizedBox(height: 8),
-          ],
+              for (final m in PlayMode.values)
+                ListTile(
+                  dense: true,
+                  visualDensity: const VisualDensity(vertical: -2),
+                  leading: Icon(playModeIcon(m),
+                      color: m == _playMode ? Colors.lightBlueAccent : Colors.white70),
+                  title: Text(playModeName(m),
+                      style: TextStyle(
+                          fontSize: 14,
+                          color: m == _playMode ? Colors.lightBlueAccent : Colors.white)),
+                  trailing: m == _playMode
+                      ? const Icon(Icons.check, color: Colors.lightBlueAccent, size: 20)
+                      : null,
+                  onTap: () => Navigator.of(ctx).pop(m),
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
     if (!mounted) return;
     if (picked != null) {
+      // v1.8.0 按用户要求：**去掉切换后的提示**。
+      // 模式图标就在底栏上亮着（非默认顺序时是浅蓝），弹窗里也打了勾，
+      // 再来一条 SnackBar 纯属噪音，还会挡住画面。
       setState(() => _playMode = picked);
-      _toast(playModeName(picked));
     }
     _scheduleHide();
   }
@@ -397,13 +502,27 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   ///
   /// 播放页本来就是整屏黑底，所以「全屏」真正能看到的差别就是把系统栏收掉。
   /// 退出页面时会还原成 edgeToEdge（见 dispose），不会把整个 App 带成沉浸式。
+  ///
+  /// v1.8.0 按用户要求：**点全屏的瞬间就把控制栏一起收掉** ——
+  /// 原来点完全屏，控制栏还悬在那儿等 3.5 秒才自己消失，
+  /// 正好挡住刚铺满的画面。想再叫出来点一下屏幕就行。
   void _toggleFullscreen() {
     final next = !_fullscreen;
-    setState(() => _fullscreen = next);
+    setState(() {
+      _fullscreen = next;
+      if (next) _uiVisible = false;
+    });
     SystemChrome.setEnabledSystemUIMode(
       next ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
     );
-    _scheduleHide();
+    // 进全屏就把定时器掐掉（否则 3.5 秒后又白白 setState 一次）；
+    // 退全屏才重新计时，让控制栏正常待一会儿。
+    if (next) {
+      _hideTimer?.cancel();
+    } else {
+      _uiVisible = true;
+      _scheduleHide();
+    }
   }
 
   // ------------------------------------------------------------ 双指缩放
@@ -460,6 +579,32 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       _open(_index - 1);
     } else {
       _player.seek(Duration.zero);
+    }
+  }
+
+  /// v1.8.0 按用户要求：**横屏视频（宽 > 高）默认横屏**。
+  ///
+  /// 判据用 media_kit 暴露的 `stream.width` / `stream.height`（都是 `Stream<int?>`）。
+  /// 两个值都到位才判断 —— 刚 `open()` 时会先来一轮 null，
+  /// 过早（拿 0 去比）判断会误判成「竖屏视频」，于是什么都不做。
+  ///
+  /// 走原生 `SCREEN_ORIENTATION_SENSOR_LANDSCAPE` 而不是 Flutter 的
+  /// `setPreferredOrientations([landscapeLeft, landscapeRight])`：
+  /// 后者在 Android 上映射到 `USER_*` 系列，会尊重系统里的「自动旋转」开关，
+  /// 用户关掉之后就不转了 —— v1.5.0 在 followDevice 上正好踩过这个坑
+  /// （详见 core/screen_orientation.dart 顶部）。
+  ///
+  /// 想回竖屏：点右上角「锁定」→ 再点一次「解锁」，就回到跟随手机方向。
+  void _maybeAutoLandscape() {
+    if (_vidW <= 0 || _vidH <= 0) return;
+    final want = _vidW > _vidH;
+    if (want == _autoLandscape) return;
+    _autoLandscape = want;
+    if (want) {
+      ScreenOrientation.lockLandscape();
+    } else {
+      // 上一集是横屏、这集是竖屏 —— 得把方向放开，不然会一直卡在横屏
+      ScreenOrientation.followDevice();
     }
   }
 
@@ -532,6 +677,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     _saveTimer?.cancel();
     _volPushTimer?.cancel();
     _volPollTimer?.cancel();
+    _errProbeTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -826,7 +972,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         left: 0,
         right: 0,
         child: SafeArea(
-          child: Container(
+          // v1.8.0：控制栏自己**吃掉**落在它身上的点击。
+          // 外层 GestureDetector 的 onTap 是「点画面空白处收起菜单」，
+          // 不拦的话点顶栏的标题区域也会把菜单收掉 —— 用户要的是
+          // 「只有点菜单**外面**才隐藏」。按钮/滑块是更深的识别器，照常生效。
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {},
+            child: Container(
             color: Colors.black.withValues(alpha: 0.35),
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
             child: Row(
@@ -862,6 +1015,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                 ),
               ],
             ),
+            ),
           ),
         ),
       );
@@ -871,7 +1025,11 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         left: 0,
         right: 0,
         child: SafeArea(
-          child: Container(
+          // 同上：底栏自己吃掉点击，免得点进度条旁边的空白把菜单收掉
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {},
+            child: Container(
             color: Colors.black.withValues(alpha: 0.4),
             padding: const EdgeInsets.fromLTRB(12, 4, 12, 6),
             child: Column(
@@ -986,6 +1144,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   },
                 ),
               ],
+            ),
             ),
           ),
         ),

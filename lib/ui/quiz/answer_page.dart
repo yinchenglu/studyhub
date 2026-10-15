@@ -117,6 +117,22 @@ class _AnswerPageState extends ConsumerState<AnswerPage> {
     if (widget.randomize) _list.shuffle(Random(DateTime.now().millisecondsSinceEpoch));
     _load();
     if (_isExam) _startExamClock();
+
+    // ★ v1.8.0 修用户报的「只看不做 / 带答案刷题模式进去之后不自动跳题，
+    //   要等我手动滑到下一题才开始」。
+    //
+    //   根因：自动跳题的排程之前只有 `_goTo()` 一个入口（手动翻页 / 左右滑 /
+    //   答题卡都走它）。而从题库以「刷题模式」进来时 `_browseOn` 初值就是 true、
+    //   `_goTo` **一次都没被调用过** —— 计时器从没启动，第一题只能干等着，
+    //   用户一滑，`_goTo` 才把计时器接上，所以看起来像「滑一下才开始」。
+    //
+    //   放在 postFrame 里而不是直接调：`_scheduleAutoNext` 最终会走到 setState
+    //   （进度环要靠 `_autoRemainMs` 重绘），在 initState 里直接 setState 会报错。
+    if (!_isExam && _browseOn) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _browseOn && !_finished) _scheduleAutoNext(_i, true);
+      });
+    }
   }
 
   void _startExamClock() {
