@@ -9,9 +9,24 @@ import '../../data/dav/webdav_client.dart';
 import '../../data/local/db.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
+import '../common/pdf_view_page.dart';
+import '../media/image_viewer_page.dart';
+import '../media/player_page.dart';
+import 'server_ops.dart';
 
-/// 服务器速查表：浏览 WebDAV /tools 目录里的词库、速查表、模板
-/// 顺便提供「题库体检」——检查 quiz 目录下的 JSON 有没有写错
+/// 服务器速查表 / StudyHub 根目录浏览器。
+///
+/// 两个入口共用这一个页面：
+///   * `rootPath = tools`（默认）→ 「服务器速查表」，浏览词库、速查表、模板，
+///     顺带提供「题库体检」；
+///   * `rootPath = ''` → 「StudyHub 根目录」，能看到 notes / media / quiz /
+///     tools / download / backup 全部内容（服务器下载站右上角那个按钮进来的）。
+///
+/// v1.9.0+31：用户要求**进根目录之后也要有下载 / 修改 / 上传 / 删除的菜单**。
+/// 于是这一页接上了和下载站同一套操作（[ServerFileOps]）：
+///   * 顶栏 `+` → 上传文件（任意类型、可多选）/ 新建文件夹；
+///   * 每个条目右侧 `⋮`（长按同效）→ 下载 / 重命名 / 编辑文本 / 分享 /
+///     复制直链 / 删除。
 class ServerFilesPage extends ConsumerStatefulWidget {
   const ServerFilesPage({super.key, this.rootPath = AppDirs.tools, this.titleOverride});
 
@@ -41,6 +56,20 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
   bool get _isToolsRoot => _root == AppDirs.tools;
 
   bool get _atRoot => _sub.isEmpty;
+
+  /// 当前所在目录（**相对资料根**的完整路径），写操作都作用在它上面
+  String get _curDir {
+    if (_root.isEmpty) return _sub;
+    return _sub.isEmpty ? _root : '$_root/$_sub';
+  }
+
+  /// 上传 / 新建 / 重命名 / 编辑 / 删除 —— 和下载站共用同一套实现
+  ServerFileOps get _ops => ServerFileOps(
+        context: context,
+        ref: ref,
+        dirPath: _curDir,
+        onChanged: _load,
+      );
 
   String get _title {
     if (widget.titleOverride != null) return widget.titleOverride!;
@@ -123,6 +152,32 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
               onPressed: _validateBanks,
               icon: const Icon(Icons.fact_check_outlined),
             ),
+          // v1.9.0+31：进根目录之后也能直接往当前目录里放东西
+          if (ref.watch(accountProvider).isLoggedIn)
+            PopupMenuButton<String>(
+              tooltip: '新建',
+              icon: const Icon(Icons.add),
+              onSelected: (v) async {
+                if (v == 'mkdir') await _ops.createFolder();
+                if (v == 'upload') await _ops.upload();
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(
+                  value: 'upload',
+                  child: ListTile(
+                      leading: Icon(Icons.upload_file_outlined),
+                      title: Text('上传文件'),
+                      dense: true),
+                ),
+                PopupMenuItem(
+                  value: 'mkdir',
+                  child: ListTile(
+                      leading: Icon(Icons.create_new_folder_outlined),
+                      title: Text('新建文件夹'),
+                      dense: true),
+                ),
+              ],
+            ),
           IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
         ],
       ),
@@ -174,21 +229,87 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
                               e.isDir ? '文件夹' : '${formatBytes(e.size)}${e.modified == null ? '' : ' · ${formatTime(e.modified)}'}',
                               style: const TextStyle(fontSize: 12),
                             ),
-                            trailing: const Icon(Icons.chevron_right, size: 18),
-                            onTap: () async {
-                              if (e.isDir) {
-                                setState(() => _sub = _subOf(e.path));
-                                await _load();
-                              } else {
-                                await Navigator.of(context).push(MaterialPageRoute(
-                                    builder: (_) => TextFilePage(path: e.path)));
-                              }
-                            },
+                            trailing: IconButton(
+                              tooltip: '下载 / 修改 / 删除',
+                              icon: const Icon(Icons.more_vert, size: 20),
+                              onPressed: () => _ops.showEntrySheet(e),
+                            ),
+                            onTap: () => _open(e),
+                            onLongPress: () => _ops.showEntrySheet(e),
                           );
                         },
                       ),
                     ),
     );
+  }
+
+  /// 点一个条目：目录就进去，文件按类型挑最合适的打开方式。
+  ///
+  /// v1.9.0+31 之前这里「一律进纯文本页」—— 根目录里翻到个 mp4 或 pdf
+  /// 就是一堆乱码。现在和下载站保持同一套判断。
+  Future<void> _open(DavEntry e) async {
+    if (e.isDir) {
+      setState(() => _sub = _subOf(e.path));
+      await _load();
+      return;
+    }
+
+    final client = ref.read(davClientProvider);
+    if (client == null) {
+      await _ops.downloadOne(e);
+      return;
+    }
+
+    if (FileTypes.isReadableText(e.name)) {
+      await Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => TextFilePage(path: e.path)));
+      return;
+    }
+    if (FileTypes.isPdf(e.name)) {
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => PdfViewPage.network(
+          title: e.name,
+          url: client.urlFor(e.path),
+          headers: client.headers,
+        ),
+      ));
+      return;
+    }
+    if (FileTypes.isImage(e.name)) {
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => ImageViewerPage(
+          images: [client.urlFor(e.path)],
+          headers: client.headers,
+          titles: [e.name],
+        ),
+      ));
+      return;
+    }
+    if (FileTypes.isPlayable(e.name)) {
+      // 播放列表 = 当前目录里所有能播的（和下载站一个做法）
+      final list = <MediaItem>[];
+      var idx = 0;
+      for (final x in _entries) {
+        if (x.isDir || !FileTypes.isPlayable(x.name)) continue;
+        if (x.path == e.path) idx = list.length;
+        list.add(MediaItem(
+          path: x.path,
+          isVideo: FileTypes.isVideo(x.name),
+          size: x.size,
+          modified: x.modified,
+        ));
+      }
+      if (list.isEmpty) {
+        await _ops.downloadOne(e);
+        return;
+      }
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => PlayerPage(playlist: list, initialIndex: idx),
+      ));
+      return;
+    }
+    // 其它（压缩包、apk、Office 文档…）统一走下载
+    await _ops.downloadOne(e);
   }
 
   IconData _iconForExt(String ext) {
@@ -200,9 +321,46 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
       case 'csv':
         return Icons.table_chart_outlined;
       case 'txt':
+      case 'log':
         return Icons.description_outlined;
       case 'pdf':
         return Icons.picture_as_pdf_outlined;
+      // v1.9.0+31：根目录里什么都有，图标认不出类型就等于没图标
+      case 'jpg':
+      case 'jpeg':
+      case 'png':
+      case 'gif':
+      case 'webp':
+      case 'bmp':
+      case 'heic':
+      case 'svg':
+        return Icons.image_outlined;
+      case 'mp4':
+      case 'mkv':
+      case 'avi':
+      case 'mov':
+      case 'webm':
+      case 'flv':
+      case 'rmvb':
+        return Icons.movie_outlined;
+      case 'mp3':
+      case 'flac':
+      case 'wav':
+      case 'aac':
+      case 'm4a':
+      case 'ogg':
+        return Icons.music_note_outlined;
+      case 'zip':
+      case 'rar':
+      case '7z':
+      case 'gz':
+      case 'tar':
+        return Icons.folder_zip_outlined;
+      case 'apk':
+        return Icons.android;
+      case 'html':
+      case 'htm':
+        return Icons.language;
       default:
         return Icons.insert_drive_file_outlined;
     }

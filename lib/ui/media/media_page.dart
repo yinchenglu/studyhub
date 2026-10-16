@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +12,7 @@ import '../../core/sort_utils.dart';
 import '../../core/utils.dart';
 import '../../data/dav/webdav_client.dart';
 import '../../data/local/db.dart';
+import '../../data/local/video_thumb.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
 import '../common/favorite_action.dart';
@@ -52,12 +54,13 @@ class MediaPageState extends ConsumerState<MediaPage> {
   /// 排序方式
   SortPref _sort = const SortPref();
 
-  /// v1.9.0+26：浏览模式 = 列表（默认）/ 平铺（grid）。
-  /// 平铺模式只对「图片类文件」生效 —— 视频文件没缩略图，平铺出来
-  /// 全是占位图标没意义，所以视频不在平铺里显示（用户说「想预览整
-  /// 个文件夹的图片」，语境就是纯图片文件夹）。
-  /// ——但保险起见，先支持两种文件都进 grid，视频用「时长 + ▶」叠层占位。
-  /// 暂时保持「两种都进 grid」简单方案。
+  /// v1.9.0+26：平铺模式 = 列表（默认）/ 平铺（grid）。
+  ///
+  /// v1.9.0+28：视频目录也开放 —— 之前只对有图片的目录显示按钮。
+  /// v1.9.0+30：**所有目录**都给按钮（用户要求）。原来条件是
+  ///   `_dirEntries.any((e) => !e.isDir)`，也就是「目录里必须有一个文件」
+  ///   才显示；纯子文件夹的目录就没有按钮。现在改成只要有内容就显示，
+  ///   纯文件夹目录也能用格子的形式铺开（`_gridDirTile` 本来就支持）。
   _MediaViewMode _viewMode = _MediaViewMode.list;
 
   /// v1.9.0+26：平铺模式下缩略图边长（默认 80 px）。
@@ -95,6 +98,19 @@ class MediaPageState extends ConsumerState<MediaPage> {
   Set<String>? _selected;
 
   bool get _selecting => _selected != null;
+
+  /// v1.9.0+30：已经抽好的视频封面（服务器路径 → 本地图片文件）。
+  ///
+  /// 为什么要在页面里再存一份，而不是每次去问 `VideoThumbCache.peek`：
+  /// 抽帧是**异步**的，缓存里多了一张图这件事，页面并不知道 ——
+  /// 得有个东西触发 `setState`，封面才会真的画出来。
+  final Map<String, File> _videoThumbs = <String, File>{};
+
+  /// 已经派出去、还没回来的抽帧请求（去重用，避免同一帧派两次）。
+  final Set<String> _thumbPending = <String>{};
+
+  /// TRUE = 这个视频已经确认抽不出封面了，不用再等。
+  final Set<String> _thumbDead = <String>{};
 
   @override
   void initState() {
@@ -167,6 +183,66 @@ class MediaPageState extends ConsumerState<MediaPage> {
     } catch (_) {
       // 本地库读不出来只影响「看到哪了」标记，不该让整个媒体页报错
     }
+  }
+
+  /// v1.9.0+30：确保这个视频有封面。**幂等**，可以在 `itemBuilder` 里每帧调。
+  ///
+  /// 流程：
+  ///   1. 页面上已经有了 → 什么都不做；
+  ///   2. 全局缓存里已经有（上一次进这个目录抽过）→ 直接拿来，**同步**可用，
+  ///      不会有一帧的闪烁；
+  ///   3. 都没有 → 派一个后台抽帧请求，回来时 `setState` 把封面填上。
+  ///
+  /// 为什么不在 build 里直接 await：build 必须同步返回，而且列表滚动一次
+  /// 会构造几十个格子，每个都 await 就等于几十个并发请求。
+  void _ensureVideoThumb(String path) {
+    if (_videoThumbs.containsKey(path)) return;
+    if (_thumbPending.contains(path) || _thumbDead.contains(path)) return;
+
+    final cached = VideoThumbCache.instance.peek(path);
+    if (cached != null) {
+      // 这里直接写、不 setState：我们正处在 build 里，本次 build 就会用到它
+      _videoThumbs[path] = cached;
+      return;
+    }
+    if (VideoThumbCache.instance.isFailed(path)) {
+      _thumbDead.add(path);
+      return;
+    }
+
+    final client = ref.read(davClientProvider);
+    if (client == null) return;
+
+    _thumbPending.add(path);
+    VideoThumbCache.instance
+        .get(path, client.urlFor(path), client.headers)
+        .then((f) {
+      if (!mounted) return;
+      _thumbPending.remove(path);
+      if (f == null) {
+        _thumbDead.add(path);
+        return;
+      }
+      setState(() => _videoThumbs[path] = f);
+    });
+  }
+
+  /// v1.9.0+30：刷新时给之前抽失败的视频一次重来的机会。
+  ///
+  /// 不这么做的话：一次网络抖动就会把某个视频永久打成「没有封面」，
+  /// 之后不管网络好了多少次都不会再试。挂在**用户主动刷新**上刚好 ——
+  /// 既不会自己反复重试烧流量，又不至于只能靠重启 App 恢复。
+  Future<void> _refresh({bool allowThumbRetry = false}) async {
+    if (allowThumbRetry) {
+      VideoThumbCache.instance.allowRetry();
+      if (mounted) {
+        setState(() {
+          _thumbDead.clear();
+          _thumbPending.clear();
+        });
+      }
+    }
+    await _load();
   }
 
   /// 当前所在目录的完整服务器路径（media 或其子目录）
@@ -284,7 +360,10 @@ class MediaPageState extends ConsumerState<MediaPage> {
                 ],
               ),
             )
-          : RefreshIndicator(onRefresh: _load, child: _body()),
+          : RefreshIndicator(
+              onRefresh: () => _refresh(allowThumbRetry: true),
+              child: _body(),
+            ),
     );
   }
 
@@ -317,10 +396,12 @@ class MediaPageState extends ConsumerState<MediaPage> {
               onChanged: (v) => setState(() => _sort = v),
             ),
           // v1.9.0+26：列表 ↔ 平铺 切换。
-          // v1.9.0+28：视频目录也开放 —— 之前只对有图片的目录显示按钮，
-          // 用户要求视频目录同样能切平铺（视频格显示 ▶ 占位图标，
-          // 大格子点开播放，当「视频墙」用）。
-          if (logged && _dirEntries.any((e) => !e.isDir))
+          // v1.9.0+28：视频目录也开放 —— 之前只对有图片的目录显示按钮。
+          // v1.9.0+30：**所有目录**都给（用户要求「视频里面所有的目录都要有
+          //   平铺模式」）。原来的 `_dirEntries.any((e) => !e.isDir)` 把
+          //   「只有子文件夹、没有文件」的目录排除在外了，现在只要目录里有
+          //   内容就显示 —— 纯文件夹目录铺开就是一堆文件夹格子，一样有用。
+          if (logged && _dirEntries.isNotEmpty)
             IconButton(
               tooltip: _viewMode == _MediaViewMode.list ? '平铺模式' : '列表模式',
               icon: Icon(_viewMode == _MediaViewMode.list
@@ -368,7 +449,10 @@ class MediaPageState extends ConsumerState<MediaPage> {
                         dense: true)),
               ],
             ),
-          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+          IconButton(
+            onPressed: () => _refresh(allowThumbRetry: true),
+            icon: const Icon(Icons.refresh),
+          ),
         ],
         bottom: _busyBar,
       );
@@ -618,7 +702,11 @@ class MediaPageState extends ConsumerState<MediaPage> {
   ///         tile 的 onTap 长按会被吃掉。
   ///   2) 用 `SliverGridDelegateWithMaxCrossAxisExtent` 而不是固定列数，
   ///      缩略图变大 → 网格自动变少列；变小 → 自动变多列。
-  ///   3) 每个 tile：缩略图（cached_network_image 自动缓存）+ 文件名。
+  ///   3) 每个 tile：缩略图 + 文件名。
+  ///      图片走 `cached_network_image`；视频走 `VideoThumbCache`
+  ///      （v1.9.0+30 起，原生抽帧 + 本地缓存，见 `_videoThumbBox`）。
+  ///      子文件夹也有自己的格子（`_gridDirTile`），所以**任何目录**
+  ///      都能切平铺。
   ///   4) 长按弹菜单复用 `_showActions(e)`。
   Widget _dirGrid() {
     final scheme = Theme.of(context).colorScheme;
@@ -628,10 +716,10 @@ class MediaPageState extends ConsumerState<MediaPage> {
           const SizedBox(height: 90),
           Icon(Icons.image_outlined, size: 44, color: scheme.onSurfaceVariant),
           const SizedBox(height: 12),
-          const Center(child: Text('这个目录里没有图片')),
+          const Center(child: Text('这个目录里没有内容')),
           const SizedBox(height: 8),
           Center(
-              child: Text('点右上角 + 上传图片，或下拉刷新',
+              child: Text('点右上角 + 上传视频 / 图片，或下拉刷新',
                   style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant))),
         ],
       );
@@ -745,7 +833,7 @@ class MediaPageState extends ConsumerState<MediaPage> {
                   color: isVideo
                       ? const Color(0xFF7F77DD).withValues(alpha: 0.12)
                       : Colors.black12,
-                  child: _gridThumb(e.path, isVideo, client),
+                  child: _gridThumb(e, isVideo, client),
                 ),
               ),
             ),
@@ -762,16 +850,13 @@ class MediaPageState extends ConsumerState<MediaPage> {
   }
 
   /// 平铺模式缩略图。
-  /// 图片走 `CachedNetworkImage` —— 项目已有 `cached_network_image` 依赖，
-  /// 默认内存 + 磁盘双层缓存，第二次进入目录直接读本地，不用再下服务器。
-  /// 视频没缩略图（mp4 不像图片能直接解码），用占位图标 + ▶。
-  Widget _gridThumb(String path, bool isVideo, WebDavClient? client) {
-    if (isVideo) {
-      return Center(
-        child: Icon(Icons.movie_outlined, color: const Color(0xFF7F77DD), size: _thumbSize * 0.4),
-      );
-    }
-    final url = client?.urlFor(path) ?? '';
+  ///
+  /// * 图片 → `CachedNetworkImage`（项目已有 `cached_network_image` 依赖，
+  ///   默认内存 + 磁盘双层缓存，第二次进入目录直接读本地，不用再下服务器）。
+  /// * 视频 → `_videoThumbBox`：真·画面封面（v1.9.0+30 起，原生抽帧）。
+  Widget _gridThumb(DavEntry e, bool isVideo, WebDavClient? client) {
+    if (isVideo) return _videoThumbBox(e.path, _thumbSize * 0.4);
+    final url = client?.urlFor(e.path) ?? '';
     return CachedNetworkImage(
       imageUrl: url,
       httpHeaders: client?.headers ?? const {},
@@ -785,6 +870,53 @@ class MediaPageState extends ConsumerState<MediaPage> {
       errorWidget: (_, __, ___) => const Center(
         child: Icon(Icons.broken_image_outlined, size: 18, color: Colors.grey),
       ),
+    );
+  }
+
+  /// v1.9.0+30：视频封面。
+  ///
+  /// 抽到帧 → 显示真画面，右下角叠一个小 ▶（让人一眼区分「这是视频」
+  /// 而不是「这是一张图」）；没抽到（还在抽 / 抽不出来）→ 回落成
+  /// 原来的胶片图标，用户完全无感。
+  ///
+  /// 抽帧的调度就写在 build 路径上（`_ensureVideoThumb`），因为它本身
+  /// 是幂等的、且只在第一帧派发一次请求 —— 这是「自动」两个字的落点：
+  /// 用户什么都不用点，滚到哪儿抽到哪儿。
+  Widget _videoThumbBox(String path, double iconSize) {
+    _ensureVideoThumb(path);
+    final f = _videoThumbs[path];
+    if (f == null) {
+      return Center(
+        child: Icon(Icons.movie_outlined,
+            color: const Color(0xFF7F77DD), size: iconSize),
+      );
+    }
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Image.file(
+          f,
+          fit: BoxFit.cover,
+          // gaplessPlayback：缓存换图时不闪一下白底
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => Center(
+            child: Icon(Icons.movie_outlined,
+                color: const Color(0xFF7F77DD), size: iconSize),
+          ),
+        ),
+        Positioned(
+          right: 3,
+          bottom: 3,
+          child: Container(
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.45),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: const Icon(Icons.play_arrow, size: 12, color: Colors.white),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1160,13 +1292,50 @@ class MediaPageState extends ConsumerState<MediaPage> {
     await Downloader.withUi(context, client.urlFor(e.path), e.name, headers: client.headers);
   }
 
-  /// 视频缩略图用占位图标（避免额外解码开销），图片直接显示
+  /// 列表行左侧的那个小缩略图（56×44）。
   ///
-  /// v1.9.0+26：图片缩略图改用 `CachedNetworkImage` —— 默认内存 + 磁盘双层缓存，
+  /// v1.9.0+26：图片改用 `CachedNetworkImage` —— 默认内存 + 磁盘双层缓存，
   /// 第二次进入同一目录瞬间出，不必每次重新拉服务器。
+  /// v1.9.0+30：视频也有封面了（`VideoThumbCache`，原生抽帧 + 本地缓存）。
+  ///   没抽到之前仍然回落成胶片图标，列表不会因为「封面还没好」而空一块。
   Widget _thumbFromPath(String path, bool isVideo) {
     final repo = ref.read(mediaRepoProvider);
-    if (!isVideo && repo != null) {
+    if (isVideo) {
+      _ensureVideoThumb(path);
+      final f = _videoThumbs[path];
+      if (f == null) return _iconBox(Icons.movie_outlined);
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: SizedBox(
+          width: 56,
+          height: 44,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Image.file(
+                f,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+                errorBuilder: (_, __, ___) => _iconBox(Icons.movie_outlined),
+              ),
+              Positioned(
+                right: 2,
+                bottom: 2,
+                child: Container(
+                  padding: const EdgeInsets.all(1.5),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                  child: const Icon(Icons.play_arrow, size: 10, color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (repo != null) {
       final client = ref.read(davClientProvider);
       return ClipRRect(
         borderRadius: BorderRadius.circular(8),
@@ -1183,7 +1352,7 @@ class MediaPageState extends ConsumerState<MediaPage> {
         ),
       );
     }
-    return _iconBox(isVideo ? Icons.movie_outlined : Icons.image_outlined);
+    return _iconBox(Icons.image_outlined);
   }
 
   Widget _iconBox(IconData icon) => Container(

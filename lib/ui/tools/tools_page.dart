@@ -73,11 +73,11 @@ class ToolsPage extends ConsumerStatefulWidget {
       _ToolDef('翻页时钟', Icons.watch_later_outlined, Color(0xFF0C447C)),
       _ToolDef('番茄时钟', Icons.timer_outlined, Color(0xFFD85A30)),
       _ToolDef('日期计算', Icons.calendar_month_outlined, Color(0xFFEF9F27)),
-      _ToolDef('时间戳转换', Icons.access_time, Color(0xFF534AB7)),
-      _ToolDef('提词器', Icons.vertical_align_bottom, Color(0xFF27500A)),
-      _ToolDef('LED 屏幕', Icons.brightness_high, Color(0xFFEF9F27)),
+      _ToolDef('时间戳转', Icons.access_time, Color(0xFF534AB7)),
+      _ToolDef('提词工具', Icons.vertical_align_bottom, Color(0xFF27500A)),
+      _ToolDef('LED屏幕', Icons.brightness_high, Color(0xFFEF9F27)),
       // v1.4.0 新增：多词典在线翻译（要联网）
-      _ToolDef('翻译', Icons.translate, Color(0xFF185FA5), online: true),
+      _ToolDef('翻译查词', Icons.translate, Color(0xFF185FA5), online: true),
     ]),
 
     // ② 测量与设计 —— 原「测量与感官」，v1.6.0 起并入 7 个工具（用户点名）
@@ -87,25 +87,25 @@ class ToolsPage extends ConsumerStatefulWidget {
     //   * 「地图坐标转换 / 指南针 / 配色助手 / 颜色码转换」挪到最后 4 个
     //     —— 这些属于「对着屏幕 / 取色卡才用」，用频次低
     _Category('测量与设计', [
-      _ToolDef('直尺', Icons.straighten, Color(0xFF185FA5)),
-      _ToolDef('量角器', Icons.architecture, Color(0xFF7F77DD)),
+      _ToolDef('直尺测量', Icons.straighten, Color(0xFF185FA5)),
+      _ToolDef('角度测量', Icons.architecture, Color(0xFF7F77DD)),
       // v1.7.0：SOS 手电筒已按用户要求挪去「生活与娱乐」；
       // v1.9.0+22 再把「挂画助手」前移到这一行的第三位（用户截图要求）
       _ToolDef('挂画助手', Icons.straighten_outlined, Color(0xFF72243E)),
       _ToolDef('噪声测量', Icons.graphic_eq, Color(0xFF1D9E75)),
-      _ToolDef('屏幕坏点检测', Icons.grid_on, Color(0xFFD4537E)),
+      _ToolDef('屏幕检测', Icons.grid_on, Color(0xFFD4537E)),
       _ToolDef('简易画板', Icons.brush_outlined, Color(0xFF7F77DD)),
-      _ToolDef('高级计算器', Icons.functions, Color(0xFF534AB7)),
+      _ToolDef('高级计算', Icons.functions, Color(0xFF534AB7)),
       // v1.8.0 新增：18 类单位换算 + 人民币大小写 + 亲戚称呼，
       // 全部集中在一个界面里用顶部分类切换（用户点名要「集中在一个界面」）
       _ToolDef('单位换算', Icons.transform, Color(0xFF0F6E56)),
       // ↓ v1.9.0+22 后挪到末尾 4 个（截图要求）：
-      _ToolDef('地图坐标转换', Icons.swap_horiz, Color(0xFF1D9E75)),
+      _ToolDef('坐标转换', Icons.swap_horiz, Color(0xFF1D9E75)),
       // 指南针：地磁方向 + 经纬度 + 海拔。
       // 方向靠磁力计（离线、不要权限），经纬度/海拔靠定位（要权限）。
-      _ToolDef('指南针', Icons.explore, Color(0xFF0F7B6C)),
+      _ToolDef('指南海拔', Icons.explore, Color(0xFF0F7B6C)),
       _ToolDef('配色助手', Icons.auto_awesome, Color(0xFFD4537E)),
-      _ToolDef('颜色码转换', Icons.colorize_outlined, Color(0xFF0C447C)),
+      _ToolDef('颜色转换', Icons.colorize_outlined, Color(0xFF0C447C)),
     ]),
 
     // ③ 网络与编码 —— 原「文字与编码」，v1.6.0 起并入 CIDR 子网计算
@@ -115,13 +115,13 @@ class ToolsPage extends ConsumerStatefulWidget {
       _ToolDef('摩斯电码', Icons.wifi_tethering, Color(0xFF0F6E56)),
       _ToolDef('加密编码', Icons.lock_outline, Color(0xFF993C1D)),
       // v1.9.0+22：用户截图把 CIDR 子网计算从第 5 位提到第 3 位
-      _ToolDef('CIDR 子网计算', Icons.hub_outlined, Color(0xFF0C447C)),
-      _ToolDef('二维码生成', Icons.qr_code_2, Color(0xFF1D9E75)),
+      _ToolDef('子网计算', Icons.hub_outlined, Color(0xFF0C447C)),
+      _ToolDef('二维码生', Icons.qr_code_2, Color(0xFF1D9E75)),
       // v1.5.0 新增：一维条码（Code128 / Code39 / EAN-13 / EAN-8 / UPC-A）
-      _ToolDef('条码生成器', Icons.view_week, Color(0xFF72243E)),
+      _ToolDef('条码生成', Icons.view_week, Color(0xFF72243E)),
       // v1.7.0 从「地理与定位」挪进来（该分类因此清空、取消）
       // 身份证前 6 位查户籍地（自带 2978 个区划码，不用联网）
-      _ToolDef('身份证查户籍', Icons.badge_outlined, Color(0xFFB8860B)),
+      _ToolDef('身份户籍', Icons.badge_outlined, Color(0xFFB8860B)),
     ]),
 
     // ④ 生活与娱乐 —— 用户要求排第四，并并入 3 个工具
@@ -129,40 +129,40 @@ class ToolsPage extends ConsumerStatefulWidget {
     // 后台录像次之（按错就着它录），其它按原顺序接续。
     _Category('生活与娱乐', [
       // v1.7.0 从「测量与设计」挪进来（用户点名）；v1.9.0+22 提到本类第 1 位
-      _ToolDef('SOS 手电筒', Icons.flashlight_on, Color(0xFFB8860B)),
+      _ToolDef('急救手电', Icons.flashlight_on, Color(0xFFB8860B)),
       // 后台录音录像：类似 Alibi
-      _ToolDef('后台录音录像', Icons.fiber_manual_record, Color(0xFFD4537E)),
-      _ToolDef('抛硬币', Icons.casino_outlined, Color(0xFFE0A020)),
+      _ToolDef('后台录像', Icons.fiber_manual_record, Color(0xFFD4537E)),
+      _ToolDef('抛掷硬币', Icons.casino_outlined, Color(0xFFE0A020)),
       // 文件夹同步：本地文件夹 ↔ 服务器文件夹，后台每隔几分钟对一次
-      _ToolDef('文件夹同步', Icons.sync_alt, Color(0xFF0F7B6C)),
+      _ToolDef('文件同步', Icons.sync_alt, Color(0xFF0F7B6C)),
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
-      // 快递查询要访问快递 100 的接口，是联网工具
-      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
-      // v1.9.0+28：改名「数独练习」；路路词典下架（改成网页版小工具，不再内嵌）
-      _ToolDef('数独练习', Icons.grid_3x3, Color(0xFF534AB7)),
       // v1.9.0+28 新增：虚拟定位（改本机定位坐标，需开发者选项里选为模拟位置应用）
       _ToolDef('虚拟定位', Icons.my_location, Color(0xFF0F7B6C)),
+      // v1.9.0+28：改名「数独练习」；路路词典下架（改成网页版小工具，不再内嵌）
+      _ToolDef('数独练习', Icons.grid_3x3, Color(0xFF534AB7)),
+      // 快递查询要访问快递 100 的接口，是联网工具
+      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
     ]),
 
     // ⑤ 公卫小工具 —— 原「公卫数据」，v1.6.0 改名并扩容。
     // v1.9.0+22 按用户截图重排：把「Logistic 回归」「实时再生指数 Rt」前移，
     // 「食物中毒分析」「营养配餐」挪到末尾 2 个。
     _Category('公卫小工具', [
-      _ToolDef('消杀计算器', Icons.science_outlined, Color(0xFF0F7B6C)),
+      _ToolDef('消杀计算', Icons.science_outlined, Color(0xFF0F7B6C)),
       // v1.6.0 新增：现场配药时设备该开多大流量
-      _ToolDef('杀虫剂流量计算', Icons.opacity_outlined, Color(0xFF1D9E75)),
-      _ToolDef('公共卫生统计', Icons.pie_chart_outline, Color(0xFF185FA5)),
-      _ToolDef('病例对照研究', Icons.compare_arrows, Color(0xFF993C1D)),
+      _ToolDef('流量计算', Icons.opacity_outlined, Color(0xFF1D9E75)),
+      _ToolDef('卫生统计', Icons.pie_chart_outline, Color(0xFF185FA5)),
+      _ToolDef('对照研究', Icons.compare_arrows, Color(0xFF993C1D)),
       _ToolDef('队列研究', Icons.timeline, Color(0xFF534AB7)),
       // v1.6.0 新增的两个高级统计分析
       _ToolDef('分层分析', Icons.layers_outlined, Color(0xFF0C447C)),
       _ToolDef('交互作用', Icons.hub_outlined, Color(0xFF72243E)),
       // ↓ v1.9.0+22：把「Logistic 回归」「实时再生指数 Rt」前移，
       // 「食物中毒分析」「营养配餐」挪到末尾 2 个（用户截图要求）
-      _ToolDef('Logistic 回归', Icons.insights, Color(0xFF0C447C)),
+      _ToolDef('回归分析', Icons.insights, Color(0xFF0C447C)),
       // v1.6.0 新增：逐日估计传染速度
-      _ToolDef('实时再生指数 Rt', Icons.ssid_chart, Color(0xFFD93025)),
-      _ToolDef('食物中毒分析', Icons.restaurant_menu, Color(0xFFD4537E)),
+      _ToolDef('再生指数', Icons.ssid_chart, Color(0xFFD93025)),
+      _ToolDef('食物中毒', Icons.restaurant_menu, Color(0xFFD4537E)),
       _ToolDef('营养配餐', Icons.local_dining, Color(0xFF1D9E75)),
     ]),
   ];

@@ -59,7 +59,7 @@ class _FolderSyncPageState extends ConsumerState<FolderSyncPage> {
     final svc = SyncService.instance;
     final logged = ref.watch(accountProvider).isLoggedIn;
     return ToolScaffold(
-      title: '文件夹同步',
+      title: '文件同步',
       subtitle: '本地文件夹 ↔ 服务器文件夹，后台每隔几分钟对一次',
       actions: [
         IconButton(

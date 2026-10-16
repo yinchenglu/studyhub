@@ -13,6 +13,7 @@ import '../../core/system_volume.dart';
 import '../../core/utils.dart';
 import '../../data/local/db.dart';
 import '../../data/local/settings_store.dart';
+import '../../data/local/video_thumb.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
 
@@ -828,23 +829,64 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   }
 
   void _showEpisodeSheet() {
+    final client = ref.read(davClientProvider);
+
+    // v1.9.0+30：给「选集」列表也配视频封面（用户要求「所有的视频」都有）。
+    //
+    // 这里为什么用 ValueNotifier + ValueListenableBuilder，而不是
+    // 更顺手的 StatefulBuilder：抽帧是**异步**的，回来的时候用户很可能
+    // 已经把面板关掉了。`StatefulBuilder` 的 setState 在 widget 卸载之后
+    // 会直接抛「setState() called after dispose()」，而 ValueNotifier
+    // 在没人监听时只是安静地改个值，什么都不发生。
+    final tick = ValueNotifier<int>(0);
+    // 已经为哪几集派过抽帧请求 —— 面板每重建一次 itemBuilder 都会重跑，
+    // 没有这个集合就会重复挂 then 回调，一张封面回来触发好几次重画。
+    final asked = <String>{};
+
+    Widget? leadingFor(MediaItem it, int i) {
+      final icon = Icon(i == _index ? Icons.play_arrow : Icons.movie_outlined, size: 20);
+      final cache = VideoThumbCache.instance;
+      final f = cache.peek(it.path);
+      if (f == null) {
+        if (client != null && !cache.isFailed(it.path) && asked.add(it.path)) {
+          cache.get(it.path, client.urlFor(it.path), client.headers).then((got) {
+            if (got != null) tick.value = tick.value + 1;
+          });
+        }
+        return icon;
+      }
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(5),
+        child: SizedBox(
+          width: 46,
+          height: 30,
+          child: Image.file(f, fit: BoxFit.cover, gaplessPlayback: true),
+        ),
+      );
+    }
+
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (_) => SafeArea(
-        child: ListView.builder(
-          shrinkWrap: true,
-          itemCount: widget.playlist.length,
-          itemBuilder: (context, i) => ListTile(
-            dense: true,
-            leading: Icon(i == _index ? Icons.play_arrow : Icons.movie_outlined, size: 20),
-            title: Text(widget.playlist[i].name, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: Text(parentOf(widget.playlist[i].path).replaceFirst('media/', ''), style: const TextStyle(fontSize: 11.5)),
-            selected: i == _index,
-            onTap: () {
-              Navigator.pop(context);
-              _open(i);
-            },
+      builder: (_) => ValueListenableBuilder<int>(
+        valueListenable: tick,
+        builder: (_, __, ___) => SafeArea(
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: widget.playlist.length,
+            itemBuilder: (context, i) => ListTile(
+              dense: true,
+              leading: leadingFor(widget.playlist[i], i),
+              title: Text(widget.playlist[i].name,
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(parentOf(widget.playlist[i].path).replaceFirst('media/', ''),
+                  style: const TextStyle(fontSize: 11.5)),
+              selected: i == _index,
+              onTap: () {
+                Navigator.pop(context);
+                _open(i);
+              },
+            ),
           ),
         ),
       ),

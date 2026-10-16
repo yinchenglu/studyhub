@@ -14,6 +14,15 @@
 //   路径：设置 → 开发者选项 → 选择模拟位置信息应用 → 学聚。
 //   没选时原生会回 SecurityException，我们把原因原文 toast 出来。
 //
+// v1.9.0+32 修「开发者选项的列表里根本找不到学聚」：
+//   那个列表筛的是「**清单里声明过 ACCESS_MOCK_LOCATION 的应用**」
+//   （AOSP 的 MockLocationAppPreferenceController 遍历已安装应用的
+//   requestedPermissions 来筛），而 AndroidManifest.xml 里一直没写这一条，
+//   所以用户永远选不到本应用。已在清单里补上 ——
+//   注意这条权限本身拿不到（signature 级），它纯粹是「报名」，见清单里的注释。
+//   同时本页加了「已选中 / 还没选中」的实时状态（原生读 AppOps），
+//   回到前台自动刷新，不用再让用户猜。
+//
 // 注：本工具只做本地模拟，不上报任何数据；停止模拟时会把 GPS / NETWORK
 //     两个 provider 的测试提供者移除，恢复真实定位。
 
@@ -29,7 +38,7 @@ class MockLocPage extends StatefulWidget {
   State<MockLocPage> createState() => _MockLocPageState();
 }
 
-class _MockLocPageState extends State<MockLocPage> {
+class _MockLocPageState extends State<MockLocPage> with WidgetsBindingObserver {
   static const MethodChannel _ch = MethodChannel('studyhub/mockloc');
 
   final TextEditingController _lat = TextEditingController(text: '39.9087');
@@ -37,6 +46,10 @@ class _MockLocPageState extends State<MockLocPage> {
   final TextEditingController _acc = TextEditingController(text: '5');
 
   bool _hasPerm = false;
+
+  /// 本应用是不是已经被选为「模拟位置信息应用」（原生读 AppOps 得到）。
+  /// v1.9.0+32 新增 —— 用户在这一步最容易卡住。
+  bool _selected = false;
   bool _running = false;
   double _curLat = 0, _curLng = 0;
   bool _busy = false;
@@ -59,15 +72,24 @@ class _MockLocPageState extends State<MockLocPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _refresh();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _lat.dispose();
     _lng.dispose();
     _acc.dispose();
     super.dispose();
+  }
+
+  /// 用户十有八九是「跳去开发者选项选完再回来」——回到前台就重读一次状态，
+  /// 免得页面还在说「还没选中」，其实早就选好了。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refresh();
   }
 
   Future<void> _refresh() async {
@@ -76,6 +98,7 @@ class _MockLocPageState extends State<MockLocPage> {
       if (!mounted || r == null) return;
       setState(() {
         _hasPerm = r['hasPermission'] == true;
+        _selected = r['selected'] == true;
         _running = r['running'] == true;
         _curLat = (r['lat'] as num?)?.toDouble() ?? 0;
         _curLng = (r['lng'] as num?)?.toDouble() ?? 0;
@@ -112,6 +135,42 @@ class _MockLocPageState extends State<MockLocPage> {
       return;
     }
     final acc = double.tryParse(_acc.text.trim()) ?? 5;
+
+    // 没被选为「模拟位置信息应用」的话，这条正路必然失败 —— 先说清楚，
+    // 别让用户对着一句干巴巴的 SecurityException 发懵。
+    // 但也不硬拦：个别定制 ROM 的 AppOps 读不准，留一条「仍然尝试」的路。
+    if (!_selected) {
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('还没选「学聚」为模拟位置应用'),
+          content: const Text(
+            'Android 要求先到「开发者选项 → 选择模拟位置信息应用」里选中「学聚」，'
+            '否则注入坐标会被系统直接拒绝。\n\n'
+            '如果那个列表里根本没有「学聚」，说明装的是旧版本 —— '
+            '旧包没向系统报名，装 1.9.0+32 及以后的版本就会出现。\n\n'
+            '要现在去开发者选项吗？',
+            style: TextStyle(fontSize: 13, height: 1.6),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('仍然尝试'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('去设置'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (go == true) {
+        await _openDev();
+        return;
+      }
+    }
+
     setState(() {
       _busy = true;
       _lastErr = null;
@@ -273,15 +332,49 @@ class _MockLocPageState extends State<MockLocPage> {
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: const Color(0xFFFFF8E6),
-              border: Border.all(color: const Color(0xFFF2E0B0)),
+              color: _selected ? const Color(0xFFE9F7EF) : const Color(0xFFFFF8E6),
+              border: Border.all(
+                  color: _selected ? const Color(0xFFB7E1C6) : const Color(0xFFF2E0B0)),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Text(
-              'Android 只允许「被选为模拟位置信息应用」的 App 修改定位。\n'
-              '请先到「设置 → 开发者选项 → 选择模拟位置信息应用」里选中「学聚」。\n'
-              '（没选就开始模拟的话，会直接提示你去开。）',
-              style: TextStyle(fontSize: 12.5, height: 1.6, color: Color(0xFF7A5C1E)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      _selected ? Icons.check_circle_outline : Icons.error_outline,
+                      size: 16,
+                      color: _selected ? const Color(0xFF1D9E75) : const Color(0xFFB7791F),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _selected ? '已选中「学聚」为模拟位置应用' : '还没把「学聚」选为模拟位置应用',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: _selected ? const Color(0xFF16694F) : const Color(0xFF7A5C1E),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _selected
+                      ? 'Android 只允许「被选为模拟位置信息应用」的 App 修改定位，这一关已经过了 —— '
+                          '填好坐标点「开始模拟」就行。'
+                      : 'Android 只允许「被选为模拟位置信息应用」的 App 修改定位。\n'
+                          '路径：设置 → 开发者选项 → 选择模拟位置信息应用 → 学聚。\n\n'
+                          '列表里看不到「学聚」怎么办：说明装的是旧版本 —— '
+                          '旧包没向系统报名，装 1.9.0+32 及以后的版本就会有；'
+                          '装完重新打开一次开发者选项页面即可。',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    height: 1.6,
+                    color: _selected ? const Color(0xFF16694F) : const Color(0xFF7A5C1E),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 10),
@@ -290,16 +383,24 @@ class _MockLocPageState extends State<MockLocPage> {
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: _openDev,
-                  icon: const Icon(Icons.developer_mode, size: 18),
-                  label: const Text('打开开发者选项'),
+                  icon: const Icon(Icons.developer_mode, size: 17),
+                  label: const Text('开发者选项', style: TextStyle(fontSize: 12.5)),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _refresh,
+                  icon: const Icon(Icons.refresh, size: 17),
+                  label: const Text('刷新状态', style: TextStyle(fontSize: 12.5)),
+                ),
+              ),
+              const SizedBox(width: 6),
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: _askPermission,
-                  icon: const Icon(Icons.verified_user_outlined, size: 18),
-                  label: const Text('申请定位权限'),
+                  icon: const Icon(Icons.verified_user_outlined, size: 17),
+                  label: const Text('定位权限', style: TextStyle(fontSize: 12.5)),
                 ),
               ),
             ],

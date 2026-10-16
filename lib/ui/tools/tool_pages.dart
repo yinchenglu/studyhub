@@ -346,7 +346,7 @@ class _RulerPageState extends State<RulerPage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return ToolScaffold(
-      title: '直尺',
+      title: '直尺测量',
       subtitle: _probed
           ? (_auto ? '已按屏幕实际尺寸自动校准' : '按标准比例显示（本机读不到屏幕参数）')
           : '正在校准…',

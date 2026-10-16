@@ -40,6 +40,26 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!--
+      虚拟定位工具（v1.9.0+32 新增）：让「学聚」出现在
+      「开发者选项 → 选择模拟位置信息应用」的候选列表里。
+
+      ⚠️ 这一条看着像申请权限，其实**不是** —— 它只是个「报名表」：
+      ACCESS_MOCK_LOCATION 的 protectionLevel 是 signature，非系统签名的应用
+      永远拿不到它。但开发者选项那个列表恰恰就是按「谁的清单里声明过这条权限」
+      来筛的（AOSP 的 MockLocationAppPreferenceController 会遍历已安装应用，
+      检查 requestedPermissions 里有没有它）。
+
+      不写这一行会怎样：用户点进开发者选项，列表里**根本找不到「学聚」**，
+      虚拟定位工具就永远启不起来（用户报的就是这个）。
+
+      所以用 tools:ignore 关掉 lint 的「受保护权限」提示 —— 这行是故意写的。
+      装上新包后**重新进一次开发者选项**就能看到（列表在打开那一页时重新查）。
+    -->
+    <uses-permission
+        android:name="android.permission.ACCESS_MOCK_LOCATION"
+        tools:ignore="ProtectedPermissions" />
+
+    <!--
       后台录音（录音录像工具）。
       WAKE_LOCK 上面已经有了；这里补前台服务相关的三条：
         FOREGROUND_SERVICE            前台服务本体

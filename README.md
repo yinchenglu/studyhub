@@ -326,7 +326,12 @@ quiz/单词/英语四级核心词.json
 
 ---
 
-## 十一、v1.9.0 累积改动（最新）
+## 十一、v1.9.0 → v2.0.0 累积改动（最新）
+
+> 本章按功能罗列，从 v1.9.0 一路累加到 v2.0.0。
+> **v2.0.0 这一版的新东西**：视频封面自动抽帧（原生 `studyhub/thumb`）、
+> 上传任意文件（原生 SAF 通道 `studyhub/files`）、下载站与根目录统一
+> 「下载 / 修改 / 上传 / 删除」菜单、虚拟定位「选不到学聚」修复。
 
 ### 维护相关
 - **版本号一键同步**：`tools/bump_version.py 1.10.0` 自动改 `pubspec.yaml` + `lib/core/constants.dart` 的 `kAppVersion`。
@@ -344,8 +349,17 @@ quiz/单词/英语四级核心词.json
   - 跳转时取同目录兄弟作为新笔记的左右滑列表
 
 ### 服务器下载站
-- 顶部 + 按钮：新建文件夹 / 上传图片视频（image_picker，**只能传图片/视频**）
-- 长按菜单：重命名、编辑（文本文件）、删除（文件夹递归）
+- 顶部 + 按钮：**上传文件** / 新建文件夹
+  - v1.9.0+31 起「上传文件」能传**任意类型**（PDF / 压缩包 / apk / Office 文档…），
+    而且是**多选**。底层走 Android 自带的文件选择器（SAF，原生通道 `studyhub/files`），
+    不需要任何存储权限；原来的相册选图 / 选视频 / 拍照三条路仍然保留。
+    （+30 之前只支持图片和视频，因为当时用的是 `image_picker`）
+- 右上角文件夹图标：一键进 **StudyHub 根目录**（看全部笔记 / 视频 / 题库 / 速查表 / 备份）。
+  +31 起列表里那条重复的大卡片删掉了，只留这个按钮。
+- 长按（或进根目录后点右侧 `⋮`）菜单：**下载到手机 / 先下载再分享 / 重命名 /
+  编辑文本 / 复制文件直链 / 删除**（文件夹是递归删）
+- 操作实现的公用代码在 `lib/ui/tools/server_ops.dart`（[ServerFileOps]），
+  下载站和根目录浏览页共用同一套，不会两处走样
 
 ### 视频
 - 「已锁定」徽标 3 秒后自动隐藏，触屏再呼出
@@ -423,10 +437,10 @@ quiz/单词/英语四级核心词.json
   并从 `tools_page.dart` 移除入口与分发分支
 - 注意：`lib/ui/tools/dict_view.dart` **不是**这个词典，它是「翻译」工具的一部分，保留
 
-### 虚拟定位（v1.9.0+28 新增）
+### 虚拟定位（v1.9.0+28 新增，+32 修「选不到」）
 - 归类：**生活与娱乐**；文件 `lib/ui/tools/tool_pages_mockloc.dart`
 - 原生通道 `studyhub/mockloc`（`android_custom/MainActivity.kt`）：
-  - `status` → 权限 / 是否运行中 / 当前模拟坐标
+  - `status` → 权限 / **是否已被选为模拟位置应用** / 是否运行中 / 当前模拟坐标
   - `requestPermission` → 申请 `ACCESS_FINE_LOCATION`（清单里本来就有，指南针在用）
   - `start` / `stop` → `LocationManager.addTestProvider` +
     `setTestProviderLocation`，**每秒刷新一次**（很多 App 会丢弃时间戳过期的定位）
@@ -435,19 +449,74 @@ quiz/单词/英语四级核心词.json
 - **硬前提**：Android 只允许「被选为模拟位置信息应用」的 App 改定位，
   路径「设置 → 开发者选项 → 选择模拟位置信息应用 → 学聚」。
   没选就点开始 → 原生抛 `SecurityException`，页面把原因原文显示出来并提示怎么开。
+- **+32 修「开发者选项的列表里根本没有『学聚』」**（用户实际遇到的）：
+  那个列表筛的是「**清单里声明过 `ACCESS_MOCK_LOCATION` 的应用**」——
+  AOSP 的 `MockLocationAppPreferenceController` 会遍历所有已安装应用的
+  `requestedPermissions` 找这一条。清单里没写 → 用户永远选不到 → 虚拟定位永远启不起来。
+  修法：`android_custom/AndroidManifest.xml` 里补
+  ```xml
+  <uses-permission android:name="android.permission.ACCESS_MOCK_LOCATION"
+      tools:ignore="ProtectedPermissions" />
+  ```
+  这条权限本身**拿不到**（protectionLevel = signature），它纯粹是一张「报名表」，
+  所以用 `tools:ignore` 关掉 lint 的「受保护权限」提示。装完**重开一次**开发者选项即可看到。
+- **+32 页面直接显示选中状态**：原生读 `AppOpsManager.OPSTR_MOCK_LOCATION`
+  （`unsafeCheckOpNoThrow`，API 29+；老版本用 `checkOpNoThrow`）判断「已选中 / 未选中」，
+  绿色 / 橙色两条提示实时切换；页面还监听 `AppLifecycleState.resumed`，
+  从开发者选项切回来会自动重读，不用手动刷新。
+  未选中时点「开始模拟」会先弹对话框问「去设置吗？」，也留了「仍然尝试」（个别定制 ROM 的 AppOps 读不准）。
 - 页面提供 10 个常用地点预设（天安门 / 人民广场 / 广州塔 / 市民中心 / 西湖 / 黄鹤楼 …）
 - 说明：部分 App 用高德 / 腾讯定位 SDK 且做校验，可能不受影响（正常现象）；
   重启手机后模拟自动失效
 
-### 视频 / 图片浏览（v1.9.0+27 建，+28 扩展）
+### 视频 / 图片浏览（v1.9.0+27 建，+28 / +30 扩展）
 - **自动缓存缩略图**：列表 + 平铺缩略图都走 `CachedNetworkImage`
   （项目已有的 `cached_network_image`），内存 + 磁盘双层缓存，第二次进目录瞬间出
 - **平铺模式（grid）**：AppBar 右上角切换按钮（grid_view ↔ view_list）
-  - +28：**视频目录同样可切平铺**（原来只对有图片的目录显示按钮）；
-    视频格显示 ▶ 占位图标，当「视频墙」用
+  - +28：视频目录也开放（原来只对有图片的目录显示按钮）
+  - +30：**所有目录都给按钮**。原条件是 `_dirEntries.any((e) => !e.isDir)`
+    ——「目录里必须有一个文件」才显示，纯子文件夹的目录就没按钮；
+    现在只要目录里有内容就显示（纯文件夹目录铺开就是一格格文件夹）
 - **双指捏合缩放**：范围 **50~200 px**，`SliverGridDelegateWithMaxCrossAxisExtent` 自动算列数；
   单指时 `d.scale` 恒为 1，不影响点击 / 长按
 - 文件 `lib/ui/media/media_page.dart`
+
+### 视频封面：自动抽帧（v1.9.0+30 新增）
+以前视频在列表和平铺里只有个胶片图标，长得一模一样、完全分不出哪个是哪个。
+现在**每个视频都自动抽一帧当封面**，不需要用户点任何东西。
+
+- **在哪儿抽**：原生。`android_custom/MainActivity.kt` 新增 `studyhub/thumb` 通道，
+  用 Android 自带的 `MediaMetadataRetriever`。
+  - 它支持**直接吃 `http(s)` 地址 + 请求头**，正好带上 WebDAV 的 Basic Auth，
+  - 所以**不用先把整个视频下载到本地**，省流量也省等待。
+  - 必须在**子线程**跑：主线程发网络请求会抛 `NetworkOnMainThreadException`，
+    而且抽帧是同步阻塞的，放主线程会把列表卡死。
+  - 取的是「时长的 **10%**」那一帧，不是第 0 帧 —— 视频开头往往是黑场 / 台标 /
+    版权页，拿第 0 帧当封面基本全黑，等于白做。
+  - API 27+ 走 `getScaledFrameAtTime` 直接拿缩放好的位图，
+    省掉一次 `createScaledBitmap` 的大内存分配（4K 视频一帧就是 30 MB）。
+- **在哪儿缓存**：`lib/data/local/video_thumb.dart` 的 `VideoThumbCache`。
+  抽完落成 `<应用支持目录>/vidthumb/<md5(路径)>.jpg`，质量 75、宽 320px，
+  一张 10~20 KB。第二次进同一个目录直接读文件，一行网络请求都不发。
+  - 文件名用 **md5** 而不是原路径：路径里有 `/`、有中文、可能还有 `%` 转义，
+    在 Android 上直接拿去当文件名会创建失败。
+  - 先写 `.tmp` 再 `rename`：直接写目标文件的话，写到一半被打断
+    （用户退出 / 进程被杀）会留下 0 字节坏文件，下次还得重抽。
+- **三重去重**（`_inflight` / `_done` / `_failed`）：列表滚动时 `itemBuilder`
+  会对同一格反复构造，没有去重就会对同一个视频发 N 次请求。
+  `_failed` 也必须记 —— 否则每次 rebuild 都会对「抽不出来」的视频再试一次。
+- **失败静默降级**：抽不到就继续显示原来的胶片图标，用户完全无感。
+  抽帧失败的原因太多了（mkv / rmvb 老容器、服务器不支持 Range、网络抖动、
+  编码不支持……），任何一个都不该让视频列表变慢或报错。
+- **并发上限 2**：一屏十几个视频不限并发会把网络 + 解码同时拉满，
+  反而拖慢列表滚动。
+- **重试机会**：一次网络抖动会把某个视频永久打成「没封面」，
+  所以挂在**用户主动刷新**（下拉刷新 / 点右上角刷新）上给一次重来的机会 ——
+  既不会自己反复重试烧流量，又不至于只能靠重启 App 恢复。
+- **清理缓存**：设置页「一键清理缓存」会连封面一起清（封面是纯缓存，
+  删了下次进目录自动重抽，不影响任何数据）。
+- **三处都在用**：视频浏览页的**列表**行、**平铺**格子，以及播放页的**选集**面板。
+  平铺 / 列表的封面右下角都叠了一个小 ▶，一眼区分「这是视频」而不是「这是一张图」。
 
 ### 笔记（v1.9.0+28 追加修复）
 - **索引 md 排序**：文件名以「数字.」开头的（`000.绳结总目录.md`、`1.首页.md`）
@@ -465,13 +534,27 @@ quiz/单词/英语四级核心词.json
   → 服务器 404，全部报「图片加载失败: %25E5%2595%...」。
   修法：`note_repo` 里先 `Uri.decodeComponent` 还原一次，再统一编码。
 
-### 服务器下载站（v1.9.0+29 追加）
-- 页面最上面多了一个入口：「**进入 StudyHub 根目录**」——点开能看到服务器上全部内容
+### 服务器下载站 + 根目录浏览（v1.9.0+29 / +31）
+- 右上角文件夹图标：「**进入 StudyHub 根目录**」——点开能看到服务器上全部内容
   （`notes` / `media` / `quiz` / `tools` / `download` / `backup` 六个目录），
   再逐层点进去翻文件；左上角返回上一层。
+  **+31 起列表顶上那条重复的大卡片删掉了** —— 顶栏已经有按钮，下面就不必再来一遍。
 - 实现：把「服务器速查表」那套浏览页（`ServerFilesPage`）抽成可传起点，
   新增 `rootPath` / `titleOverride` 两个参数，传 `rootPath: ''` 就是从根目录开始。
   顺带修了它原来写死 `AppDirs.tools` 的前缀切片、并补了「返回上一层」按钮。
+- **+31：根目录里每一条都有完整菜单**（用户要求「进去之后所有目录、文件都要有
+  下载 / 修改 / 上传 / 删除」）：
+  - 把下载站那套操作整体抽到 `lib/ui/tools/server_ops.dart`（`ServerFileOps`），
+    两个页面共用 —— 不会再出现「一边改了另一边忘了改」；
+  - 每个条目右侧 `⋮`（长按同效）→ 下载到手机 / 先下载再分享 / 重命名 /
+    编辑文本 / 复制直链 / 删除；
+  - 顶栏 `+` → 上传文件 / 新建文件夹，作用在**当前所在目录**；
+  - 文件点击不再一律进纯文本页：按类型分派（文本 → 文本页、pdf → PDF 阅读器、
+    图片 → 大图查看、音视频 → 播放器、其它 → 直接下载）。
+- **+31：上传能选任意类型的文件了**。原来只有「相册图片 / 相册视频 / 拍照」三条路，
+  PDF、压缩包、安装包根本传不上去。现在多一条「**选任意文件**」（置顶），
+  走 Android 自带的系统文件选择器（SAF），**支持多选、且不需要任何存储权限**。
+  实现是原生新通道 `studyhub/files`（见第十三章的原生能力清单）。
 
 ### 修编译（v1.9.0+29）
 - **虚拟定位的原生 `addTestProvider` 少传了一个参数**，CI 报
@@ -567,7 +650,7 @@ studyhub_app/
 │   ├── bump_version.py        改版本号脚本（v1.9.0 新增，同步 pubspec + kPubspecVersion）
 │   └── build_id_region.py     构建区划码数据
 ├── android_custom/            Android 清单 + MainActivity.kt（原生能力都在这）+ 图标覆盖层（CI 用）
-├── pubspec.yaml               依赖 + 版本号（version: 1.9.0+28）
+├── pubspec.yaml               依赖 + 版本号（version: 1.9.0+30）
 └── .github/workflows/
     └── build-apk.yml          CI 编译流程
 ```
@@ -581,11 +664,16 @@ studyhub_app/
 | `studyhub/videorec` | 后台录像（Camera2 + MediaRecorder，前台服务） |
 | `studyhub/audio` | 音量 / 音频相关 |
 | `studyhub/mockloc` | **v1.9.0+28 新增**：定位权限、模拟位置注入、真实定位、打开开发者选项 |
+| `studyhub/thumb` | **v1.9.0+30 新增**：视频封面抽帧（`MediaMetadataRetriever`，支持 http(s) + 请求头，子线程） |
+| `studyhub/files` | **v1.9.0+31 新增**：系统文件选择器（SAF，`ACTION_OPEN_DOCUMENT`）选任意类型文件、可多选；把 `content://` 内容复制到 App 缓存后返回真实路径给 Dart |
 
 **修改内置工具的位置**（按你的图重排时改这里）：
 - 工具分类 + 顺序 + 名称：见 `lib/ui/tools/tools_page.dart`（`_Category` 列表）
 - 每个工具的入口：见 `lib/ui/tools/tools_page.dart` 底部的 `switch (tool)` 分发
 - **服务器下载站**（不是内置，是动态从 WebDAV 拉的）：`lib/ui/tools/download_site_page.dart`
+- **服务器文件的增删改（下载 / 上传 / 重命名 / 编辑 / 删除）**：`lib/ui/tools/server_ops.dart`
+  —— 下载站和「StudyHub 根目录」浏览页共用这一套，两处不会再走样
+- 👉 **更详细的分行号速查表见第十六章**
 
 **修改服务器小工具**：
 - 服务器路径：`/StudyHub/tools/<子目录>/<工具名>.html`
@@ -651,7 +739,11 @@ studyhub_app/
 3. **不要用 file_picker（任何版本）**
    - 8.x → AAR 内部用 android-34 编译，外部怎么改 compileSdk 都救不了
    - 6.x → 用已删除的 v1 Android Plugin API
-   - 用现成的 `image_picker` 代替（只能上传图片/视频）
+   - 图片 / 视频上传用 `image_picker`；
+     **任意类型文件**用系统文件选择器 SAF（自己写原生，通道 `studyhub/files`）。
+     SAF 还给两个额外好处：不需要存储权限、天然支持多选。
+     注意 SAF 交出来的是 `content://` URI，Dart 的 `dart:io` 读不了 ——
+     必须先在原生侧把内容复制到 App 缓存目录，再把真实路径递给 Dart。
 
 4. **`setState(() { ... })` 内部不能 `await`**
    - setState 回调是 VoidCallback 不是 async
@@ -693,6 +785,12 @@ studyhub_app/
 13. **模拟位置需要用户在开发者选项里授权**（v1.9.0+28 虚拟定位）
     - `LocationManager.addTestProvider` 在未被选为「模拟位置信息应用」时抛 `SecurityException`
     - 代码必须把这条原因展示给用户，并给一个「打开开发者选项」的按钮
+    - **+32 补充：还得先在清单里声明 `ACCESS_MOCK_LOCATION`**，
+      否则开发者选项那个列表里**根本不会出现本应用**（用户报的就是这个）。
+      这条权限拿不到（signature 级），纯「报名」，配 `tools:ignore="ProtectedPermissions"`。
+      判断「选没选中」读 `AppOpsManager.OPSTR_MOCK_LOCATION`。
+      参考：[AOSP `MockLocationAppPreferenceController`] 遍历已安装应用的
+      `requestedPermissions` 来筛候选应用
 
 14. **改完大文件先自检再 push**
     - 数独一次 1700 行没跑 analyze，导致 5 个 commit 连续编译失败
@@ -701,9 +799,63 @@ studyhub_app/
 
 ---
 
-## 十六、一句话总结（v1.9.0 版）
+## 十六、想自己改 App 里的东西？位置速查
+
+> 这一章是**留给你自己动手时查的**。格式统一成「你要改的东西 → 去哪个文件的哪一段」。
+>
+> ⚠️ **行号按 v1.9.0+30 的代码写的**，你增删几行之后就会漂移。
+> 更稳的办法是**搜关键字符串**（比如搜 `服务器目录规范`、搜 `static const categories`），
+> 比死记行号可靠得多。
+
+### 一、App 内嵌的「服务器目录规范」
+
+| 你要改的东西 | 文件位置 | 说明 |
+|---|---|---|
+| **规范页正文内容** | `studyhub_app/lib/ui/home/server_guide_page.dart`（全文 319 行） | 「设置 / 首页 → 服务器目录规范」点进去看到的**整页**：`_TreeCard()` 里的目录树、每个目录放什么、常见问题 —— 全是这个文件里的写死文本 |
+| **首页那个入口卡片** | `studyhub_app/lib/ui/home/home_page.dart` 第 320–328 行 | 卡片标题「服务器目录规范」+ 副标题「每个目录放什么、怎么建」+ 点击跳转 |
+| **目录名常量**（决定 App 认哪 6 个目录） | `studyhub_app/lib/core/constants.dart` 里的 `AppDirs` | **只有懂代码才改这里**；改名会导致 App 找不到资料 |
+| **README 全文**（内置兜底版） | `studyhub_app/lib/ui/home/settings_page.dart` 第 1011 行起（`ReadmePage` 的 `_fallback`，到约第 1057 行的 `''';`） | 优先读服务器 / 资料里的 `README.md`，**读不到才用这一段兜底** |
+
+> 首页还有第二个入口：`home_page.dart` 第 330–343 行「README · 项目自述」卡片。
+> （设置页里那个入口按你要求删了，首页这个保留。）
+
+### 二、小工具的位置 + 分类排序
+
+小工具分**三种**，改法完全不同 —— 先分清你要改哪一种：
+
+#### 1）内置工具（在 App 里，改完**需要重新编译**）
+
+| 你要改的东西 | 文件位置 | 说明 |
+|---|---|---|
+| **分类、顺序、名称、颜色** | `studyhub_app/lib/ui/tools/tools_page.dart` | 第 69–168 行 `static const categories`，就是那 6 个分类（时间与效率 / 测量与设计 / 网络与编码 / 生活与娱乐 / 公卫小工具） |
+| **每个分类里有哪些工具** | 同上 | 一行一个 `_ToolDef('工具名', 图标, 颜色, online: true/false)`，**行的先后就是显示顺序** |
+| **工具名 → 具体页面** | 同上，第 632 行起 `toolPageOf()` 里的 `switch (name)` | 把工具名对到具体页面 |
+| **具体页面实现** | `studyhub_app/lib/ui/tools/tool_pages_*.dart` | 如 `tool_pages_sudoku.dart`（数独练习）、`tool_pages_mockloc.dart`（虚拟定位） |
+| **不想改代码的排序办法** | 工具页右上角进「**自定义**」模式 | 可拖动排序、重命名 —— 结果存在 `lib/data/local/settings_store.dart` 的 `_kToolOrder` / `_kToolAlias` 两个键里（按分类存，拖动只在分类内部生效） |
+
+#### 2）网页版小工具（**不在 App 里**，浏览器直接用，改完**不用编译**）
+
+- **文件夹**：`D:\WorkBuddy\StudyHub\网页版小工具\`（41+ 个 `.html`，**不在 git 里**）
+- **分类排序**：`index.html`。搜 `<h2>` 就能找到那 5 个分类
+  （时间与效率 / 测量与设计 / 网络与编码 / 生活与娱乐 / 公卫小工具），
+  每个分类里 `<a class="tool">` 的先后就是显示顺序
+- **新加一个**：照抄 `_模板.html` 写一个 `工具名.html`，
+  再到 `index.html` 对应分类里加一条 `<a class="tool" href="工具名.html">`
+- 本次新增：`路路词典.html`（已登记进「生活与娱乐」）
+- **坑**：这个目录里的 `*.html` 用 Python 脚本**写不进去**（PermissionError），
+  要用编辑器直接写
+
+#### 3）服务器上的小工具（App 动态加载，改完**不用编译**）
+
+- **服务器路径**：`/StudyHub/tools/<子目录>/<工具名>.html`
+- **排序**：文件名前加数字前缀（`1.字典.html`、`2.数独.html`），
+  App 显示时会**自动剥掉前缀**（所以用户看到的是「字典」而不是「1.字典」）
+
+---
+
+## 十七、一句话总结（v1.9.0 版）
 
 1. 数据都放自己的 WebDAV 服务器
 2. 服务器上建 `StudyHub/{notes,media,quiz,tools,backup,download}` 6 个目录
 3. App 首页登录，扫一遍服务器，资料就出现在对应模块
-4. 想改什么：看上面 11-15 章
+4. 想改什么：看上面 11-16 章（**16 章是「改哪个文件」的速查表**）

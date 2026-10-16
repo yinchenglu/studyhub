@@ -8,6 +8,7 @@ import '../../core/constants.dart';
 import '../../core/utils.dart';
 import '../../data/local/db.dart';
 import '../../data/local/settings_store.dart';
+import '../../data/local/video_thumb.dart';
 import '../../data/models/models.dart';
 import '../../providers/providers.dart';
 import '../widgets/folder_picker.dart';
@@ -71,6 +72,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     if (!mounted) return;
     setState(() => _busy = true);
     await CacheManager.instance.clearCache();
+    // v1.9.0+30：视频封面也是纯缓存，一起清掉 —— 否则用户点了「清理缓存」
+    // 却发现还占着几 MB，会以为没清干净。（下次进视频目录会自动重抽。）
+    await VideoThumbCache.instance.clear();
     await _load();
     if (mounted) setState(() => _busy = false);
   }
@@ -1009,7 +1013,7 @@ class _ReadmeBody extends StatelessWidget {
   }
 
   static const _fallback = '''
-# 学聚 StudyHub v1.9.0 · 项目自述
+# 学聚 StudyHub v2.0.0 · 项目自述
 
 ## 是什么
 学聚是一款**自用版**学习/资料管理 App。

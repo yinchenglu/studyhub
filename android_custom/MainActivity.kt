@@ -1,5 +1,6 @@
 package __PACKAGE__
 
+import android.app.AppOpsManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -9,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -20,7 +22,9 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.media.AudioManager
+import android.media.MediaMetadataRetriever
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -29,10 +33,13 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Size
 import android.view.Surface
+import java.io.File
+import java.io.FileOutputStream
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -128,6 +135,13 @@ class MainActivity : FlutterActivity() {
 
     private var locationSink: EventChannel.EventSink? = null
     private var locationManager: LocationManager? = null
+
+    /**
+     * 正开着系统文件选择器时，那个等着结果的回调。
+     * 同一时刻只允许一个 —— 用户手快连点两下时，后一个会被直接拒掉，
+     * 否则两个 result 会互相覆盖，Dart 侧永远等不到回调。
+     */
+    private var pendingPick: MethodChannel.Result? = null
 
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
@@ -334,11 +348,272 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // ---- 视频缩略图（v1.9.0+30 新增）----
+        //
+        // 需求：视频列表 / 平铺里每个视频都要有自己的封面画面，
+        //       而不是清一色的「▶ 占位图标」。
+        //
+        // 为什么放在原生做：
+        //   1) Dart 侧没有纯 Dart 的 mp4 解码器；引一个新插件又要赌它跟
+        //      Flutter 3.47.6 / compileSdk 35 的兼容性 —— 这个项目历次翻车
+        //      全在依赖上，能不加就不加。
+        //   2) Android 自带 `MediaMetadataRetriever`，支持**直接给 http(s)
+        //      地址 + 请求头**，正好能吃 WebDAV 的 Basic Auth 鉴权，
+        //      不用先把整个视频下载到本地再抽帧。
+        //   3) 必须在**子线程**跑：主线程发网络请求直接抛
+        //      NetworkOnMainThreadException，而且抽帧是同步阻塞的，
+        //      放主线程会把列表卡死。
+        //
+        // 失败**不是错误**：返回 null，Dart 侧继续显示占位图标。
+        // 抽帧踩坑的概率太高（老容器 mkv/rmvb、服务器不支持 Range、
+        // 网络抖动、编码不支持），任何一个都不该让整个视频列表崩掉。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, THUMB_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "videoThumb" -> {
+                        val url = call.argument<String>("url")
+                        if (url.isNullOrEmpty()) {
+                            result.error("bad_args", "缺少视频地址", null)
+                            return@setMethodCallHandler
+                        }
+                        // StandardMessageCodec 解出来的 Map 泛型是擦除的，
+                        // 这里显式转成 Map<String, String> 再交给系统 API，
+                        // 免得 MediaMetadataRetriever 在 native 层拿到非字符串崩。
+                        val rawHeaders = call.argument<Map<*, *>>("headers")
+                        val headers = HashMap<String, String>()
+                        rawHeaders?.forEach { (k, v) ->
+                            if (k != null && v != null) headers["$k"] = "$v"
+                        }
+                        val timeMs = call.argument<Number>("timeMs")?.toLong() ?: 0L
+                        val maxWidth = call.argument<Number>("maxWidth")?.toInt() ?: 320
+
+                        val main = Handler(Looper.getMainLooper())
+                        Thread {
+                            val bytes = try {
+                                extractVideoFrame(url, headers, timeMs, maxWidth)
+                            } catch (_: Throwable) {
+                                null
+                            }
+                            // result 必须回在主线程，否则 Flutter 侧回调顺序会乱
+                            main.post { result.success(bytes) }
+                        }.start()
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // ---- 选「任意文件」上传（v1.9.0+31 新增）----
+        //
+        // 背景：原来的「上传」走 image_picker，**只能选图片和视频** ——
+        // 想传个 PDF、压缩包、安装包上去完全没办法。
+        // file_picker 这个包进不了本项目的依赖树（pubspec 里写了原因），
+        // 于是直接用 Android 系统自带的文件选择器（SAF）：
+        //
+        //   * ACTION_OPEN_DOCUMENT 能选任意类型，还能一次多选；
+        //   * SAF 不需要任何存储权限 —— 用户点了哪个文件就只授权哪个文件的
+        //     读权限，比申请「所有文件访问」干净得多；
+        //   * 代价：SAF 交出来的是 content:// URI，Dart 侧 dart:io 读不了。
+        //     所以这里先把内容复制到 App 私有缓存（cacheDir/uploads/…），
+        //     把真实文件路径交给 Dart，Dart 上传完自己删掉缓存副本。
+        //
+        // 返回：List<Map>（name / path / size）；用户取消返回 null。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, FILES_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "pickFiles" -> pickAnyFiles(result)
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     override fun onDestroy() {
         stopLocation()
+        // 选择器还开着就被销毁了，把回调清掉，别拿着一个死掉的 result
+        pendingPick = null
         super.onDestroy()
+    }
+
+    // ---------------------------------------------------------- 视频缩略图
+
+    // 从视频里抽一帧出来、压成 JPEG 字节。抽不到返回 null。
+    //
+    // [timeMs] 传 0（或负数）时自动取「时长的 10%」——
+    // 视频开头往往是黑场 / 台标 / 版权页，拿第 0 帧当封面基本都是全黑，
+    // 那就等于白做了。
+    private fun extractVideoFrame(
+        url: String,
+        headers: Map<String, String>,
+        timeMs: Long,
+        maxWidth: Int
+    ): ByteArray? {
+        val mmr = MediaMetadataRetriever()
+        try {
+            if (url.startsWith("http://") || url.startsWith("https://")) {
+                mmr.setDataSource(url, headers)
+            } else {
+                mmr.setDataSource(url)
+            }
+
+            var t = timeMs
+            if (t <= 0L) {
+                val dur = mmr
+                    .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull() ?: 0L
+                t = if (dur > 1000L) dur / 10 else 0L
+            }
+            val usec = t * 1000L
+
+            // getScaledFrameAtTime 是 API 27 才有的 —— 直接取缩放好的位图，
+            // 省掉一次 createScaledBitmap 的大内存分配（4K 视频一帧就是 30 MB）。
+            val bmp: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                val h = (maxWidth * 9 / 16).coerceAtLeast(1)
+                mmr.getScaledFrameAtTime(
+                    usec,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    maxWidth,
+                    h
+                ) ?: mmr.getFrameAtTime(usec, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            } else {
+                mmr.getFrameAtTime(usec, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            }
+            val b = bmp ?: return null
+
+            val out = java.io.ByteArrayOutputStream()
+            // 质量 75 对 320px 宽的封面完全够，一张 10~20 KB ——
+            // 几百个视频的封面加起来也就几 MB，不会把手机塞满。
+            b.compress(Bitmap.CompressFormat.JPEG, 75, out)
+            val bytes = out.toByteArray()
+            out.close()
+            b.recycle()
+            return if (bytes.isEmpty()) null else bytes
+        } finally {
+            try {
+                mmr.release()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    // -------------------------------------------------------------- 选文件
+
+    /**
+     * 打开系统文件选择器，让用户挑任意一个或多个文件。
+     *
+     * 用老的 startActivityForResult 而不是 ActivityResultLauncher：
+     * FlutterActivity 本身就是靠 onActivityResult 把结果转给插件的，
+     * 这里跟着走同一条路，不会和 Flutter 的转发打架。
+     */
+    @Suppress("DEPRECATION")
+    private fun pickAnyFiles(result: MethodChannel.Result) {
+        if (pendingPick != null) {
+            result.error("busy", "文件选择器已经打开了", null)
+            return
+        }
+        pendingPick = result
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        try {
+            startActivityForResult(intent, REQ_PICK_FILES)
+        } catch (t: Throwable) {
+            // 极少数精简 ROM 里没有 DocumentsUI，别让 App 崩在这儿
+            pendingPick = null
+            result.error("no_picker", "这台设备没有可用的文件选择器：${t.message}", null)
+        }
+    }
+
+    @Deprecated("FlutterActivity 走的就是老的 onActivityResult 通道")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_PICK_FILES) return
+        val r = pendingPick ?: return
+        pendingPick = null
+
+        if (resultCode != android.app.Activity.RESULT_OK || data == null) {
+            r.success(null) // 用户取消
+            return
+        }
+
+        // 多选的结果放在 clipData 里，单选才在 data 上
+        val uris = ArrayList<Uri>()
+        val clip = data.clipData
+        if (clip != null) {
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i)?.uri?.let { uris.add(it) }
+            }
+        } else {
+            data.data?.let { uris.add(it) }
+        }
+        if (uris.isEmpty()) {
+            r.success(null)
+            return
+        }
+
+        // 复制是纯 IO，必须离开主线程，否则大文件直接把 UI 冻住
+        Thread {
+            val out = ArrayList<Map<String, Any>>()
+            for (u in uris) {
+                copyUriToCache(u)?.let { out.add(it) }
+            }
+            Handler(Looper.getMainLooper()).post { r.success(out) }
+        }.start()
+    }
+
+    /**
+     * 把 content:// 指向的内容复制到 cacheDir/uploads/<时间戳>/ 下。
+     * 失败返回 null（Dart 侧跳过这个文件，继续处理后面的）。
+     */
+    private fun copyUriToCache(uri: Uri): Map<String, Any>? {
+        return try {
+            val name = queryDisplayName(uri) ?: "file_${System.currentTimeMillis()}"
+            // 文件名里混进路径分隔符的话 File() 会当成子目录，先换掉
+            val safe = name.replace('/', '_').replace('\\', '_')
+
+            // 每次选择单独一个子目录：同名文件反复传也不会互相覆盖，
+            // Dart 上传完直接删整个目录就行。
+            val dir = File(File(cacheDir, "uploads"), System.currentTimeMillis().toString())
+            if (!dir.exists() && !dir.mkdirs()) return null
+            val target = File(dir, safe)
+
+            val input = contentResolver.openInputStream(uri) ?: return null
+            input.use { ins ->
+                FileOutputStream(target).use { outs ->
+                    ins.copyTo(outs, 64 * 1024)
+                }
+            }
+            if (!target.exists() || target.length() <= 0L) return null
+
+            HashMap<String, Any>().apply {
+                put("name", name)
+                put("path", target.absolutePath)
+                put("size", target.length())
+            }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /** SAF 的 URI 里没有文件名字段，得问 ContentResolver 要。 */
+    private fun queryDisplayName(uri: Uri): String? {
+        if (uri.scheme == "file") return uri.lastPathSegment
+        return try {
+            contentResolver
+                .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c ->
+                    if (c.moveToFirst()) {
+                        val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (i >= 0) c.getString(i) else null
+                    } else {
+                        null
+                    }
+                }
+        } catch (t: Throwable) {
+            null
+        }
     }
 
     // ---------------------------------------------------------------- 定位
@@ -1406,11 +1681,48 @@ class MainActivity : FlutterActivity() {
 
     private fun mockStatus(): Map<String, Any?> = mapOf(
         "hasPermission" to hasLocationPermission(),
+        // v1.9.0+32：把「本应用有没有被选为模拟位置信息应用」也报给 Dart。
+        // 用户最常卡在这一步（列表里找不到学聚 / 选完不知道成没成），
+        // 直接读系统的 AppOps 比让他自己猜可靠得多。
+        "selected" to isMockLocationApp(),
         "running" to mockRunning,
         "lat" to mockLat,
         "lng" to mockLng,
         "accuracy" to mockAcc.toDouble()
     )
+
+    /**
+     * 本应用是否已被选为「模拟位置信息应用」。
+     *
+     * 开发者选项里那次选择存到系统内部就是一个 AppOps：
+     * `android:mock_location = allow`。这里读它来判断。
+     */
+    private fun isMockLocationApp(): Boolean {
+        val appOps = try {
+            getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager
+        } catch (t: Throwable) {
+            null
+        } ?: return false
+        return try {
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(
+                    AppOpsManager.OPSTR_MOCK_LOCATION,
+                    android.os.Process.myUid(),
+                    packageName
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(
+                    AppOpsManager.OPSTR_MOCK_LOCATION,
+                    android.os.Process.myUid(),
+                    packageName
+                )
+            }
+            mode == AppOpsManager.MODE_ALLOWED
+        } catch (t: Throwable) {
+            false
+        }
+    }
 
     private fun mockLocationFor(provider: String, lat: Double, lng: Double, acc: Float): Location {
         val loc = Location(provider)
@@ -1562,6 +1874,9 @@ class MainActivity : FlutterActivity() {
         private const val AUDIO_CHANNEL = "studyhub/audio"
         private const val VIDEOREC_CHANNEL = "studyhub/videorec"
         private const val MOCKLOC_CHANNEL = "studyhub/mockloc"
+        private const val THUMB_CHANNEL = "studyhub/thumb"
+        private const val FILES_CHANNEL = "studyhub/files"
         private const val MOCKLOC_PERM_CODE = 5201
+        private const val REQ_PICK_FILES = 5301
     }
 }

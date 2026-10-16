@@ -136,7 +136,7 @@ class _TreeCard extends StatelessWidget {
             '   ├─ download/  下载站（要下载的文件）\n'
             '   │   ├─ 课件/讲义.pdf\n'
             '   │   └─ 软件/xxx.apk\n'
-            '   └─ backup/    错题本、笔记备份（App自写）',
+            '   └─ backup/    错题本、笔记备份（自动）',
             style: TextStyle(fontFamily: 'monospace', fontSize: 12.5, height: 1.65),
           ),
         ],
