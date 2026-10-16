@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
+import '../../core/sort_utils.dart';
 import '../../core/utils.dart';
 import '../../data/dav/webdav_client.dart';
 import '../../data/local/db.dart';
@@ -39,9 +40,12 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
     });
     try {
       final entries = await client.list(joinPath(AppDirs.tools, _sub), depth: 1);
+      // v1.9.0：服务器小工具目录用 sortEntries 排序，名称按自然排序，
+      // 「1.xxx」前缀的工具自动排到第一位。
+      final sorted = sortEntries(entries, SortPref.byName);
       if (!mounted) return;
       setState(() {
-        _entries = entries;
+        _entries = sorted;
         _loading = false;
       });
     } catch (e) {
@@ -115,7 +119,7 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
                               e.isDir ? Icons.folder_outlined : _iconForExt(FileTypes.ext(e.name)),
                               color: e.isDir ? const Color(0xFF72243E) : scheme.primary,
                             ),
-                            title: Text(e.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                            title: Text(stripLeadingNumber(e.name), maxLines: 1, overflow: TextOverflow.ellipsis),
                             subtitle: Text(
                               e.isDir ? '文件夹' : '${formatBytes(e.size)}${e.modified == null ? '' : ' · ${formatTime(e.modified)}'}',
                               style: const TextStyle(fontSize: 12),

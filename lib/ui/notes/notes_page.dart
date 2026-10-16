@@ -723,7 +723,9 @@ class NotesPageState extends ConsumerState<NotesPage> {
                                 dense: true,
                                 leading: const Icon(Icons.article_outlined, size: 20),
                                 title: Text(
-                                  isMd ? titleFromFileName(e.name) : e.name,
+                                  // v1.9.0：剥掉「1. 」「2. 」之类的前缀（仅显示），
+                                  // 排序靠 _isPinnedName 顶到第一位。
+                                  isMd ? stripLeadingNumber(titleFromFileName(e.name)) : stripLeadingNumber(e.name),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                 ),

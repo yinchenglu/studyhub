@@ -52,6 +52,15 @@ class SortPref {
 List<DavEntry> sortEntries(List<DavEntry> list, SortPref pref) {
   final out = List<DavEntry>.from(list);
   out.sort((a, b) {
+    // v1.9.0：用户要求"首页/索引类 md 自动排第一个"。
+    // 用「文件名以『数字. 』开头」作为信号：
+    //   1.首页.md  → 排第 1
+    //   1.  → 自动认成「第 1 个」也行
+    //   0.0 之类也算
+    // 文件夹不接受这个规则 —— 文件夹本就在文件前面，再加规则也没意义。
+    final aPin = _isPinnedName(a.name);
+    final bPin = _isPinnedName(b.name);
+    if (aPin != bPin) return aPin ? -1 : 1;
     if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
     int c;
     switch (pref.key) {
@@ -72,4 +81,11 @@ List<DavEntry> sortEntries(List<DavEntry> list, SortPref pref) {
     return pref.asc ? c : -c;
   });
   return out;
+}
+
+/// v1.9.0：检测文件名是否以「数字. 」或「数字.」开头 —— 「1.首页.md」/「01. 索引.md」都中。
+/// 用于笔记列表里把索引/首页类 md 顶到第一位。
+bool _isPinnedName(String name) {
+  final m = RegExp(r'^\d+\.\s?').firstMatch(name);
+  return m != null;
 }

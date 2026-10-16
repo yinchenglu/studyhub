@@ -1,14 +1,20 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/constants.dart';
 import '../../core/utils.dart';
 import '../../data/dav/webdav_client.dart';
 import '../../data/local/db.dart';
 import '../../data/models/models.dart';
+import '../../data/repositories/note_repo.dart';
 import '../../providers/providers.dart';
+import '../common/pdf_view_page.dart';
 import '../media/image_viewer_page.dart';
+import '../media/player_page.dart';
 import 'note_edit_page.dart';
 import 'note_export.dart';
 import 'reading_page.dart';
@@ -108,6 +114,63 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
     return Uri.parse(repo.resolveUrl(_path, src));
   }
 
+  /// v1.9.0：处理 md 里的链接点击（之前 onTapLink 是空的）。
+  ///
+  /// 支持的 href 形态：
+  ///   * `http://` / `https://`              → 系统浏览器
+  ///   * `/notes/<笔记>/<子>/xxx.md`         → 绝对路径跳转（去掉前导 `/`）
+  ///   * `notes/<笔记>/<子>/xxx.md`          → 相对服务器根
+  ///   * `02.卡里克垫结.md`                  → 相对当前 md 目录（推荐用法）
+  ///   * `../index.md`                        → 相对当前 md 目录，跳上级
+  ///
+  /// 跳转时取该目录所有「可读」文件作为新笔记的兄弟列表，左右滑能继续切。
+  Future<void> _onLinkTap(String href) async {
+    if (href.isEmpty) return;
+    // 1. 外链 → 系统浏览器
+    if (href.startsWith('http://') || href.startsWith('https://')) {
+      final uri = Uri.tryParse(href);
+      if (uri != null && await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+      return;
+    }
+    // 2. 解码百分号编码（中文 / 空格）
+    final decoded = Uri.decodeComponent(href);
+    // 3. 拼成相对 notes 根的相对路径
+    String rel;
+    if (decoded.startsWith('/')) {
+      rel = decoded.substring(1);
+    } else if (decoded.startsWith('${AppDirs.notes}/')) {
+      rel = decoded.substring(AppDirs.notes.length + 1);
+    } else {
+      // 相对当前 md 目录
+      final dir = parentOf(_path);
+      rel = joinPath(dir, decoded);
+    }
+    // 4. 跳过去：先看是不是文件
+    final repo = ref.read(noteRepoProvider);
+    if (repo == null) return;
+    // 5. 列同目录兄弟（保持左右滑切换）
+    final dir = parentOf(rel);
+    final List<String> siblings;
+    try {
+      final entries = await repo.listDir(dir);
+      // 只算「能当笔记打开」的文件
+      siblings = entries
+          .where((e) => !e.isDir && (FileTypes.isMarkdown(e.name) || FileTypes.isReadableText(e.name)))
+          .map((e) => e.path)
+          .toList();
+    } catch (_) {
+      siblings = const [];
+    }
+    if (!mounted) return;
+    // 6. 跳路由
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => NoteReadPage(path: rel, siblings: siblings),
+    ));
+    if (mounted) _load();
+  }
+
   /// 把 markdown 里的相对图片地址解析成多个候选 URL（多基准路径兜底）。
   ///
   /// 候选顺序：当前 md 目录 → 笔记根目录。
@@ -185,7 +248,10 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
 
   // ------------------------------------------------------- 上一篇 / 下一篇
 
-  bool get _hasSibs => widget.siblings.length > 1;
+  /// v1.9.0：原本 `> 1`，导致"只有一个兄弟节点"的单页笔记（用户最常碰到的极短 md）
+  /// 不能左右滑。改成 `> 0`：只要有兄弟就能滑。
+  /// 视觉上"列表"按钮也用这个判断，所以两边一致。
+  bool get _hasSibs => widget.siblings.isNotEmpty;
 
   int get _sibIndex => widget.siblings.indexOf(_path);
 
@@ -432,10 +498,10 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
       appBar: AppBar(
         title: Text(title, overflow: TextOverflow.ellipsis),
         actions: [
-          // v1.8.0 按用户要求「上面的按钮太多」：把**查找**和**编辑**收进 ⋮ 菜单，
-          // 位置排在「导出 / 分享」「删除笔记」**上面**（用户点名）。
-          // AppBar 上只留两个图标 + 一个 ⋮：
-          //   [本目录的笔记] [⋮ 查找/编辑/导出分享/删除] [阅读模式]
+          // v1.9.0：用户要求「菜单顺序换一下，依次是列表、阅读模式、更多选项」——
+          // 之前是 [列表, 更多, 阅读模式]，现在 [列表, 阅读模式, 更多]。
+          // AppBar 上只留三个图标：
+          //   [本目录的笔记] [阅读模式] [⋮ 查找/编辑/导出分享/删除]
           //   菜单内顺序：在本文中查找 → 编辑 → 导出 / 分享 → 删除笔记
           if (_hasSibs)
             IconButton(
@@ -443,6 +509,12 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
               icon: const Icon(Icons.list_alt),
               onPressed: _showList,
             ),
+          IconButton(
+            tooltip: '阅读模式',
+            icon: const Icon(Icons.menu_book_outlined),
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => ReadingPage(path: _path, siblings: widget.siblings))),
+          ),
           PopupMenuButton<String>(
             tooltip: '更多',
             onSelected: (v) async {
@@ -475,12 +547,6 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                   child: ListTile(
                       leading: Icon(Icons.delete_outline), title: Text('删除笔记'), dense: true)),
             ],
-          ),
-          IconButton(
-            tooltip: '阅读模式',
-            icon: const Icon(Icons.menu_book_outlined),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => ReadingPage(path: _path, siblings: widget.siblings))),
           ),
         ],
       ),
@@ -529,7 +595,14 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                         child: MarkdownBody(
                           data: _content ?? '',
                           selectable: true,
-                          onTapLink: (text, href, title) {},
+                          // v1.9.0：md 里的链接点击跳转。
+                          // 之前 onTapLink 是空回调，所以 md 里点啥都没反应。
+                          // 现在：
+                          //   1. http(s):// → 用系统浏览器打开
+                          //   2. 相对路径（如 02.卡里克垫结.md / image/xxx.png / ../index.md）→ 拼成 notes/<curDir>/<href> 走 WebDAV
+                          //   3. 绝对路径以 notes/ 开头 → 直接当 WebDAV 路径
+                          //   4. 找不到文件 → 提示一下（不直接报错）
+                          onTapLink: (text, href, title) => _onLinkTap(href ?? ''),
                           imageBuilder: (uri, title, alt) {
                             final raw = uri.toString();
                             final candidates = uri.hasScheme ? [raw] : _resolveCandidates(raw);
