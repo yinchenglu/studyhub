@@ -33,7 +33,8 @@ publish_to: 'none'
 #   v1.9.0+24 → 1024 / 2024   ← 修路路 / 工具页 / 数独三处编译错；CI 跑过出 release
 #   v1.9.0+25 → 1025 / 2025   ← 修 ArrowRules promote：嵌套 if 让 Dart 认出类型收窄
 #   v1.9.0+26 → 1026 / 2026   ← 修 ArrowRules：嵌套 if 仍不收窄，改 `(rules as ArrowRules)` 强制 cast
-version: 1.9.0+26
+#   v1.9.0+27 → 1027 / 2027   ← 视频/图片 grid 平铺模式 + 自动缓存缩略图 + 双指缩放
+version: 1.9.0+27
 environment:
   # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps
   # 要 >=3.12，取最大值。

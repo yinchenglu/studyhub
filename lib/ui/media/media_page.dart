@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -17,6 +18,12 @@ import '../common/sort_menu.dart';
 import '../home/login_page.dart';
 import 'image_viewer_page.dart';
 import 'player_page.dart';
+
+/// v1.9.0+26：浏览模式（列表 / 平铺）。
+/// 单独抽 enum 是为了：
+///   1) setState 时少拼字符串、少打错；
+///   2) 后续如果加「只看大图」「按日期分组」等视图，也好扩展。
+enum _MediaViewMode { list, grid }
 
 /// 媒体库：按目录浏览服务器 media 目录里的视频与图片
 ///
@@ -44,6 +51,27 @@ class MediaPageState extends ConsumerState<MediaPage> {
 
   /// 排序方式
   SortPref _sort = const SortPref();
+
+  /// v1.9.0+26：浏览模式 = 列表（默认）/ 平铺（grid）。
+  /// 平铺模式只对「图片类文件」生效 —— 视频文件没缩略图，平铺出来
+  /// 全是占位图标没意义，所以视频不在平铺里显示（用户说「想预览整
+  /// 个文件夹的图片」，语境就是纯图片文件夹）。
+  /// ——但保险起见，先支持两种文件都进 grid，视频用「时长 + ▶」叠层占位。
+  /// 暂时保持「两种都进 grid」简单方案。
+  _MediaViewMode _viewMode = _MediaViewMode.list;
+
+  /// v1.9.0+26：平铺模式下缩略图边长（默认 80 px）。
+  /// 双指捏合 GestureDetector.onScaleUpdate 会改这个值。
+  /// 范围 50~200 —— 再小字都看不清，再大 4 列屏就 1 张图了。
+  double _thumbSize = 80.0;
+
+  /// v1.9.0+26：双指捏合起始时的 _thumbSize 快照。
+  /// GestureDetector 的 d.scale 是「相对 onScaleStart 时的比例」，
+  /// 所以要在 start 时把当前值存住，update 时 `start * scale` 算新值。
+  double? _scaleStart;
+
+  static const double _thumbSizeMin = 50.0;
+  static const double _thumbSizeMax = 200.0;
 
   /// 本机记下的**播放进度**（完整服务器路径 → 进度）。
   ///
@@ -288,6 +316,21 @@ class MediaPageState extends ConsumerState<MediaPage> {
               value: _sort,
               onChanged: (v) => setState(() => _sort = v),
             ),
+          // v1.9.0+26：列表 ↔ 平铺 切换。
+          // 平铺模式只对纯图片目录友好，所以**只在有图片时**显示；
+          // 视频目录进 grid 也没意义（视频没缩略图，全是占位图标）。
+          if (logged && _dirEntries.any((e) => !e.isDir && !FileTypes.isPlayable(e.name)))
+            IconButton(
+              tooltip: _viewMode == _MediaViewMode.list ? '平铺模式' : '列表模式',
+              icon: Icon(_viewMode == _MediaViewMode.list
+                  ? Icons.grid_view_rounded
+                  : Icons.view_list_rounded),
+              onPressed: () => setState(() {
+                _viewMode = _viewMode == _MediaViewMode.list
+                    ? _MediaViewMode.grid
+                    : _MediaViewMode.list;
+              }),
+            ),
           // 多选入口。目录为空时不显示 —— 没东西可勾。
           if (logged && _dirEntries.isNotEmpty)
             IconButton(
@@ -434,7 +477,7 @@ class MediaPageState extends ConsumerState<MediaPage> {
         ],
       );
     }
-    return _dirList();
+    return _viewMode == _MediaViewMode.list ? _dirList() : _dirGrid();
   }
 
   /// 目录浏览
@@ -562,6 +605,185 @@ class MediaPageState extends ConsumerState<MediaPage> {
         // v1.6.0：单个视频也整行变色
         return _watchTint(e.path == lastFile, tile, scheme);
       },
+    );
+  }
+
+  /// v1.9.0+26：平铺模式（grid）。
+  ///
+  /// 设计：
+  ///   1) 整个 grid 外面套一层 `GestureDetector.onScaleUpdate`，
+  ///      双指捏合时把 `_thumbSize` 按比例调整；上下限 50~200 px。
+  ///      ——不要在每个 tile 上挂 GestureDetector，否则多指触摸冲突，
+  ///         tile 的 onTap 长按会被吃掉。
+  ///   2) 用 `SliverGridDelegateWithMaxCrossAxisExtent` 而不是固定列数，
+  ///      缩略图变大 → 网格自动变少列；变小 → 自动变多列。
+  ///   3) 每个 tile：缩略图（cached_network_image 自动缓存）+ 文件名。
+  ///   4) 长按弹菜单复用 `_showActions(e)`。
+  Widget _dirGrid() {
+    final scheme = Theme.of(context).colorScheme;
+    if (_dirEntries.isEmpty) {
+      return ListView(
+        children: [
+          const SizedBox(height: 90),
+          Icon(Icons.image_outlined, size: 44, color: scheme.onSurfaceVariant),
+          const SizedBox(height: 12),
+          const Center(child: Text('这个目录里没有图片')),
+          const SizedBox(height: 8),
+          Center(
+              child: Text('点右上角 + 上传图片，或下拉刷新',
+                  style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant))),
+        ],
+      );
+    }
+    // _shown 是按 _sort 排好的；grid 也用同一个顺序，
+    // 这样从 list 切到 grid 时用户不会觉得顺序变了。
+    final shown = _shown;
+    final sel = _selected;
+
+    return GestureDetector(
+      // 双指捏合：scale=1 → 不动；>1 → 放大；<1 → 缩小。
+      // 单指 scale=1 是 onTap 范围，不在 onScaleUpdate 里处理。
+      onScaleStart: (d) {
+        _scaleStart = _thumbSize;
+      },
+      onScaleUpdate: (d) {
+        // d.scale 在双指捏合时从 1 开始增长 / 缩小。
+        // 单指 / 拖动时 d.scale 始终是 1 —— 自动忽略。
+        if ((d.scale - 1.0).abs() < 0.01) return;
+        setState(() {
+          _thumbSize = (_scaleStart! * d.scale)
+              .clamp(_thumbSizeMin, _thumbSizeMax);
+        });
+      },
+      // onScaleEnd 不必做什么 —— _thumbSize 已经写进了 state
+      child: GridView.builder(
+        padding: const EdgeInsets.all(8),
+        // SliverGridDelegateWithMaxCrossAxisExtent：每格最大宽度是 _thumbSize，
+        // grid 自己按屏宽算列数。
+        //   thumbSize=50  → 屏宽 360 时 6~7 列
+        //   thumbSize=200 → 屏宽 360 时 1~2 列
+        gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: _thumbSize + 24, // +24 给 padding / spacing 留余
+          mainAxisSpacing: 6,
+          crossAxisSpacing: 6,
+          // childAspectRatio 用 0.85：缩略图方块 + 下面留一行文件名
+          childAspectRatio: 0.85,
+        ),
+        itemCount: shown.length,
+        itemBuilder: (ctx, i) {
+          final e = shown[i];
+          if (e.isDir) {
+            return _gridDirTile(e, scheme);
+          }
+          return _gridFileTile(e, scheme, sel);
+        },
+      ),
+    );
+  }
+
+  /// 平铺模式下的目录格子 —— 跟文件一个色块，便于一眼分辨。
+  Widget _gridDirTile(DavEntry e, ColorScheme scheme) {
+    return InkWell(
+      onTap: () => _enterDir(e),
+      onLongPress: () => _showDirActions(e),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF7F77DD).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        padding: const EdgeInsets.all(6),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.folder_rounded, color: const Color(0xFF7F77DD), size: _thumbSize * 0.5),
+            const SizedBox(height: 4),
+            Text(e.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 11)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 平铺模式下的文件格子：缩略图（自动缓存）+ 文件名。
+  /// 视频 / GIF / JPG / PNG / WebP 全部走同一个格子，按 isPlayable 决定
+  /// 缩略图还是占位图标。
+  Widget _gridFileTile(DavEntry e, ColorScheme scheme, Set<String>? sel) {
+    final isVideo = FileTypes.isPlayable(e.name);
+    final checked = sel != null && sel.contains(e.path);
+    final client = ref.read(davClientProvider);
+    return InkWell(
+      onTap: () {
+        if (sel != null) {
+          _toggleSelect(e.path);
+          return;
+        }
+        _open(MediaItem(path: e.path, isVideo: isVideo, size: e.size, modified: e.modified));
+      },
+      onLongPress: sel != null ? null : () => _showActions(e),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        decoration: BoxDecoration(
+          // 多选模式：选中态加主色边
+          border: checked ? Border.all(color: scheme.primary, width: 2) : null,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        padding: const EdgeInsets.all(2),
+        child: Column(
+          children: [
+            // 缩略图区域：占整个 cell 的 80% 高，下面留 20% 给文件名
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  width: double.infinity,
+                  color: isVideo
+                      ? const Color(0xFF7F77DD).withValues(alpha: 0.12)
+                      : Colors.black12,
+                  child: _gridThumb(e.path, isVideo, client),
+                ),
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(e.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 11)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 平铺模式缩略图。
+  /// 图片走 `CachedNetworkImage` —— 项目已有 `cached_network_image` 依赖，
+  /// 默认内存 + 磁盘双层缓存，第二次进入目录直接读本地，不用再下服务器。
+  /// 视频没缩略图（mp4 不像图片能直接解码），用占位图标 + ▶。
+  Widget _gridThumb(String path, bool isVideo, WebDavClient? client) {
+    if (isVideo) {
+      return Center(
+        child: Icon(Icons.movie_outlined, color: const Color(0xFF7F77DD), size: _thumbSize * 0.4),
+      );
+    }
+    final url = client?.urlFor(path) ?? '';
+    return CachedNetworkImage(
+      imageUrl: url,
+      httpHeaders: client?.headers ?? const {},
+      fit: BoxFit.cover,
+      placeholder: (_, __) => const Center(
+        child: SizedBox(
+          width: 18, height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+      errorWidget: (_, __, ___) => const Center(
+        child: Icon(Icons.broken_image_outlined, size: 18, color: Colors.grey),
+      ),
     );
   }
 
@@ -938,6 +1160,9 @@ class MediaPageState extends ConsumerState<MediaPage> {
   }
 
   /// 视频缩略图用占位图标（避免额外解码开销），图片直接显示
+  ///
+  /// v1.9.0+26：图片缩略图改用 `CachedNetworkImage` —— 默认内存 + 磁盘双层缓存，
+  /// 第二次进入同一目录瞬间出，不必每次重新拉服务器。
   Widget _thumbFromPath(String path, bool isVideo) {
     final repo = ref.read(mediaRepoProvider);
     if (!isVideo && repo != null) {
@@ -947,11 +1172,12 @@ class MediaPageState extends ConsumerState<MediaPage> {
         child: SizedBox(
           width: 56,
           height: 44,
-          child: Image.network(
-            client?.urlFor(path) ?? '',
-            headers: client?.headers ?? const {},
+          child: CachedNetworkImage(
+            imageUrl: client?.urlFor(path) ?? '',
+            httpHeaders: client?.headers ?? const {},
             fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => _iconBox(Icons.broken_image_outlined),
+            placeholder: (_, __) => _iconBox(Icons.image_outlined),
+            errorWidget: (_, __, ___) => _iconBox(Icons.broken_image_outlined),
           ),
         ),
       );

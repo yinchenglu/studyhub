@@ -405,7 +405,21 @@ quiz/单词/英语四级核心词.json
 - **持久化**：SharedPreferences，重装 APP 不丢
 - 文件 `lib/ui/tools/tool_pages_dict.dart`（~990 行）
 
-### 修编译（v1.9.0+23 / +24 / +25）
+### 视频 / 图片浏览（v1.9.0+27）
+- **自动缓存缩略图**：列表模式缩略图（56×44）、平铺模式缩略图（80~200）都改用
+  `CachedNetworkImage` —— 项目已有的 `cached_network_image` 包，默认内存 + 磁盘双层缓存。
+  第二次进入同一目录瞬间出，不必每次重新拉服务器；4G 弱网尤其明显（之前每张图要等 1~2 秒）
+- **平铺模式（grid）**：AppBar 右上角新增切换按钮（grid_view ↔ view_list 图标）。
+  - 列表 ↔ 平铺状态保留在内存里（用户切走再回来仍在）；
+  - 只有目录里有图片时才显示这个按钮 —— 纯视频目录进 grid 没意义，全是占位图标
+- **双指捏合缩放缩略图**：平铺模式下整个 `GridView.builder` 外面套一层 `GestureDetector.onScaleUpdate`。
+  缩略图大小范围 **50~200 px**，`SliverGridDelegateWithMaxCrossAxisExtent(_thumbSize+24)` 自动重算列数
+  - 双指远离 → 放大（单格变大，列数减少）
+  - 双指靠近 → 缩小（单格变小，列数增多，最小可挤进 6~7 列）
+  - 单指拖动不动 —— `d.scale` 在单指时始终是 1，自动忽略
+- 文件 `lib/ui/media/media_page.dart`（净增 230 行）
+
+### 修编译（v1.9.0+23 / +24 / +25 / +26）
 - **+19 数独一口气 1700+ 行没跑 dart analyze 就 push**，导致
   +19 / +20 / +21 / +22 / +23 5 个连续 commit 全在「编译 APK」步骤失败。
 - **+23 修了 5 个数独编译错**
@@ -424,7 +438,10 @@ quiz/单词/英语四级核心词.json
   编译报 `SudokuRules has no arrows getter`。
 - **+25 把箭头那段改成嵌套 if**
   (`if (rules is ArrowRules) if (rules.arrows.isNotEmpty) _arrowOverlay(...)`，
-  Dart 在内层能认出 `rules` 是 `ArrowRules`)，CI 终于跑过出 release。
+  Dart 在内层能认出 `rules` 是 `ArrowRules`)，但 Dart 3.47.6 对 public final field
+  + 嵌套 if **仍然不 promote**，仍然报 `SudokuRules has no arrows getter`。
+- **+26 用 `(rules as ArrowRules).arrows` 强制 cast**
+  ——不优雅但**确定能编译**，避免再 round-trip CI。CI 跑过出 release。
 
 ---
 
