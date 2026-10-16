@@ -104,7 +104,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   bool _uiVisible = true;
   // v1.9.0：锁定后「已锁定」徽标定时自动隐藏。触屏能再呼出。
   bool _lockBadgeVisible = false;
-  Timer? _lockBadgeTimer;
 
   /// 控制栏要不要「几秒后自动隐藏」（v1.8.0）。
   /// 默认 false：菜单一直显示，只有点全屏、或点画面空白处才收起。

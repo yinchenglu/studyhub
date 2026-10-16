@@ -49,6 +49,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final saveHist = await SettingsStore.instance.saveViewHistory();
     final dlDir = await CacheManager.instance.downloadDirPath();
     final autoHide = await SettingsStore.instance.autoHidePlayerUi();
+    // v1.9.0：笔记隐藏目录（显示成 csv）—— 必须在 setState 外面 await，
+    // 否则 setState 回调不是 async，编译报 await only in async。
+    final hiddenCsv = await SettingsStore.instance.noteHiddenDirsCsv();
     if (!mounted) return;
     setState(() {
       _cacheBytes = cache;
@@ -58,8 +61,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _saveHistory = saveHist;
       _downloadDir = dlDir;
       _autoHideUi = autoHide;
-      // v1.9.0：笔记隐藏目录（显示成 csv）
-      _noteHiddenDirs = await SettingsStore.instance.noteHiddenDirsCsv();
+      _noteHiddenDirs = hiddenCsv;
     });
   }
 
@@ -892,9 +894,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     );
     if (result == null) return;
     await SettingsStore.instance.setNoteHiddenDirs(result);
-    if (mounted) {
-      setState(() => _noteHiddenDirs = await SettingsStore.instance.noteHiddenDirsCsv());
-    }
+    if (!mounted) return;
+    final fresh = await SettingsStore.instance.noteHiddenDirsCsv();
+    if (mounted) setState(() => _noteHiddenDirs = fresh);
   }
 
   /// 播放器手势说明。

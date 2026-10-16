@@ -523,10 +523,8 @@ class _DownloadSitePageState extends ConsumerState<DownloadSitePage> {
     final target = joinPath(_dirPath, name);
     setState(() => _loading = true);
     try {
-      final src = File(path);
-      final stream = src.openRead();
-      final len = await src.length();
-      await client.writeFileStream(target, stream, contentLength: len);
+      // writeFileStream 内部自己读 size 和 stream，外部只要传 File 即可
+      await client.writeFileStream(target, File(path));
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已上传：$name')));
     } catch (err) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('上传失败：$err')));
