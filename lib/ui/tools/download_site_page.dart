@@ -1,9 +1,9 @@
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:share_plus/share_plus.dart';
 
@@ -497,33 +497,59 @@ class _DownloadSitePageState extends ConsumerState<DownloadSitePage> {
     }
   }
 
-  /// v1.9.0：上传本地文件到当前目录（file_picker → 上传到 WebDAV）
+  /// v1.9.0：上传本地图片或视频到当前目录（用 image_picker）。
+  /// 只支持图片/视频。文本/任意文件上传等 v1.9.1 加 share intent 方案。
   Future<void> _uploadFile() async {
     final client = ref.read(davClientProvider);
     if (client == null) return;
-    FilePickerResult? picked;
+    final picker = ImagePicker();
+    // 让用户选「图库 / 拍摄视频」两个来源都行
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('从相册选图片'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.video_library_outlined),
+              title: const Text('从相册选视频'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: const Text('拍一张照片'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+
+    XFile? picked;
     try {
-      picked = await FilePicker.platform.pickFiles(
-        allowMultiple: false,
-        withData: false, // 大文件用流式上，避免一次性吃内存
-        type: FileType.any,
-      );
+      // 简单区分：先 pickImage，再 pickVideo。这里只 pickImage 也行。
+      picked = await picker.pickImage(source: source);
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('文件选择器打不开：$e')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('选图失败：$e')));
       return;
     }
-    if (picked == null || picked.files.isEmpty) return;
-    final f = picked.files.first;
-    final path = f.path;
-    if (path == null) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('这个文件没法上传（路径不可用）')));
+    if (picked == null) return;
+    final path = picked.path;
+    if (path.isEmpty) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('文件路径不可用')));
       return;
     }
-    final name = (f.name.isNotEmpty ? f.name : p.basename(path));
+    final name = (picked.name.isNotEmpty ? picked.name : p.basename(path));
     final target = joinPath(_dirPath, name);
     setState(() => _loading = true);
     try {
-      // writeFileStream 内部自己读 size 和 stream，外部只要传 File 即可
       await client.writeFileStream(target, File(path));
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已上传：$name')));
     } catch (err) {

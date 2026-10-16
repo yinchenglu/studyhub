@@ -182,40 +182,6 @@ jobs:
                   src = src[: m2.start()] + "minSdkVersion Math.max(%s, 24) /* MIN_SDK_BUMP_24 */" % value + src[m2.end():]
                   print("已把 minSdkVersion 抬到至少 24（原值 %s）" % value)
 
-          # ---------- 2.5 compileSdk 抬到 36（v1.9.0 新增） ----------
-          # 为什么：
-          #   file_picker 8.x 依赖 flutter_plugin_android_lifecycle 2.x，
-          #   它要 compileSdkVersion ≥ 36；Flutter 3.47.6 的
-          #   `flutter.compileSdkVersion` 默认是 35，build 报 checkReleaseAarMetadata 失败。
-          # 处理：直接硬编码 36 —— 这个值只升不降，build.gradle.kts 里的
-          #   `compileSdk = flutter.compileSdkVersion` 改写为 `compileSdk = 36`。
-          # 走「含文字匹配」走 36，走「纯数字」走 maxOf(原值, 36) 兜底。
-          if "COMPILE_SDK_BUMP_36" in src:
-              print("compileSdk 已注入过，跳过")
-          else:
-              m = re.search(r"compileSdk\s*=\s*([^\n]+)", src)
-              if m:
-                  raw_value = m.group(1).strip()
-                  # 关键分支：如果是 flutter.compileSdkVersion（Flutter 3.27+ 默认写法），
-                  # 直接替换成 36 数字更稳。maxOf 数学运算跟方法引用混用会报错。
-                  if "flutter.compileSdkVersion" in raw_value:
-                      src = src[: m.start()] + "compileSdk = 36 /* COMPILE_SDK_BUMP_36 */" + src[m.end():]
-                      print("已把 compileSdk 硬编码到 36（原值 flutter.compileSdkVersion）")
-                  else:
-                      # 旧式：纯数字 compileSdk = 35 / compileSdkVersion 35
-                      bare = raw_value.split("//")[0].strip()
-                      src = src[: m.start()] + "compileSdk = %s(%s, 36) /* COMPILE_SDK_BUMP_36 */" % (
-                          "maxOf" if kotlin else "Math.max", bare,
-                      ) + src[m.end():]
-                      print("已把 compileSdk 抬到至少 36（原值 %s）" % raw_value)
-              else:
-                  # 旧版 Flutter 模板走的是 compileSdkVersion 数字
-                  m2 = re.search(r"compileSdkVersion\s+([^\n]+)", src)
-                  if m2:
-                      value = m2.group(1).strip().split("//")[0].strip()
-                      src = src[: m2.start()] + "compileSdkVersion Math.max(%s, 36) /* COMPILE_SDK_BUMP_36 */" % value + src[m2.end():]
-                      print("已把 compileSdkVersion 抬到至少 36（原值 %s）" % value)
-
           open(path, "w", encoding="utf-8").write(src)
           print("写入完成 ->", path)
           PY

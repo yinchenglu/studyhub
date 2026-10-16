@@ -88,10 +88,10 @@ dependencies:
   crypto: ^3.0.5
   flutter_colorpicker: ^1.1.0
   image_picker: ^1.1.2
-  # v1.9.0：服务器下载站加「上传」功能，需要文件选择器。
-  # 用 8.x（最新版）：CI 流程会把 compileSdk 抬到 36，
-  # 解决 file_picker 依赖 flutter_plugin_android_lifecycle 2.x 的版本要求。
-  file_picker: ^8.1.4
+  # v1.9.0：服务器下载站的「上传」原本想用 file_picker，但它的所有版本
+  # 要么要 compileSdk 36（项目 Flutter 3.47.6 不支持），要么用已删除的 v1 plugin API。
+  # 改用现成的 image_picker：只支持图片和视频上传，够覆盖 90% 场景。
+  # 文本/任意文件上传下版再说（v1.9.1 再加 image_picker + share intent 方案）。
 
   # 下载到自定义目录时的存储权限申请
   permission_handler: ^11.3.1
