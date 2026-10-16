@@ -89,8 +89,10 @@ dependencies:
   flutter_colorpicker: ^1.1.0
   image_picker: ^1.1.2
   # v1.9.0：服务器下载站加「上传」功能，需要文件选择器。
-  # 只用 pickFiles（限定类型），不申请任何运行时权限。
-  file_picker: ^8.1.4
+  # 用 6.x 而不是 8.x：8.x 依赖 flutter_plugin_android_lifecycle 2.x，
+  # 它要 compileSdk ≥ 36，Flutter 3.47.6 默认只有 35/34，会编译失败。
+  # 6.x 的 API 完全够用（pickFiles、type、allowMultiple）。
+  file_picker: ^6.2.1
 
   # 下载到自定义目录时的存储权限申请
   permission_handler: ^11.3.1
