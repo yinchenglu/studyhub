@@ -17,6 +17,7 @@ import 'tool_pages_id.dart';
 import 'tool_pages_ph.dart';
 import 'tool_pages_ph2.dart';
 import 'tool_pages_ph3.dart';
+import 'tool_pages_dict.dart';
 import 'tool_pages_recorder.dart';
 import 'tool_pages_sudoku.dart';
 import 'tool_pages_sync.dart';
@@ -128,6 +129,8 @@ class ToolsPage extends ConsumerStatefulWidget {
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
       // v1.9.0 大改：9 种主流异形 + 笔记模式 + 地狱难度 + 自动出题
       _ToolDef('数独', Icons.grid_3x3, Color(0xFF534AB7)),
+      // v1.9.0 新增：对标欧路基础功能（多词库 / 查词 / 生词本 / 历史）
+      _ToolDef('路路词典', Icons.menu_book_outlined, Color(0xFF185FA5)),
       // v1.7.0 从「测量与设计」挪进来（用户点名）
       _ToolDef('SOS 手电筒', Icons.flashlight_on, Color(0xFFB8860B)),
     ]),
@@ -701,6 +704,9 @@ Widget toolPageOf(String name) {
     // ---- v1.9.0 数独大改 ----
     case '数独':
       return const SudokuPage();
+    // ---- v1.9.0 路路词典 ----
+    case '路路词典':
+      return const DictPage();
     // ---- v1.8.0 ----
     case '单位换算':
       return const UnitConvertPage();
