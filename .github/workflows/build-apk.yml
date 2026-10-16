@@ -499,7 +499,7 @@ jobs:
 
       # ---------- 11. 发布 Release ----------
       # Release 里是直接的 .apk 文件，点一下就能下载，不用先下 zip 再解压。
-      # v1.9.0：版本号从 pubspec.yaml 动态提取（`version: 1.9.0+16`），
+      # v1.9.0：版本号从 pubspec.yaml 动态提取，
       # 不再 hardcode 1.8.0，否则发包忘改会一直显示旧版本号。
       - name: 提取版本号
         id: get_ver
@@ -509,7 +509,6 @@ jobs:
           echo "extracted: $VER"
       - name: 发布 Release
         if: success()
-        needs: get_ver
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
