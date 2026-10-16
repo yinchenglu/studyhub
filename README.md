@@ -405,7 +405,7 @@ quiz/单词/英语四级核心词.json
 - **持久化**：SharedPreferences，重装 APP 不丢
 - 文件 `lib/ui/tools/tool_pages_dict.dart`（~990 行）
 
-### 修编译（v1.9.0+23 / +24）
+### 修编译（v1.9.0+23 / +24 / +25）
 - **+19 数独一口气 1700+ 行没跑 dart analyze 就 push**，导致
   +19 / +20 / +21 / +22 / +23 5 个连续 commit 全在「编译 APK」步骤失败。
 - **+23 修了 5 个数独编译错**
@@ -420,7 +420,11 @@ quiz/单词/英语四级核心词.json
   词库 chip 从 `ChoiceChip` 换成 `InputChip`（前者没 `onDeleted`）；
   工具红边 `Border.all(...)` 改成 `BorderSide`，给 `RoundedRectangleBorder.side` 喂类型；
   数独 `_SudokuGrid.build` 里 `(rules).arrows` 去掉括号让 Dart 类型 promote 生效)。
-  从 +23 到 +24，CI 终于跑过出 release。
+  但 Dart 4+ 把 `(rules).x` 拆开仍然不 promote（public final field + 短路求值的字段访问不收窄），
+  编译报 `SudokuRules has no arrows getter`。
+- **+25 把箭头那段改成嵌套 if**
+  (`if (rules is ArrowRules) if (rules.arrows.isNotEmpty) _arrowOverlay(...)`，
+  Dart 在内层能认出 `rules` 是 `ArrowRules`)，CI 终于跑过出 release。
 
 ---
 

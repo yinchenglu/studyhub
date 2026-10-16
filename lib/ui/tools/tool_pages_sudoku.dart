@@ -1367,8 +1367,9 @@ class _SudokuGrid extends StatelessWidget {
                 _consecutiveOverlay(board, cell, scheme),
               if (rules is EvenOddRules)
                 _evenOddOverlay(rules, cell, scheme),
-              if (rules is ArrowRules && rules.arrows.isNotEmpty)
-                _arrowOverlay(board, rules, cell, scheme),
+              if (rules is ArrowRules)
+                if (rules.arrows.isNotEmpty)
+                  _arrowOverlay(board, rules, cell, scheme),
             ],
           ),
         );

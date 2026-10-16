@@ -31,7 +31,8 @@ publish_to: 'none'
 #   v1.9.0+22 → 1022 / 2022   ← 工具页按用户截图重排 4 个分类
 #   v1.9.0+23 → 1023 / 2023   ← 修数独编译错（mutable 字段 / ArrowDef / overlay 基类 / height）
 #   v1.9.0+24 → 1024 / 2024   ← 修路路 / 工具页 / 数独三处编译错；CI 跑过出 release
-version: 1.9.0+24
+#   v1.9.0+25 → 1025 / 2025   ← 修 ArrowRules promote：嵌套 if 让 Dart 认出类型收窄
+version: 1.9.0+25
 environment:
   # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps
   # 要 >=3.12，取最大值。
