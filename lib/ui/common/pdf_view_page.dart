@@ -106,17 +106,19 @@ class _PdfViewPageState extends State<PdfViewPage> {
     // 翻页模式：SfPdfViewer 仍然在底层渲染，但外层用 Column 包住，
     // 底部加一个固定的翻页工具栏；并捕获 SfPdfViewer 的 scrollView
     // 监听翻页（通过 pageNumber 变化）。
-    final viewer = _buildViewer();
-    if (!_pageMode) return viewer;
+    if (!_pageMode) return _buildViewer();
 
     // 翻页模式下的布局
+    // v1.9.0 修复：v1.8.0 写的 Stack 里只放了个页码指示器，
+    // 漏了底层的 SfPdfViewer —— 翻页模式下 PDF 内容完全看不到。
+    // 正确做法：Stack 底层放 viewer（Positioned.fill 撑满），上层放页码指示器。
     return Column(
       children: [
         Expanded(
           child: Stack(
             children: [
-              // 底部指示器提示
-              if (_ready) ...[
+              Positioned.fill(child: _buildViewer()),
+              if (_ready)
                 Positioned(
                   left: 0,
                   right: 0,
@@ -137,7 +139,6 @@ class _PdfViewPageState extends State<PdfViewPage> {
                     ),
                   ),
                 ),
-              ],
             ],
           ),
         ),

@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import '../../core/constants.dart';
 import '../../core/utils.dart';
 import '../dav/webdav_client.dart';
+import '../local/settings_store.dart';
 import '../models/models.dart';
 
 /// 笔记仓库：全部读写都发生在 WebDAV 的 notes 目录
@@ -16,12 +17,17 @@ class NoteRepo {
 
   String get _root => AppDirs.notes;
 
+  /// v1.9.0：从设置里取「笔记目录要隐藏的文件夹名」集合。
+  /// 用户在「设置 → 笔记」里可以加，比如 assets/pic/img/photos 等。
+  Future<Set<String>> _hidden() => SettingsStore.instance.noteHiddenDirs();
+
   /// 列出某个相对目录（相对 notes）下的条目。
   /// 配图目录（image/）是附属资源，不作为笔记目录显示出来。
   Future<List<DavEntry>> listDir(String sub) async {
     final entries = await dav.list(joinPath(_root, sub), depth: 1);
+    final hidden = await _hidden();
     return entries
-        .where((e) => !(e.isDir && AppDirs.hiddenDirNames.contains(e.name)))
+        .where((e) => !(e.isDir && hidden.contains(e.name)))
         .toList();
   }
 
@@ -37,6 +43,7 @@ class NoteRepo {
   /// 递归扫描整个 notes 目录，用于首页统计与搜索
   Future<List<NoteMeta>> allNotes({int maxDepth = Defaults.scanMaxDepth}) async {
     final out = <NoteMeta>[];
+    final hidden = await _hidden();
     final queue = <MapEntry<String, int>>[MapEntry('', 0)];
     while (queue.isNotEmpty) {
       final cur = queue.removeAt(0);
@@ -49,7 +56,7 @@ class NoteRepo {
       for (final e in entries) {
         if (e.isDir) {
           // 配图目录不进笔记统计
-          if (AppDirs.hiddenDirNames.contains(e.name)) continue;
+          if (hidden.contains(e.name)) continue;
           if (cur.value + 1 <= maxDepth) queue.add(MapEntry(e.path.substring(AppDirs.notes.length + 1), cur.value + 1));
         } else if (FileTypes.isMarkdown(e.name)) {
           out.add(NoteMeta(path: e.path, title: titleFromFileName(e.name), modified: e.modified, size: e.size));

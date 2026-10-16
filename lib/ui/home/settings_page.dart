@@ -29,6 +29,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _busy = false;
   bool _saveHistory = true;
   String _downloadDir = '';
+  // v1.9.0：笔记目录要隐藏的文件夹名（逗号分隔字符串）
+  String _noteHiddenDirs = 'image';
 
   /// 播放时自动隐藏控制栏（v1.8.0）。默认 false —— 菜单一直显示。
   bool _autoHideUi = false;
@@ -56,6 +58,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _saveHistory = saveHist;
       _downloadDir = dlDir;
       _autoHideUi = autoHide;
+      // v1.9.0：笔记隐藏目录（显示成 csv）
+      _noteHiddenDirs = await SettingsStore.instance.noteHiddenDirsCsv();
     });
   }
 
@@ -170,6 +174,34 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoginPage())),
               ),
             ),
+
+          // v1.9.0：笔记 section（隐藏目录名配置）
+          _section('笔记'),
+          Card(
+            margin: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.folder_off_outlined),
+                  title: const Text('笔记里要隐藏的文件夹'),
+                  subtitle: Text(
+                    _noteHiddenDirs.isEmpty ? '（读取中…）' : _noteHiddenDirs,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  isThreeLine: false,
+                  trailing: const Icon(Icons.edit_outlined, size: 20),
+                  onTap: _editHiddenDirs,
+                ),
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Text(
+                    '「image」始终在隐藏列表里。多个文件夹名用英文逗号分隔（如 image, assets, pic, img, photos）。重启 App 后生效。',
+                    style: TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
+                ),
+              ],
+            ),
+          ),
 
           _section('存储与缓存'),
           Card(
@@ -525,11 +557,78 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             margin: const EdgeInsets.symmetric(horizontal: 16),
             child: Column(
               children: [
+                // v1.9.0：版本号不一致时给红字强提示
+                if (kAppVersion != kPubspecVersion.split('+').first)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    color: Colors.red.withValues(alpha: 0.12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '版本号不一致！\nkAppVersion=$kAppVersion  pubspec=$kPubspecVersion\n跑 python tools/bump_version.py 同步。',
+                            style: const TextStyle(color: Colors.red, fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ListTile(
                   leading: const Icon(Icons.info_outline),
                   title: const Text('学聚 · StudyHub'),
                   subtitle: Text('版本 $kAppVersion　自用版\n资料全部存放在你自己的 WebDAV 服务器'),
                   isThreeLine: true,
+                ),
+                const Divider(height: 1),
+                ExpansionTile(
+                  leading: const Icon(Icons.history),
+                  title: const Text('v1.9.0 更新内容'),
+                  childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  children: const [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        '【维护】\n'
+                        '• 版本号一键同步脚本：tools/bump_version.py\n'
+                        '• 「设置 → 关于」里能直接看 README 全文\n\n'
+                        '【笔记】\n'
+                        '• md 文件里点链接能跳转（同目录/跨目录都支持）\n'
+                        '• 右上角菜单改成「列表 / 阅读模式 / 更多」三段式\n'
+                        '• 「1.」前缀的 md 文件自动排到目录第一位\n'
+                        '• 图片引用统一走「笔记根目录下的 image/」\n'
+                        '• 改 knots3d / CPlusPlusThings 两套笔记适配\n\n'
+                        '【视频】\n'
+                        '• 锁定后「已锁定」提示 3 秒后自动隐藏\n\n'
+                        '【工具】\n'
+                        '• 联网工具：右上角小蓝点 → 红色外框线\n'
+                        '• 内置工具重排（按你给的图）\n'
+                        '• 目录/工具名用「1.」前缀排序（显示时去掉）\n'
+                        '• 「服务器下载站」加「上传」功能\n\n'
+                        '【题库】\n'
+                        '• 填空/简答题默认刷题模式\n'
+                        '• 传染病防控（简答题）转 JSON 入库\n\n'
+                        '【新工具】\n'
+                        '• 路路词典：支持 .mdx/.mdd 离线词典\n'
+                        '• 数独大改：11+ 种新类型 / 笔记模式 / 地狱难度',
+                        style: TextStyle(fontSize: 13, height: 1.5),
+                      ),
+                    ),
+                  ],
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.menu_book_outlined),
+                  title: const Text('README · 项目自述'),
+                  subtitle: const Text('代码框架 / 数据来源 / 维护指南'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const ReadmePage(),
+                    ));
+                  },
                 ),
                 const Divider(height: 1),
                 ListTile(
@@ -755,6 +854,49 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
   }
 
+  /// v1.9.0：编辑笔记隐藏目录（多个用英文逗号分隔）
+  Future<void> _editHiddenDirs() async {
+    final ctrl = TextEditingController(text: _noteHiddenDirs);
+    if (!mounted) return;
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('笔记里要隐藏的文件夹'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '多个文件夹名用英文逗号分隔。重启 App 后生效。\n「image」永远在列表里，不用写。',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: ctrl,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: '隐藏的文件夹名',
+                  hintText: 'image, assets, pic, img, photos',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text), child: const Text('保存')),
+        ],
+      ),
+    );
+    if (result == null) return;
+    await SettingsStore.instance.setNoteHiddenDirs(result);
+    if (mounted) {
+      setState(() => _noteHiddenDirs = await SettingsStore.instance.noteHiddenDirsCsv());
+    }
+  }
+
   /// 播放器手势说明。
   ///
   /// 这段文字原来是直接印在播放器底栏上的（一行 10.5 号小字），
@@ -864,4 +1006,101 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       }
     }
   }
+}
+
+/// v1.9.0 新增：设置页「关于」里点 README 进入的全文页面。
+/// 内容默认从 assets/README.md 读；如果资产里没有就 fallback 到内置的简版。
+class ReadmePage extends StatelessWidget {
+  const ReadmePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('README · 项目自述')),
+      body: const _ReadmeBody(),
+    );
+  }
+}
+
+class _ReadmeBody extends StatelessWidget {
+  const _ReadmeBody();
+
+  @override
+  Widget build(BuildContext context) {
+    // v1.9.0：先读 assets/README.md，没有就用内置 fallback（避免初次安装空页面）
+    return FutureBuilder<String>(
+      future: _loadReadme(),
+      builder: (context, snap) {
+        final text = snap.data ?? _fallback;
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: SelectableText(
+            text,
+            style: const TextStyle(fontSize: 14, height: 1.6, fontFamily: 'monospace'),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<String> _loadReadme() async {
+    try {
+      final file = File('assets/README.md');
+      if (await file.exists()) return await file.readAsString();
+    } catch (_) {}
+    return _fallback;
+  }
+
+  static const _fallback = '''
+# 学聚 StudyHub v1.9.0 · 项目自述
+
+## 是什么
+学聚是一款**自用版**学习/资料管理 App。
+所有笔记、视频、题库都放在**你自己的 WebDAV 服务器**上，
+App 只是个壳子 + 离线缓存 + 阅读/做题/播放体验。
+
+## 文件框架
+```
+studyhub_app/
+├── lib/
+│   ├── main.dart             入口，初始化媒体/数据库/拼音
+│   ├── app.dart              路由表
+│   ├── core/                 工具（自然排序、屏幕、设置）
+│   ├── data/
+│   │   ├── dav/              WebDAV 客户端（增删查、上传）
+│   │   ├── local/            本地数据库 + 设置存储
+│   │   ├── models/           题目、笔记、收藏等数据模型
+│   │   └── repositories/     笔记/题库/视频仓库
+│   └── ui/                   页面（home/notes/quiz/tools/videos/common）
+├── assets/                   静态资源（区划码 json / 字体 / 未来加 README.md）
+├── tools/
+│   ├── bump_version.py       改版本号脚本（v1.9.0 新增）
+│   └── build_id_region.py    构建区划码数据
+├── pubspec.yaml              依赖 + 版本号（version: 1.9.0+16）
+└── android/                  Android 构建配置
+```
+
+## 数据来源
+| 数据 | 来源 | License |
+|---|---|---|
+| 区划码 id_region.json | github.com/yescallop/areacodes | CC0 |
+| 拼音表 | github.com/mozillazg/python-pinyin | MIT |
+| 字体（翻页时钟） | 思源宋体/方正免费字体 | OFL |
+
+## 怎么改版本号
+跑 `python tools/bump_version.py 1.10.0`，自动同步两处。
+
+## 怎么改笔记根目录的图片隐藏规则
+设置页 → 笔记 → 「图片文件夹名」（v1.9.0 改）—— 输入多个文件夹名用逗号分隔。
+
+## 服务器目录规范
+见 StudyHub/README.md（v1.9.0 创建）。
+
+## 维护日志
+- v1.8.0：knots3d 图片兜底 / PDF 翻页 / 收藏空态 / 填空问答 / 身份证历史码 3002
+- v1.9.0：笔记/视频/工具/数独大改 / 服务器上传 / README / 路路词典
+''';
 }

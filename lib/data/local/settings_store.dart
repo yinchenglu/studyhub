@@ -33,6 +33,11 @@ class SettingsStore {
   static const _kRecentServers = 'recent_servers';
   // v1.8.0 新增：播放时自动隐藏控制栏。默认 **false** —— 见下面的注释。
   static const _kAutoHideUi = 'player_auto_hide_ui';
+  // v1.9.0 新增：笔记目录里要隐藏的文件夹名（逗号分隔字符串）。默认 'image'。
+  // 之前写死在 lib/core/constants.dart 的 AppDirs.hiddenDirNames = {imageDirName}，
+  // 但用户下载的笔记里图片目录不一定叫 image（可能是 assets/pic/img/photos/...），
+  // 所以做进设置里给用户自己加。
+  static const _kNoteHiddenDirs = 'note_hidden_dirs';
 
   // 后台录音录像（v1.6.0）
   static const _kRecDir = 'recorder_dir';
@@ -436,6 +441,40 @@ class SettingsStore {
     final p = await _prefs;
     final v = p.getString(_kDownloadDir);
     return (v == null || v.trim().isEmpty) ? null : v.trim();
+  }
+
+  // ---------------------------------------------------------------- 笔记隐藏目录
+  /// 笔记目录里要隐藏的文件夹名（去首尾空格、跳过空段、跳过 '.image' 这类隐藏文件夹）。
+  /// 默认始终包含 'image'，用户可以加自己笔记里的资源目录（如 assets, pic, img, photos 等）。
+  Future<Set<String>> noteHiddenDirs() async {
+    final p = await _prefs;
+    final raw = p.getString(_kNoteHiddenDirs) ?? 'image';
+    final parts = raw
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toSet();
+    parts.add('image'); // 'image' 永远在隐藏列表里
+    return parts;
+  }
+
+  /// 取出原始 csv（去掉两端的逗号/空格），给设置页显示用 —— 不强加 'image'。
+  Future<String> noteHiddenDirsCsv() async {
+    final p = await _prefs;
+    return p.getString(_kNoteHiddenDirs) ?? 'image';
+  }
+
+  Future<void> setNoteHiddenDirs(String csv) async {
+    final p = await _prefs;
+    // 去掉全角逗号 / 重复项 / 空白
+    final cleaned = csv
+        .replaceAll('，', ',')
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toSet()
+        .join(',');
+    await p.setString(_kNoteHiddenDirs, cleaned.isEmpty ? 'image' : cleaned);
   }
 
   Future<void> setDownloadDirPath(String? path) async {

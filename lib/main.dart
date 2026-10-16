@@ -4,6 +4,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'app.dart';
+import 'core/constants.dart';
 import 'core/natural_sort.dart';
 import 'core/sync_service.dart';
 import 'data/local/db.dart';
@@ -20,6 +21,9 @@ import 'data/local/settings_store.dart';
 /// 5. v1.8.0：把拼音表读进来，给「按名称排序要和电脑一致」用。
 ///    必须在这里读、不能等到用的时候再读 —— 排序是比较器，是**同步**调用的，
 ///    没有 await 的余地。表本身只在内存里查，46 KB，几百毫秒都不到。
+/// 6. v1.9.0：版本号一致性校验。
+///    升级流程见 tools/bump_version.py，App 启动时如果两个版本号不一致
+///    会在控制台 + 设置页「关于」里给红字提醒（debug 模式 assert 直接抛错）。
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
@@ -28,5 +32,15 @@ Future<void> main() async {
   await AppDb.instance.init();
   await SyncService.instance.boot();
   await PinyinTable.init();
+  // v1.9.0：kAppVersion 与 pubspec.yaml 的 version 去掉 +N 之后必须一致
+  // 发布时两处一起改（用 tools/bump_version.py 一次同步）。
+  assert(
+    kAppVersion == kPubspecVersion.split('+').first,
+    '\n\n'
+    '❌ 版本号不一致！\n'
+    '   lib/core/constants.dart 的 kAppVersion = "$kAppVersion"\n'
+    '   pubspec.yaml 的 version            = "$kPubspecVersion"\n'
+    '   跑 tools/bump_version.py 同步。\n',
+  );
   runApp(const ProviderScope(child: StudyHubApp()));
 }

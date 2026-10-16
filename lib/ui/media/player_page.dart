@@ -102,6 +102,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   double _dim = 0; // 亮度遮罩：0 全亮，0.7 最暗
   bool _uiVisible = true;
+  // v1.9.0：锁定后「已锁定」徽标定时自动隐藏。触屏能再呼出。
+  bool _lockBadgeVisible = false;
+  Timer? _lockBadgeTimer;
 
   /// 控制栏要不要「几秒后自动隐藏」（v1.8.0）。
   /// 默认 false：菜单一直显示，只有点全屏、或点画面空白处才收起。
@@ -157,6 +160,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   Timer? _hideTimer;
   Timer? _saveTimer;
+  Timer? _lockBadgeTimer;
   final List<StreamSubscription> _subs = [];
 
   /// 当前视频的宽高（v1.8.0）。media_kit 的 `stream.width/height` 是 `Stream<int?>`，
@@ -364,9 +368,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   }
 
   void _toggleUi() {
-    // 锁定状态下点屏幕什么都不做 —— 用户要的正是「锁定后点击屏幕不出现菜单」。
-    // 解锁走长按，或点那个常驻的小锁图标。
-    if (_locked) return;
+    // v1.9.0：锁定状态下点屏幕把「已锁定」徽标重新呼出（3 秒再隐藏），
+    // 仍然不显示控制栏 —— 这正是用户要的「锁定后点击屏幕不出现菜单」。
+    if (_locked) {
+      _showLockBadge();
+      return;
+    }
     setState(() => _uiVisible = !_uiVisible);
     if (_uiVisible) _scheduleHide();
   }
@@ -631,8 +638,24 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       // 也免得用户以为「锁定了怎么按钮还在」。
       _uiVisible = !next;
     });
+    if (next) {
+      // v1.9.0：锁定时显示「已锁定」徽标，3 秒后自动隐藏，触屏再呼出
+      _showLockBadge();
+    } else {
+      _lockBadgeTimer?.cancel();
+      setState(() => _lockBadgeVisible = false);
+    }
     if (!next) _scheduleHide();
     _toast(next ? '已锁定：点屏幕不再呼出控制栏，长按可解锁' : '已解锁：跟随手机方向自动翻转');
+  }
+
+  /// v1.9.0：「已锁定」徽标 3 秒自动隐藏，触屏再呼出
+  void _showLockBadge() {
+    _lockBadgeTimer?.cancel();
+    setState(() => _lockBadgeVisible = true);
+    _lockBadgeTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _lockBadgeVisible = false);
+    });
   }
 
   /// 点一下静音、再点一下取消静音。
@@ -909,29 +932,31 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   ),
                 ),
 
-              // 锁定后控制栏全收，只留这么一个小锁。
-              // 点它比「先长按再猜」直观得多，而且它是独立按钮、
-              // 不会被外层 onTap 吞掉，所以不算「点屏幕呼出菜单」。
-              if (_locked)
+              // v1.9.0：锁定后「已锁定」徽标默认 3 秒后自动隐藏，触屏可再呼出
+              if (_locked && _lockBadgeVisible)
                 Positioned(
                   top: 76,
                   left: 14,
                   child: SafeArea(
-                    child: Material(
-                      color: Colors.black.withValues(alpha: 0.45),
-                      shape: const StadiumBorder(),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: _toggleLock,
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.lock, color: Colors.white, size: 16),
-                              SizedBox(width: 6),
-                              Text('已锁定', style: TextStyle(color: Colors.white, fontSize: 12)),
-                            ],
+                    child: AnimatedOpacity(
+                      opacity: _lockBadgeVisible ? 1 : 0,
+                      duration: const Duration(milliseconds: 200),
+                      child: Material(
+                        color: Colors.black.withValues(alpha: 0.45),
+                        shape: const StadiumBorder(),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: _toggleLock,
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.lock, color: Colors.white, size: 16),
+                                SizedBox(width: 6),
+                                Text('已锁定', style: TextStyle(color: Colors.white, fontSize: 12)),
+                              ],
+                            ),
                           ),
                         ),
                       ),
