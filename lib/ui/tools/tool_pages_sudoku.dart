@@ -89,12 +89,14 @@ class SudokuBoard {
   final List<List<bool>> fixed;
   /// 笔记：每格一个 `Set<int>`，候选数字（笔记模式用）。
   final List<List<Set<int>>> notes;
-  /// 杀手笼 / 奇偶 / 百分比 等附加约束。Map 行-列 → 笼 id。
-  final List<List<int>>? cageId;
+  /// 杀手笼 / 锯齿等的"格属于哪个笼"标记，Map 行-列 → 笼 id。
+  /// v1.9.0+23：不再是 final —— 生成阶段要往里填；
+  ///           未生成的题仍保持 null（标准 / 对角 / 超数独等用不上）。
+  List<List<int>>? cageId;
   /// 笼 id → (sum, cells list)
-  final Map<int, _Cage>? cages;
+  Map<int, _Cage>? cages;
   /// 不等式符号（仅 greater / consecutive 用）。`(r,c) → '>' 或 '<' 或 '=' `
-  final List<List<String>>? relationMark;
+  List<List<String>>? relationMark;
 
   SudokuBoard({
     required this.size,
@@ -600,7 +602,9 @@ class GreaterRules extends StandardRules {
 /// 奇偶：行 / 列 / 宫 + 部分格固定奇偶
 class EvenOddRules extends StandardRules {
   /// `(r,c) → 'e' (偶) / 'o' (奇)`。空位置不进约束。
-  final List<List<String>> evenOdd;
+  /// v1.9.0+23：改成 mutable，因为 digHoles 时要把 full 的偶标**深拷贝**
+  /// 到 p 上；final 会让 `p.evenOdd = ...` 编译失败。
+  List<List<String>> evenOdd;
 
   EvenOddRules(super.type, this.evenOdd);
 
@@ -671,8 +675,12 @@ class ConsecutiveRules extends StandardRules {
 
 /// 箭头：箭头路径上的数字之和 = 圆球数
 class ArrowRules extends StandardRules {
-  /// 箭头定义：`arrows[idx] = [[ball_r, ball_c], [[r1,c1], [r2,c2], ...]]`
-  final List<List<List<int>>> arrows;
+  /// v1.9.0+23：箭头定义。**改成命名 class**——
+  /// 之前用 `List<List<List<int>>>` 表示「(ball, path) pair list」，
+  /// 但 Dart 推断嵌套类型时容易塌成 `List<int>`（尤其是 spread 的内层列表），
+  /// 导致 `.arrows[i][j][0]` 那行报「operator [] 不存在 in int」。
+  /// 用 class 写就一目了然，编译期稳。
+  final List<ArrowDef> arrows;
 
   ArrowRules(super.type, this.arrows);
 
@@ -681,9 +689,9 @@ class ArrowRules extends StandardRules {
     if (!super.isLegal(b, r, c, v)) return false;
     // 球不能与路径上其它格同值（即使数值合法）
     for (final arr in arrows) {
-      final ball = arr[0];
+      final ball = arr.ball;
       if (ball[0] == r && ball[1] == c) {
-        for (final cell in arr[1]) {
+        for (final cell in arr.path) {
           if (cell[0] == r && cell[1] == c) continue;
           if (b.cells[cell[0]][cell[1]] == v) return false;
         }
@@ -697,15 +705,22 @@ class ArrowRules extends StandardRules {
     if (!b.isFilled) return false;
     if (!isValidSolution(b)) return false;
     for (final arr in arrows) {
-      final ballVal = b.cells[arr[0][0]][arr[0][1]];
+      final ballVal = b.cells[arr.ball[0]][arr.ball[1]];
       var sum = 0;
-      for (final cell in arr[1]) {
+      for (final cell in arr.path) {
         sum += b.cells[cell[0]][cell[1]];
       }
       if (sum != ballVal) return false;
     }
     return true;
   }
+}
+
+/// 一个箭头：`ball` 是圆球坐标，`path` 是从 ball 起往外的路径格列表（不含 ball）。
+class ArrowDef {
+  final List<int> ball;
+  final List<List<int>> path;
+  ArrowDef(this.ball, this.path);
 }
 
 // ============================================================ 引擎：解算器
@@ -879,7 +894,8 @@ class _SudokuPageState extends State<SudokuPage> {
       case SudokuType.greater:
         rules = GreaterRules(_type);
         full = rules.generateFull(rng);
-        full.relationMark = _makeGreaterMarks(full.size, full.height, rng);
+        // GreaterRules：6 行 × 9 列。height 从 type.height 拿（SudokuBoard.size 是宽边）。
+        full.relationMark = _makeGreaterMarks(full.size, _type.height, rng);
         break;
       case SudokuType.evenodd:
         final rulesEO = EvenOddRules(_type,
@@ -952,8 +968,8 @@ class _SudokuPageState extends State<SudokuPage> {
   }
 
   /// 箭头：在合法解上随机画 4~5 个箭头（每个圆球带 2~3 格路径）
-  List<List<List<int>>> _makeArrows(int size, math.Random rng) {
-    final out = <List<List<int>>>[];
+  List<ArrowDef> _makeArrows(int size, math.Random rng) {
+    final out = <ArrowDef>[];
     final used = <List<bool>>[];
     for (var r = 0; r < size; r++) {
       used.add(List.filled(size, false));
@@ -981,10 +997,8 @@ class _SudokuPageState extends State<SudokuPage> {
         path.add([nr, nc]);
       }
       if (path.length < 2) continue;
-      out.add([
-        [br, bc],
-        ...path
-      ]);
+      // 用 ArrowDef class 包，类型清晰（Dart 推断不再塌成 List<int>）
+      out.add(ArrowDef([br, bc], List<List<int>>.from(path)));
       for (final c in path) {
         used[c[0]][c[1]] = true;
       }
@@ -1494,7 +1508,10 @@ class _SudokuGrid extends StatelessWidget {
   }
 
   // ---------- 锯齿 宫 ----------
-  Widget _jigsawOverlay(JigsawRules rules, double cell, ColorScheme scheme) {
+  // v1.9.0+23：签名拿基类 SudokuRules，内部 `is JigsawRules` 收窄。
+  // 调用点直接传 `rules` 而非 `rules as JigsawRules`，避免编译期 Dart 推断失败。
+  Widget _jigsawOverlay(SudokuRules rules, double cell, ColorScheme scheme) {
+    if (rules is! JigsawRules) return const SizedBox.shrink();
     final n = rules.size;
     return SizedBox.expand(
       child: IgnorePointer(
@@ -1541,7 +1558,8 @@ class _SudokuGrid extends StatelessWidget {
   }
 
   // ---------- 奇偶（标注在格底） ----------
-  Widget _evenOddOverlay(EvenOddRules rules, double cell, ColorScheme scheme) {
+  Widget _evenOddOverlay(SudokuRules rules, double cell, ColorScheme scheme) {
+    if (rules is! EvenOddRules) return const SizedBox.shrink();
     final marks = rules.evenOdd;
     final n = rules.size;
     return SizedBox.expand(
@@ -1554,7 +1572,8 @@ class _SudokuGrid extends StatelessWidget {
   }
 
   // ---------- 箭头 ----------
-  Widget _arrowOverlay(SudokuBoard b, ArrowRules rules, double cell, ColorScheme scheme) {
+  Widget _arrowOverlay(SudokuBoard b, SudokuRules rules, double cell, ColorScheme scheme) {
+    if (rules is! ArrowRules) return const SizedBox.shrink();
     return SizedBox.expand(
       child: IgnorePointer(
         child: CustomPaint(
@@ -1859,7 +1878,7 @@ class _EvenOddPainter extends CustomPainter {
 
 class _ArrowPainter extends CustomPainter {
   final SudokuBoard board;
-  final List<List<List<int>>> arrows;
+  final List<ArrowDef> arrows;
   final double cell;
   final Color color;
   _ArrowPainter({
@@ -1876,11 +1895,10 @@ class _ArrowPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
     for (final arr in arrows) {
-      final ball = arr[0];
-      final path = arr[1];
-      // 路径：从 ball 一格一格画到 path[end]
+      final ball = arr.ball;
+      // 路径：从 ball 一格一格画到 arr.path 末端
       Offset last = Offset((ball[1] + 0.5) * cell, (ball[0] + 0.5) * cell);
-      for (final p in path) {
+      for (final p in arr.path) {
         final next = Offset((p[1] + 0.5) * cell, (p[0] + 0.5) * cell);
         canvas.drawLine(last, next, paint);
         last = next;
