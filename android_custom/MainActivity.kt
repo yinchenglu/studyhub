@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
@@ -14,6 +15,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.location.Criteria
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -26,6 +28,8 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
+import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Size
 import android.view.Surface
@@ -163,6 +167,47 @@ class MainActivity : FlutterActivity() {
                     stopLocation()
                 }
             })
+
+        // ---- 虚拟定位（v1.9.0+28 新增）----
+        //
+        // 原理：Android 允许「被选为模拟位置信息应用」的 App
+        // 通过 LocationManager.addTestProvider / setTestProviderLocation
+        // 往系统注入坐标（其他 App 读到的就是这里给的假坐标）。
+        //
+        // 前提：用户得先在「开发者选项 → 选择模拟位置信息应用」里选中本 App，
+        // 否则 addTestProvider 会抛 SecurityException —— 这时我们把这句提示回给 Dart。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, MOCKLOC_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "status" -> result.success(mockStatus())
+                    "requestPermission" -> {
+                        requestLocationPermission()
+                        result.success(hasLocationPermission())
+                    }
+                    "start" -> {
+                        val lat = (call.argument<Any>("lat") as? Number)?.toDouble()
+                        val lng = (call.argument<Any>("lng") as? Number)?.toDouble()
+                        val acc = (call.argument<Any>("acc") as? Number)?.toFloat() ?: 5f
+                        if (lat == null || lng == null) {
+                            result.error("bad_args", "缺少经纬度", null)
+                        } else {
+                            val err = startMock(lat, lng, acc)
+                            if (err == null) result.success(true)
+                            else result.error("mock_failed", err, null)
+                        }
+                    }
+                    "stop" -> {
+                        stopMock()
+                        result.success(true)
+                    }
+                    "realLocation" -> result.success(lastKnown())
+                    "openDevOptions" -> {
+                        openDevOptions()
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
 
         // ---- 后台录音：开 / 停 / 查状态 ----
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, RECORDER_CHANNEL)
@@ -1256,11 +1301,17 @@ class MainActivity : FlutterActivity() {
          *
          * 传感器方向和手机朝向是两回事：竖屏拿着手机时，传感器常常是横的，
          * 不给 orientationHint 的话录出来会躺在那里。这个页面锁竖屏，
-         * 所以按竖屏换算即可；前置镜头是镜像的，要多转 180°。
+         * 所以按竖屏换算即可。
+         *
+         * v1.9.0+28 修：前置镜头**不要**额外 +180°。
+         * 之前写成 `if (front) (so + 180) % 360`，用户实测前摄录出来
+         * 就是转了 180° 的倒像 —— 原因是 MediaRecorder 的 setOrientationHint
+         * 对前摄本身已经按传感器方向摆正了（镜像归显示层管），再叠 180° 恰好翻倒。
+         * 后摄 so=90、前摄 so=270，直接用传感器值，竖屏录出来都是正的。
          */
         private fun orientationHint(chars: CameraCharacteristics, front: Boolean): Int {
             val so = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-            return if (front) (so + 180) % 360 else so
+            return so
         }
 
         companion object {
@@ -1324,11 +1375,176 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // ============================================================ 虚拟定位
+    //
+    // v1.9.0+28 新增。三条链路：
+    //   1. 定位权限：checkSelfPermission + requestPermissions（结果由 Dart 侧轮询 status）
+    //   2. 模拟位置：addTestProvider → setTestProviderEnabled → setTestProviderLocation
+    //      每秒刷一次（很多 App 会丢弃「时间戳太旧」的定位）
+    //   3. 真实定位：getLastKnownLocation（用来做「以我现在的位置为起点」）
+
+    private var mockTimer: Handler? = null
+    private var mockRunning = false
+    private var mockLat = 0.0
+    private var mockLng = 0.0
+    private var mockAcc = 5f
+
+    private fun hasLocationPermission(): Boolean =
+        checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun requestLocationPermission() {
+        if (hasLocationPermission()) return
+        requestPermissions(
+            arrayOf(
+                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ),
+            MOCKLOC_PERM_CODE
+        )
+    }
+
+    private fun mockStatus(): Map<String, Any?> = mapOf(
+        "hasPermission" to hasLocationPermission(),
+        "running" to mockRunning,
+        "lat" to mockLat,
+        "lng" to mockLng,
+        "accuracy" to mockAcc.toDouble()
+    )
+
+    private fun mockLocationFor(provider: String, lat: Double, lng: Double, acc: Float): Location {
+        val loc = Location(provider)
+        loc.latitude = lat
+        loc.longitude = lng
+        loc.accuracy = acc
+        loc.altitude = 30.0
+        loc.time = System.currentTimeMillis()
+        loc.elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            loc.verticalAccuracyMeters = 1f
+            loc.speedAccuracyMetersPerSecond = 1f
+            loc.bearingAccuracyDegrees = 1f
+        }
+        loc.speed = 0f
+        loc.bearing = 0f
+        return loc
+    }
+
+    /** 返回 null = 成功；非 null = 给用户看的错误原因 */
+    private fun startMock(lat: Double, lng: Double, acc: Float): String? {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            ?: return "系统定位服务不可用"
+        mockLat = lat
+        mockLng = lng
+        mockAcc = acc
+        var lastErr: String? = null
+        var okAny = false
+        for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+            try {
+                // 已经注册过就先移除，避免 "Provider already exists"
+                try {
+                    lm.removeTestProvider(provider)
+                } catch (_: Throwable) {
+                }
+                lm.addTestProvider(
+                    provider, false, true, false, false, true, true,
+                    Criteria.POWER_LOW, Criteria.ACCURACY_FINE
+                )
+                lm.setTestProviderEnabled(provider, true)
+                lm.setTestProviderLocation(provider, mockLocationFor(provider, lat, lng, acc))
+                okAny = true
+            } catch (e: SecurityException) {
+                lastErr = "还没有把学聚选为「模拟位置信息应用」：\n" +
+                    "设置 → 开发者选项 → 选择模拟位置信息应用 → 选学聚"
+            } catch (t: Throwable) {
+                lastErr = t.message ?: "注入坐标失败"
+            }
+        }
+        if (!okAny) return lastErr ?: "注入坐标失败"
+        mockRunning = true
+        // 每秒刷新，防止定位时间戳过期被上层丢弃
+        mockTimer?.removeCallbacksAndMessages(null)
+        val h = Handler(Looper.getMainLooper())
+        mockTimer = h
+        val tick = object : Runnable {
+            override fun run() {
+                if (!mockRunning) return
+                for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+                    try {
+                        lm.setTestProviderLocation(
+                            provider, mockLocationFor(provider, mockLat, mockLng, mockAcc)
+                        )
+                    } catch (_: Throwable) {
+                    }
+                }
+                h.postDelayed(this, 1000L)
+            }
+        }
+        h.postDelayed(tick, 1000L)
+        return null
+    }
+
+    private fun stopMock() {
+        mockRunning = false
+        mockTimer?.removeCallbacksAndMessages(null)
+        mockTimer = null
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+            try {
+                lm.setTestProviderEnabled(provider, false)
+            } catch (_: Throwable) {
+            }
+            try {
+                lm.removeTestProvider(provider)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    /** 真实定位（上次已知位置）：起点用 */
+    private fun lastKnown(): Map<String, Any?> {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            ?: return mapOf("ok" to false, "msg" to "系统定位服务不可用")
+        if (!hasLocationPermission()) return mapOf("ok" to false, "msg" to "还没给定位权限")
+        var best: Location? = null
+        for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+            try {
+                val l = lm.getLastKnownLocation(provider) ?: continue
+                if (best == null || l.time > best!!.time) best = l
+            } catch (_: Throwable) {
+            }
+        }
+        val b = best ?: return mapOf("ok" to false, "msg" to "拿不到已知位置，先去室外或有网的地方开一下定位")
+        return mapOf(
+            "ok" to true,
+            "lat" to b.latitude,
+            "lng" to b.longitude,
+            "accuracy" to b.accuracy.toDouble()
+        )
+    }
+
+    private fun openDevOptions() {
+        try {
+            val i = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(i)
+        } catch (_: Throwable) {
+            try {
+                val i = Intent(Settings.ACTION_SETTINGS)
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(i)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     companion object {
         private const val CHANNEL = "studyhub/display"
         private const val LOCATION_CHANNEL = "studyhub/location"
         private const val RECORDER_CHANNEL = "studyhub/recorder"
         private const val AUDIO_CHANNEL = "studyhub/audio"
         private const val VIDEOREC_CHANNEL = "studyhub/videorec"
+        private const val MOCKLOC_CHANNEL = "studyhub/mockloc"
+        private const val MOCKLOC_PERM_CODE = 5201
     }
 }

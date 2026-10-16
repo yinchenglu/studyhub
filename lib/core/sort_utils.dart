@@ -57,10 +57,17 @@ List<DavEntry> sortEntries(List<DavEntry> list, SortPref pref) {
     //   1.首页.md  → 排第 1
     //   1.  → 自动认成「第 1 个」也行
     //   0.0 之类也算
-    // 文件夹不接受这个规则 —— 文件夹本就在文件前面，再加规则也没意义。
-    final aPin = _isPinnedName(a.name);
-    final bPin = _isPinnedName(b.name);
-    if (aPin != bPin) return aPin ? -1 : 1;
+    //
+    // v1.9.0+28：再加一档「索引类文件名」——有些笔记库（第三方导入的）
+    // 索引文件不叫「1.xxx.md」，而是 index.md / README.md / 总目录.md 之类。
+    // 分三级：
+    //   2 = 「数字.」前缀       → 最顶
+    //   1 = index / 目录 / 首页 / README / Home 类 → 次顶
+    //   0 = 其它
+    // 无论哪一级，都**排在文件夹前面**（用户明确要求）。
+    final aPin = _pinRank(a.name);
+    final bPin = _pinRank(b.name);
+    if (aPin != bPin) return bPin - aPin;
     if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
     int c;
     switch (pref.key) {
@@ -88,4 +95,25 @@ List<DavEntry> sortEntries(List<DavEntry> list, SortPref pref) {
 bool _isPinnedName(String name) {
   final m = RegExp(r'^\d+\.\s?').firstMatch(name);
   return m != null;
+}
+
+/// v1.9.0+28：置顶档位。
+///   2 = 「数字.」前缀（最强的「我是第 1 篇」信号）
+///   1 = 常见索引文件名（index / README / 目录 / 首页 / 大纲 / Home / Contents）
+///   0 = 普通文件
+int _pinRank(String name) {
+  if (_isPinnedName(name)) return 2;
+  final base = name.replaceAll(RegExp(r'\.[A-Za-z0-9]+$'), '').trim().toLowerCase();
+  const keys = <String>[
+    'index', 'readme', 'home', 'contents', 'summary', 'toc',
+    '目录', '总目录', '索引', '首页', '大纲', '简介', '说明',
+  ];
+  for (final k in keys) {
+    if (base == k || base.endsWith('·$k') || base.endsWith('-$k') || base.endsWith('_$k')) {
+      return 1;
+    }
+  }
+  // 「xxx总目录」「xxx目录」也算
+  if (base.endsWith('目录') || base.endsWith('索引')) return 1;
+  return 0;
 }

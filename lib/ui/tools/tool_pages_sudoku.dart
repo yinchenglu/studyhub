@@ -823,6 +823,9 @@ class _SudokuPageState extends State<SudokuPage> {
   bool _showHint = false;
   bool _busy = false;
 
+  /// v1.9.0+28：「校验」标出来的错格（key = "r-c"），用户落子后清空
+  Set<String> _checkedWrong = {};
+
   @override
   void initState() {
     super.initState();
@@ -927,6 +930,9 @@ class _SudokuPageState extends State<SudokuPage> {
       _errCount = 0;
       _showHint = false;
       _busy = false;
+      _checkedWrong = {};
+      _undoStack.clear();
+      _startedAt = DateTime.now();
     });
     _save();
   }
@@ -1012,10 +1018,22 @@ class _SudokuPageState extends State<SudokuPage> {
       toast(context, '这格是提示，不能改');
       return;
     }
+    // 数字盘上的「剩余个数」角标：每个数字一共该出现几次 - 已经出现几次
+    final per = _perNumber;
+    final placed = <int, int>{};
+    for (final row in b.cells) {
+      for (final v in row) {
+        if (v != 0) placed[v] = (placed[v] ?? 0) + 1;
+      }
+    }
+    final remain = <int, int>{
+      for (var v = 1; v <= b.size; v++) v: per - (placed[v] ?? 0),
+    };
     // 数字选择
     showModalBottomSheet(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surface,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -1024,36 +1042,35 @@ class _SudokuPageState extends State<SudokuPage> {
         current: b.cells[r][c],
         notes: b.notes[r][c],
         noteMode: _noteMode,
+        remain: remain,
         onPick: (v) {
           Navigator.pop(ctx);
           _applyNumber(r, c, v);
-        },
-        onClear: () {
-          Navigator.pop(ctx);
-          _clearCell(r, c);
         },
       ),
     );
   }
 
+  /// 每个数字在整个盘里该出现几次：9×9 = 9，9×6（不等式）= 6
+  int get _perNumber => _type.height;
+
   void _applyNumber(int r, int c, int v) {
     final b = _board!;
     final rules = _rules!;
+    _pushUndo(r, c);
     if (_noteMode) {
       setState(() {
-        if (v == 0) {
-          b.notes[r][c].clear();
+        if (b.notes[r][c].contains(v)) {
+          b.notes[r][c].remove(v);
         } else {
-          if (b.notes[r][c].contains(v)) {
-            b.notes[r][c].remove(v);
-          } else {
-            b.notes[r][c].add(v);
-          }
+          b.notes[r][c].add(v);
         }
+        _checkedWrong = {};
       });
       return;
     }
-    if (v == 0) {
+    // v1.9.0+28：再点一次同一个数字 = 清除该格（去掉数字盘上的「擦除」按钮后的替代操作）
+    if (b.cells[r][c] == v) {
       _clearCell(r, c);
       return;
     }
@@ -1062,11 +1079,18 @@ class _SudokuPageState extends State<SudokuPage> {
       HapticFeedback.heavyImpact();
       setState(() {
         b.cells[r][c] = v;
+        b.notes[r][c].clear();
         _errCount++;
+        _checkedWrong = {};
       });
       return;
     }
-    setState(() => b.cells[r][c] = v);
+    setState(() {
+      b.cells[r][c] = v;
+      // 落子后这格的笔记没用了（原来不清，会跟数字叠在一起）
+      b.notes[r][c].clear();
+      _checkedWrong = {};
+    });
     if (rules.isComplete(b)) {
       _finish();
     }
@@ -1120,19 +1144,22 @@ class _SudokuPageState extends State<SudokuPage> {
   @override
   Widget build(BuildContext context) {
     return ToolScaffold(
-      title: '数独',
+      title: '数独练习',
       subtitle: _type.label +
           ' · ' +
           _diff.label +
           (_board == null ? '' : ' · 错误 $_errCount'),
       actions: [
+        // v1.9.0+28：换题型（回选题页）。原来只能退出工具再进，很不方便。
+        if (_board != null)
+          IconButton(
+            tooltip: '换题型 / 难度',
+            onPressed: () => setState(() => _board = null),
+            icon: const Icon(Icons.tune),
+          ),
+        // 新题（保持当前题型难度重出）
         IconButton(
-          tooltip: _noteMode ? '退出笔记模式' : '笔记模式',
-          onPressed: () => setState(() => _noteMode = !_noteMode),
-          icon: Icon(_noteMode ? Icons.edit_note : Icons.edit_outlined),
-        ),
-        IconButton(
-          tooltip: '新题目',
+          tooltip: '新题',
           onPressed: _busy ? null : _newGame,
           icon: const Icon(Icons.refresh),
         ),
@@ -1144,11 +1171,25 @@ class _SudokuPageState extends State<SudokuPage> {
   }
 
   // ---------- 选类型 / 难度 ----------
+  //
+  // v1.9.0+28 重排：
+  //   * 删掉「说明」那一大段文字（用户点名不要）
+  //   * 「新题」按钮挪到「题型 / 难度」同一区域（原来在最下面一个孤零零的「开始」）
   Widget _picker() {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
       children: [
-        const ToolSection('类型'),
+        Row(
+          children: [
+            const ToolSection('题型'),
+            const Spacer(),
+            FilledButton.icon(
+              onPressed: _busy ? null : _newGame,
+              icon: const Icon(Icons.auto_awesome, size: 18),
+              label: const Text('新题'),
+            ),
+          ],
+        ),
         Wrap(
           spacing: 8,
           runSpacing: 8,
@@ -1161,11 +1202,6 @@ class _SudokuPageState extends State<SudokuPage> {
               ),
           ],
         ),
-        const SizedBox(height: 8),
-        Text(_type.hint,
-            style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(context).colorScheme.onSurfaceVariant)),
         const ToolSection('难度'),
         Wrap(
           spacing: 8,
@@ -1179,28 +1215,15 @@ class _SudokuPageState extends State<SudokuPage> {
               ),
           ],
         ),
-        const ToolSection('说明'),
-        Text(
-            '· 11 种类型全部**自动出题**：先随机生成一组合法解，再按难度挖洞\n'
-            '· 「地狱」难度会额外检查解的唯一性，挖得最狠\n'
-            '· 笔记模式：点格子弹数字盘，选「笔记」后点数字就是加/删候选\n'
-            '· 错值会高亮 1.5 秒后回退，方便看出错在哪但不影响正解\n'
-            '· 行 / 列 / 宫自动校验；不通规则类型还有对角 / 笼 / 不等式等额外约束',
-            style: TextStyle(
-                fontSize: 12,
-                height: 1.6,
-                color: Theme.of(context).colorScheme.onSurfaceVariant)),
-        const SizedBox(height: 16),
-        FilledButton.icon(
-          onPressed: _busy ? null : _newGame,
-          icon: const Icon(Icons.play_arrow),
-          label: const Text('开始'),
-        ),
       ],
     );
   }
 
   // ---------- 棋盘视图 ----------
+  //
+  // v1.9.0+28：底部按钮改成用户点名的 5 个
+  //   撤销 / 笔记 / 提示 / 校验 / 答案
+  // 「时间」「错误次数」挪到标题副标题里（原来底栏占一排）。
   Widget _boardView() {
     final b = _board!;
     final n = b.size;
@@ -1208,7 +1231,8 @@ class _SudokuPageState extends State<SudokuPage> {
       children: [
         Expanded(
           child: Padding(
-            padding: const EdgeInsets.all(12),
+            // 尽可能贴边：左右 2px，数字宫格能有多大大就多大
+            padding: const EdgeInsets.fromLTRB(2, 2, 2, 2),
             child: Center(
               child: AspectRatio(
                 aspectRatio: n == 9 ? 1.0 : (n == 6 && _type == SudokuType.greater) ? 1.5 : 1.0,
@@ -1217,44 +1241,145 @@ class _SudokuPageState extends State<SudokuPage> {
                   rules: _rules!,
                   showHint: _showHint,
                   solution: _solution,
+                  wrongCells: _checkedWrong,
                   onCellTap: _onCellTap,
+                  onCellLongPress: (r, c) {
+                    if (b.fixed[r][c]) return;
+                    _pushUndo(r, c);
+                    _clearCell(r, c);
+                    toast(context, '已清除该格');
+                  },
                 ),
               ),
             ),
           ),
         ),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          padding: const EdgeInsets.fromLTRB(2, 4, 2, 6),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('时间 ${_fmtElapsed()}',
-                  style: const TextStyle(fontSize: 12)),
-              Row(
-                children: [
-                  IconButton(
-                    tooltip: '提示',
-                    onPressed: _solution == null
-                        ? null
-                        : () {
-                            setState(() => _showHint = !_showHint);
-                          },
-                    icon: Icon(_showHint
-                        ? Icons.lightbulb
-                        : Icons.lightbulb_outline),
-                  ),
-                  IconButton(
-                    tooltip: '撤销',
-                    onPressed: _undo,
-                    icon: const Icon(Icons.undo),
-                  ),
-                ],
+              _barButton(
+                icon: Icons.undo,
+                label: '撤销',
+                onTap: _undo,
+              ),
+              _barButton(
+                icon: Icons.edit_note,
+                label: '笔记',
+                active: _noteMode,
+                onTap: () => setState(() => _noteMode = !_noteMode),
+              ),
+              _barButton(
+                icon: _showHint ? Icons.lightbulb : Icons.lightbulb_outline,
+                label: '提示',
+                active: _showHint,
+                onTap: _solution == null
+                    ? null
+                    : () => setState(() => _showHint = !_showHint),
+              ),
+              _barButton(
+                icon: Icons.fact_check_outlined,
+                label: '校验',
+                onTap: _checkBoard,
+              ),
+              _barButton(
+                icon: Icons.emoji_flags_outlined,
+                label: '答案',
+                onTap: _revealAnswer,
               ),
             ],
           ),
         ),
       ],
     );
+  }
+
+  /// 底部一个方形按钮：图标 + 文字，激活时整块染主色
+  Widget _barButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback? onTap,
+    bool active = false,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final fg = active ? cs.onPrimaryContainer : cs.onSurfaceVariant;
+    return Expanded(
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                decoration: BoxDecoration(
+                  color: active ? cs.primaryContainer : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, size: 22, color: fg),
+              ),
+              const SizedBox(height: 2),
+              Text(label,
+                  style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                      color: fg)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------- 校验 / 答案（v1.9.0+28 新增） ----------
+
+  /// 校验：拿当前盘面和「出题时的解」逐格比，把用户填错的格标红。
+  void _checkBoard() {
+    final b = _board;
+    final s = _solution;
+    if (b == null || s == null) return;
+    final wrong = <String>{};
+    for (var r = 0; r < b.size; r++) {
+      for (var c = 0; c < b.size; c++) {
+        if (b.fixed[r][c]) continue;
+        final v = b.cells[r][c];
+        if (v != 0 && v != s.cells[r][c]) wrong.add('$r-$c');
+      }
+    }
+    setState(() => _checkedWrong = wrong);
+    toast(context, wrong.isEmpty ? '校验通过，目前没有填错的格' : '发现 ${wrong.length} 处错误，已标红');
+  }
+
+  /// 答案：确认后把完整解填进盘面（会清掉笔记）。
+  Future<void> _revealAnswer() async {
+    final b = _board;
+    final s = _solution;
+    if (b == null || s == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('显示答案？'),
+        content: const Text('会把完整答案填进盘面，本局将不再计分。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('填答案')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    _undoStack.clear();
+    setState(() {
+      for (var r = 0; r < b.size; r++) {
+        for (var c = 0; c < b.size; c++) {
+          b.cells[r][c] = s.cells[r][c];
+          b.notes[r][c].clear();
+        }
+      }
+      _checkedWrong = {};
+      _showHint = false;
+    });
   }
 
   // ---------- 撤销栈 ----------
@@ -1296,7 +1421,11 @@ class _SudokuGrid extends StatelessWidget {
   final SudokuRules rules;
   final bool showHint;
   final SudokuBoard? solution;
+
+  /// v1.9.0+28：「校验」标出的错格，key = "r-c"
+  final Set<String> wrongCells;
   final void Function(int r, int c) onCellTap;
+  final void Function(int r, int c)? onCellLongPress;
 
   const _SudokuGrid({
     required this.board,
@@ -1304,6 +1433,8 @@ class _SudokuGrid extends StatelessWidget {
     required this.showHint,
     required this.solution,
     required this.onCellTap,
+    this.wrongCells = const <String>{},
+    this.onCellLongPress,
   });
 
   @override
@@ -1404,13 +1535,18 @@ class _SudokuGrid extends StatelessWidget {
       _isIllegal = !rules.isLegal(board, r, c, v);
       board.cells[r][c] = saved;
     }
+    // v1.9.0+28：点过「校验」后，错的格直接标红
+    final checkedWrong = wrongCells.contains('$r-$c');
 
     Color cellBg = Colors.transparent;
     if (showHint && solution != null && v == 0) {
       cellBg = hintColor;
+    } else if (checkedWrong) {
+      cellBg = errColor.withValues(alpha: 0.18);
     }
     return GestureDetector(
       onTap: () => onCellTap(r, c),
+      onLongPress: onCellLongPress == null ? null : () => onCellLongPress!(r, c),
       child: Container(
         decoration: BoxDecoration(
           color: cellBg,
@@ -1442,7 +1578,10 @@ class _SudokuGrid extends StatelessWidget {
                           Center(
                             child: Text(
                               board.notes[r][c].contains(i) ? '$i' : '',
-                              style: const TextStyle(fontSize: 8, color: Colors.grey),
+                              // 字号跟格子走（原来写死 8px，大屏上几乎看不见）
+                              style: TextStyle(
+                                  fontSize: (cell * 0.22).clamp(7.0, 12.0),
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant),
                             ),
                           ),
                       ],
@@ -1451,9 +1590,9 @@ class _SudokuGrid extends StatelessWidget {
             : Text(
                 '$v',
                 style: TextStyle(
-                  fontSize: cell * 0.55,
+                  fontSize: cell * 0.58,
                   fontWeight: FontWeight.w600,
-                  color: _isIllegal
+                  color: (_isIllegal || checkedWrong)
                       ? errColor
                       : (isFixed
                           ? Colors.black87
@@ -1519,9 +1658,7 @@ class _SudokuGrid extends StatelessWidget {
             regionOf: rules.regionOf,
             cell: cell,
             n: n,
-            bg: scheme.surface,
             lineColor: scheme.onSurface,
-            filledMask: _filledMask(board),
           ),
         ),
       ),
@@ -1703,16 +1840,12 @@ class _JigsawPainter extends CustomPainter {
   final List<List<int>> regionOf;
   final double cell;
   final int n;
-  final Color bg;
   final Color lineColor;
-  final List<List<bool>> filledMask;
   _JigsawPainter({
     required this.regionOf,
     required this.cell,
     required this.n,
-    required this.bg,
     required this.lineColor,
-    required this.filledMask,
   });
 
   @override
@@ -1721,37 +1854,33 @@ class _JigsawPainter extends CustomPainter {
       ..color = lineColor
       ..strokeWidth = 1.5
       ..style = PaintingStyle.stroke;
-    // 已填格上**截断**宫界线，露出数字
+    // v1.9.0+28 修「锯齿数独看不到锯齿」：
+    // 原来每段宫界线都套了 `if (!filledMask[r][c])` —— 只要这格**有提示数字**
+    // 就整条边不画。开局 30~50 格都是提示，于是锯齿宫几乎全被吃掉，
+    // 看起来跟标准 9 宫格一样。
+    // 宫界线本来就落在格子**边上**，不会压到居中的数字，所以直接全画。
     for (var r = 0; r < n; r++) {
       for (var c = 0; c < n; c++) {
         final myId = regionOf[r][c];
-        // 上边界 —— 跳过 r 行已填的列
+        // 上边界
         if (r == 0 || regionOf[r - 1][c] != myId) {
-          if (!filledMask[r][c]) {
-            canvas.drawLine(Offset(c * cell, r * cell),
-                Offset((c + 1) * cell, r * cell), paint);
-          }
+          canvas.drawLine(
+              Offset(c * cell, r * cell), Offset((c + 1) * cell, r * cell), paint);
         }
-        // 下边界 —— 跳过 r 行已填的列（这条边属于 r 行的下边，画在 (r+1) 上方）
+        // 下边界
         if (r == n - 1 || regionOf[r + 1][c] != myId) {
-          if (!filledMask[r][c]) {
-            canvas.drawLine(Offset(c * cell, (r + 1) * cell),
-                Offset((c + 1) * cell, (r + 1) * cell), paint);
-          }
+          canvas.drawLine(Offset(c * cell, (r + 1) * cell),
+              Offset((c + 1) * cell, (r + 1) * cell), paint);
         }
-        // 左边界 —— 跳过 r 行已填的列
+        // 左边界
         if (c == 0 || regionOf[r][c - 1] != myId) {
-          if (!filledMask[r][c]) {
-            canvas.drawLine(Offset(c * cell, r * cell),
-                Offset(c * cell, (r + 1) * cell), paint);
-          }
+          canvas.drawLine(
+              Offset(c * cell, r * cell), Offset(c * cell, (r + 1) * cell), paint);
         }
         // 右边界
         if (c == n - 1 || regionOf[r][c + 1] != myId) {
-          if (!filledMask[r][c]) {
-            canvas.drawLine(Offset((c + 1) * cell, r * cell),
-                Offset((c + 1) * cell, (r + 1) * cell), paint);
-          }
+          canvas.drawLine(Offset((c + 1) * cell, r * cell),
+              Offset((c + 1) * cell, (r + 1) * cell), paint);
         }
       }
     }
@@ -1918,64 +2047,108 @@ class _ArrowPainter extends CustomPainter {
 }
 
 // ============================================================ UI：数字盘
-
+//
+// v1.9.0+28 重做（按用户要求）：
+//   * 数字框「尽可能大、贴手机屏幕边」—— 原来是 56×56 的 Wrap，四周留白多
+//   * 去掉旁边的「擦除」按钮（要清格就再点一次同一个数字，或长按格子）
+//   * 9 个数字排成 2 排（1-5 / 6-9），不换行不滚动
+//   * 每个数字右下角加「剩余个数」小角标（已放满 → ✓）
 class _NumberPad extends StatelessWidget {
   final int size;
   final int current;
   final Set<int> notes;
   final bool noteMode;
+
+  /// 每个数字还能放几次（角标用）
+  final Map<int, int> remain;
   final void Function(int v) onPick;
-  final VoidCallback onClear;
 
   const _NumberPad({
     required this.size,
     required this.current,
     required this.notes,
     required this.noteMode,
+    required this.remain,
     required this.onPick,
-    required this.onClear,
   });
+
+  /// 数字分行：9 个 → 5 + 4；其它 → 单排
+  List<List<int>> get _rows {
+    if (size <= 5) return [List.generate(size, (i) => i + 1)];
+    if (size == 9) {
+      return [
+        [1, 2, 3, 4, 5],
+        [6, 7, 8, 9],
+      ];
+    }
+    final half = (size / 2).ceil();
+    return [
+      List.generate(half, (i) => i + 1),
+      List.generate(size - half, (i) => half + i + 1),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 38,
-            height: 4,
-            decoration: BoxDecoration(
-              color: cs.outlineVariant,
-              borderRadius: BorderRadius.circular(2),
+    final rows = _rows;
+    final cols = rows.map((r) => r.length).reduce((a, b) => a > b ? a : b);
+    return SafeArea(
+      top: false,
+      child: Padding(
+        // 贴屏幕边：左右只留 4
+        padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 38,
+              height: 4,
+              decoration: BoxDecoration(
+                color: cs.outlineVariant,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (var v = 1; v <= size; v++)
-                _pickButton(context, v),
-              GestureDetector(
-                onTap: onClear,
-                child: Container(
-                  width: 56,
-                  height: 56,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: cs.errorContainer.withValues(alpha: 0.5),
-                    borderRadius: BorderRadius.circular(8),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                children: [
+                  Icon(
+                    noteMode ? Icons.edit_note : Icons.grid_3x3,
+                    size: 16,
+                    color: noteMode ? cs.primary : cs.onSurfaceVariant,
                   ),
-                  child: const Icon(Icons.backspace_outlined),
+                  const SizedBox(width: 6),
+                  Text(
+                    noteMode
+                        ? '笔记模式 · 点数字加 / 删候选'
+                        : (current == 0 ? '选一个数字' : '当前 $current · 再点同数字可清除'),
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: noteMode ? FontWeight.w700 : FontWeight.w500,
+                      color: noteMode ? cs.primary : cs.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            for (var i = 0; i < rows.length; i++)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  children: [
+                    for (final v in rows[i])
+                      Expanded(child: _pickButton(context, v)),
+                    // 第二排比第一排短 → 补位占位符，保证两排按钮等宽
+                    for (var k = rows[i].length; k < cols; k++)
+                      const Expanded(child: SizedBox.shrink()),
+                  ],
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 8),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1983,28 +2156,66 @@ class _NumberPad extends StatelessWidget {
   Widget _pickButton(BuildContext context, int v) {
     final cs = Theme.of(context).colorScheme;
     final isNote = noteMode && notes.contains(v);
-    final isCurrent = current == v;
+    final isCurrent = !noteMode && current == v;
+    final left = remain[v] ?? -1;
     final bg = isCurrent
         ? cs.primaryContainer
         : isNote
             ? cs.secondaryContainer
             : cs.surfaceContainerHighest.withValues(alpha: 0.6);
-    return GestureDetector(
-      onTap: () => onPick(v),
-      child: Container(
-        width: 56,
-        height: 56,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          '$v',
-          style: TextStyle(
-            fontSize: 24,
-            fontWeight: FontWeight.w600,
-            color: isCurrent ? cs.onPrimaryContainer : cs.onSurface,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: GestureDetector(
+        onTap: () => onPick(v),
+        child: Container(
+          // 高度跟着宽度走，屏幕多宽按钮就多大
+          constraints: const BoxConstraints(maxHeight: 78),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: AspectRatio(
+            aspectRatio: 1.25,
+            child: Stack(
+              children: [
+                Center(
+                  child: Text(
+                    '$v',
+                    style: TextStyle(
+                      fontSize: 30,
+                      fontWeight: FontWeight.w600,
+                      color: isCurrent ? cs.onPrimaryContainer : cs.onSurface,
+                    ),
+                  ),
+                ),
+                // 剩余个数角标
+                Positioned(
+                  right: 2,
+                  bottom: 0,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: left == 0
+                          ? cs.primary.withValues(alpha: 0.15)
+                          : cs.surface.withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      left <= 0 ? '✓' : '$left',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        height: 1.1,
+                        fontWeight: FontWeight.w600,
+                        color: left <= 0
+                            ? cs.primary
+                            : cs.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

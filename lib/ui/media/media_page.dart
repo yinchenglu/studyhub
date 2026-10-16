@@ -317,9 +317,10 @@ class MediaPageState extends ConsumerState<MediaPage> {
               onChanged: (v) => setState(() => _sort = v),
             ),
           // v1.9.0+26：列表 ↔ 平铺 切换。
-          // 平铺模式只对纯图片目录友好，所以**只在有图片时**显示；
-          // 视频目录进 grid 也没意义（视频没缩略图，全是占位图标）。
-          if (logged && _dirEntries.any((e) => !e.isDir && !FileTypes.isPlayable(e.name)))
+          // v1.9.0+28：视频目录也开放 —— 之前只对有图片的目录显示按钮，
+          // 用户要求视频目录同样能切平铺（视频格显示 ▶ 占位图标，
+          // 大格子点开播放，当「视频墙」用）。
+          if (logged && _dirEntries.any((e) => !e.isDir))
             IconButton(
               tooltip: _viewMode == _MediaViewMode.list ? '平铺模式' : '列表模式',
               icon: Icon(_viewMode == _MediaViewMode.list

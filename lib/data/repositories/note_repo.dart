@@ -119,8 +119,27 @@ class NoteRepo {
   String resolveUrl(String notePath, String src) {
     if (src.startsWith('http://') || src.startsWith('https://')) return src;
     final dir = parentOf(notePath);
-    final clean = src.replaceAll(RegExp(r'^\./'), '');
-    return dav.urlFor(joinPath(dir, clean));
+    return dav.urlFor(joinPath(dir, _normalizeSrc(src)));
+  }
+
+  /// v1.9.0+28 修 knots3d 图片全挂：**百分号二次编码**。
+  ///
+  /// flutter_markdown 解析 `![](image/xxx.png)` 时，吐出来的 uri 已经把
+  /// 中文 / 空格 / `%` 编过一次码（`%E5%95%...`）；再交给 WebDAV 的
+  /// encodePath 逐段 `Uri.encodeComponent`，`%` 自己又被编成 `%25`，
+  /// 服务器上查无此文件 → 全部「图片加载失败: %25E5%2595%...」。
+  ///
+  /// 这里先**解一次码**还原成原始文件名，再让 encodePath 统一编一次。
+  String _normalizeSrc(String src) {
+    var s = src.replaceAll(RegExp(r'^\./'), '');
+    if (s.contains('%')) {
+      try {
+        s = Uri.decodeComponent(s);
+      } catch (_) {
+        // 解不开（比如文件名里真有裸 %）就保持原样
+      }
+    }
+    return s;
   }
 
   /// 把 markdown 里的相对图片路径解析成**多个候选** WebDAV 地址。
@@ -132,7 +151,7 @@ class NoteRepo {
   /// 调用方（如 CachedNetworkImage）按顺序尝试，第一个能加载的就用。
   List<String> resolveUrlCandidates(String notePath, String src) {
     if (src.startsWith('http://') || src.startsWith('https://')) return [src];
-    final clean = src.replaceAll(RegExp(r'^\./'), '');
+    final clean = _normalizeSrc(src);
     final dir = parentOf(notePath);
     final candidates = <String>[];
     // 候选1：当前 md 目录

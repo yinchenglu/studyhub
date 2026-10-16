@@ -585,54 +585,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   isThreeLine: true,
                 ),
                 const Divider(height: 1),
-                ExpansionTile(
-                  leading: const Icon(Icons.history),
-                  title: const Text('v1.9.0 更新内容'),
-                  childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                  children: const [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        '【维护】\n'
-                        '• 版本号一键同步脚本：tools/bump_version.py\n'
-                        '• 「设置 → 关于」里能直接看 README 全文\n\n'
-                        '【笔记】\n'
-                        '• md 文件里点链接能跳转（同目录/跨目录都支持）\n'
-                        '• 右上角菜单改成「列表 / 阅读模式 / 更多」三段式\n'
-                        '• 「1.」前缀的 md 文件自动排到目录第一位\n'
-                        '• 图片引用统一走「笔记根目录下的 image/」\n'
-                        '• 改 knots3d / CPlusPlusThings 两套笔记适配\n\n'
-                        '【视频】\n'
-                        '• 锁定后「已锁定」提示 3 秒后自动隐藏\n\n'
-                        '【工具】\n'
-                        '• 联网工具：右上角小蓝点 → 红色外框线\n'
-                        '• 内置工具重排（按你给的图）\n'
-                        '• 目录/工具名用「1.」前缀排序（显示时去掉）\n'
-                        '• 「服务器下载站」加「上传」功能\n\n'
-                        '【题库】\n'
-                        '• 填空/简答题默认刷题模式\n'
-                        '• 传染病防控（简答题）转 JSON 入库\n\n'
-                        '【新工具】\n'
-                        '• 路路词典：支持 .mdx/.mdd 离线词典\n'
-                        '• 数独大改：11+ 种新类型 / 笔记模式 / 地狱难度',
-                        style: TextStyle(fontSize: 13, height: 1.5),
-                      ),
-                    ),
-                  ],
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  leading: const Icon(Icons.menu_book_outlined),
-                  title: const Text('README · 项目自述'),
-                  subtitle: const Text('代码框架 / 数据来源 / 维护指南'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () {
-                    Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => const ReadmePage(),
-                    ));
-                  },
-                ),
-                const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.privacy_tip_outlined),
                   title: const Text('隐私'),

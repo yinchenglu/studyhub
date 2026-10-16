@@ -388,36 +388,86 @@ quiz/单词/英语四级核心词.json
   填空 / 简答题根本没法机判，用户更常把题库当「题书」翻看。
   只含填空 / 问答的题库本来就只有「刷题模式」一个选项（之前已有）。
 
-### 数独（v1.9.0+19）
+### 数独 → 数独练习（v1.9.0+19 建，v1.9.0+28 按用户要求重做）
 - **9 种主流异形**：标准 / 对角 X / 超 Hyper / 锯齿 / 杀手 / 不等式 / 奇偶 / 连续 / 箭头
 - **4 难度**：简单 / 中等 / 困难 / 地狱（地狱额外验唯一解）
-- **笔记模式**（铅笔痕）：数字盘 9 宫格铺底，字号 8 px 灰色
 - **自动出题**：合法解（Latin Square 洗牌 + 回溯）→ 按难度挖洞
-- **错误高亮**：填入冲突值 → 红字 + 震动
-- 文件 `lib/ui/tools/tool_pages_sudoku.dart`（~1700 行）
+- **+28 改名与重排**（用户逐条点名）：
+  - 工具名从「数独」改为「**数独练习**」
+  - 删掉选页那一大段「说明」文字
+  - 「新题」按钮挪到「题型 / 难度」同一区域（原来在最下面孤零零一个「开始」）
+  - 底部按钮改成 5 个：**撤销 / 笔记 / 提示 / 校验 / 答案**
+  - **笔记**按钮点一下变色进入笔记模式，再点褪色回普通填数模式
+  - 棋盘 padding 压到 2px，格子尽可能大、贴屏幕边
+  - 数字盘（宫格数字框）重做：去掉「擦除」按钮、9 个数字排**两排**（1-5 / 6-9）、
+    每个数字右下角带**剩余个数角标**（放满变 ✓）、整体贴屏幕边、按钮随屏宽自适应
+  - 想清一格：**再点一次同一个数字**，或**长按格子**
+  - **校验**：跟出题解逐格比，错的格标红并统计处数
+  - **答案**：确认后填入完整解（本局不再计分）
+- **+28 修的两个真 bug**：
+  - 笔记模式下笔记与数字叠在一起 → 落子后端内笔记清空
+  - **锯齿数独看不到锯齿**：`_JigsawPainter` 里每段宫界线都套了
+    `if (!filledMask[r][c])`，只要那格有提示数字就整条边不画；开局 30~50 格是提示，
+    于是锯齿宫几乎全被吃掉、看起来跟标准 9 宫一样。宫界线本来就在格**边**上、
+    压不到居中的数字，改成直接全画。
+- 文件 `lib/ui/tools/tool_pages_sudoku.dart`（~2100 行）
 
-### 路路词典（v1.9.0+20）
-- **对标欧路词典基础**：多词库 / 查词 / 生词本 / 历史
-- **3 种词库格式**：`.txt`（TAB / `:` / `：` / 空格 分隔）/ `.csv`（逗号）/ 手动添加
-- **内置 200 词常用英文词典**，进页面立即能查
-- **3 个加载入口**：剪贴板 / 本地文件 / 手动加词条（避开 file_picker 的 compileSdk 坑）
-- **模糊匹配**：先 exact → prefix → substring
-- **持久化**：SharedPreferences，重装 APP 不丢
-- 文件 `lib/ui/tools/tool_pages_dict.dart`（~990 行）
+### 路路词典（v1.9.0+20 建 → v1.9.0+28 移出 App）
+- **已从 App 内下架**，改为**网页版小工具**：`网页版小工具/路路词典.html`
+  （同时登记在 `网页版小工具/index.html` 的「生活与娱乐」分类）
+- 功能（网页版与原来一致，数据存浏览器 `localStorage`）：
+  多词库（内置常用英文 500 词 + 导入 `.txt` / `.csv` + 手动加词）、
+  模糊查词（exact → prefix → substring）、生词本（可导出 .txt）、历史 100 条、
+  词库启停 / 改名 / 删除、剪贴板导入
+- App 侧删除文件：`lib/ui/tools/tool_pages_dict.dart`（约 990 行），
+  并从 `tools_page.dart` 移除入口与分发分支
+- 注意：`lib/ui/tools/dict_view.dart` **不是**这个词典，它是「翻译」工具的一部分，保留
 
-### 视频 / 图片浏览（v1.9.0+27）
-- **自动缓存缩略图**：列表模式缩略图（56×44）、平铺模式缩略图（80~200）都改用
-  `CachedNetworkImage` —— 项目已有的 `cached_network_image` 包，默认内存 + 磁盘双层缓存。
-  第二次进入同一目录瞬间出，不必每次重新拉服务器；4G 弱网尤其明显（之前每张图要等 1~2 秒）
-- **平铺模式（grid）**：AppBar 右上角新增切换按钮（grid_view ↔ view_list 图标）。
-  - 列表 ↔ 平铺状态保留在内存里（用户切走再回来仍在）；
-  - 只有目录里有图片时才显示这个按钮 —— 纯视频目录进 grid 没意义，全是占位图标
-- **双指捏合缩放缩略图**：平铺模式下整个 `GridView.builder` 外面套一层 `GestureDetector.onScaleUpdate`。
-  缩略图大小范围 **50~200 px**，`SliverGridDelegateWithMaxCrossAxisExtent(_thumbSize+24)` 自动重算列数
-  - 双指远离 → 放大（单格变大，列数减少）
-  - 双指靠近 → 缩小（单格变小，列数增多，最小可挤进 6~7 列）
-  - 单指拖动不动 —— `d.scale` 在单指时始终是 1，自动忽略
-- 文件 `lib/ui/media/media_page.dart`（净增 230 行）
+### 虚拟定位（v1.9.0+28 新增）
+- 归类：**生活与娱乐**；文件 `lib/ui/tools/tool_pages_mockloc.dart`
+- 原生通道 `studyhub/mockloc`（`android_custom/MainActivity.kt`）：
+  - `status` → 权限 / 是否运行中 / 当前模拟坐标
+  - `requestPermission` → 申请 `ACCESS_FINE_LOCATION`（清单里本来就有，指南针在用）
+  - `start` / `stop` → `LocationManager.addTestProvider` +
+    `setTestProviderLocation`，**每秒刷新一次**（很多 App 会丢弃时间戳过期的定位）
+  - `realLocation` → `getLastKnownLocation`（做「以我当前定位为起点」）
+  - `openDevOptions` → 跳系统「开发者选项」
+- **硬前提**：Android 只允许「被选为模拟位置信息应用」的 App 改定位，
+  路径「设置 → 开发者选项 → 选择模拟位置信息应用 → 学聚」。
+  没选就点开始 → 原生抛 `SecurityException`，页面把原因原文显示出来并提示怎么开。
+- 页面提供 10 个常用地点预设（天安门 / 人民广场 / 广州塔 / 市民中心 / 西湖 / 黄鹤楼 …）
+- 说明：部分 App 用高德 / 腾讯定位 SDK 且做校验，可能不受影响（正常现象）；
+  重启手机后模拟自动失效
+
+### 视频 / 图片浏览（v1.9.0+27 建，+28 扩展）
+- **自动缓存缩略图**：列表 + 平铺缩略图都走 `CachedNetworkImage`
+  （项目已有的 `cached_network_image`），内存 + 磁盘双层缓存，第二次进目录瞬间出
+- **平铺模式（grid）**：AppBar 右上角切换按钮（grid_view ↔ view_list）
+  - +28：**视频目录同样可切平铺**（原来只对有图片的目录显示按钮）；
+    视频格显示 ▶ 占位图标，当「视频墙」用
+- **双指捏合缩放**：范围 **50~200 px**，`SliverGridDelegateWithMaxCrossAxisExtent` 自动算列数；
+  单指时 `d.scale` 恒为 1，不影响点击 / 长按
+- 文件 `lib/ui/media/media_page.dart`
+
+### 笔记（v1.9.0+28 追加修复）
+- **索引 md 排序**：文件名以「数字.」开头的（`000.绳结总目录.md`、`1.首页.md`）
+  排最前；`index` / `README` / `目录` / `总目录` / `索引` / `首页` / `大纲` 这类
+  索引名次之；**两者都排在子文件夹前面**。见 `lib/core/sort_utils.dart` 的 `_pinRank()`。
+- **单屏短文档左右划不翻篇**（修的 bug）：原来用 `GestureDetector.onHorizontalDragEnd`，
+  但正文里 `SelectableText` / `SelectionArea` 在手势竞技场里更深，横向拖动被它抢去当
+  「拖动选字」，外层收不到回调；内容一屏放得下时必挂。
+  改用 `Listener` 收**原始指针事件**（不进竞技场，谁来抢都能拿到），
+  自己算位移 + 时长：600ms 内、横移 ≥ 80px 且横向占优 → 翻篇；长按 / 慢拖不算。
+- **md 里的 `<br>` 不再显示成字面量**：knots3d 的表格用 `<br>` 换行，
+  `flutter_markdown` 不渲染行内 HTML，会原样显示 `<br>`；读前统一替换成换行符。
+- **knots3d 图片全挂（百分号二次编码）**：`flutter_markdown` 吐出的 uri 已经百分号编码过
+  （`%E5%95%...`），再经 WebDAV `encodePath` 的 `Uri.encodeComponent`，`%` 又被编成 `%25`
+  → 服务器 404，全部报「图片加载失败: %25E5%2595%...」。
+  修法：`note_repo` 里先 `Uri.decodeComponent` 还原一次，再统一编码。
+
+### 设置（v1.9.0+28）
+- 删掉「README · 项目自述」入口（首页已有）
+- 删掉「v1.9.0 更新内容」整块卡片（改动清单见本 README 第十一章）
 
 ### 修编译（v1.9.0+23 / +24 / +25 / +26）
 - **+19 数独一口气 1700+ 行没跑 dart analyze 就 push**，导致
@@ -496,22 +546,38 @@ studyhub_app/
 │   ├── icons/                 图标
 │   └── sounds/                提示音
 ├── tools/
-│   ├── bump_version.py        改版本号脚本（v1.9.0 新增）
+│   ├── bump_version.py        改版本号脚本（v1.9.0 新增，同步 pubspec + kPubspecVersion）
 │   └── build_id_region.py     构建区划码数据
-├── android_custom/            Android 清单 + 图标覆盖层（CI 用）
-├── pubspec.yaml               依赖 + 版本号（version: 1.9.0+16）
+├── android_custom/            Android 清单 + MainActivity.kt（原生能力都在这）+ 图标覆盖层（CI 用）
+├── pubspec.yaml               依赖 + 版本号（version: 1.9.0+28）
 └── .github/workflows/
     └── build-apk.yml          CI 编译流程
 ```
 
+**原生能力清单**（都写在 `android_custom/MainActivity.kt`，CI 会覆盖到 `android/`）：
+| 通道 | 用途 |
+|---|---|
+| `studyhub/display` | 真实物理 DPI、锁横屏 / 竖屏 / 跟随系统 |
+| `studyhub/location` | 定位持续推送（指南针） |
+| `studyhub/recorder` | 后台录音（前台服务） |
+| `studyhub/videorec` | 后台录像（Camera2 + MediaRecorder，前台服务） |
+| `studyhub/audio` | 音量 / 音频相关 |
+| `studyhub/mockloc` | **v1.9.0+28 新增**：定位权限、模拟位置注入、真实定位、打开开发者选项 |
+
 **修改内置工具的位置**（按你的图重排时改这里）：
 - 工具分类 + 顺序 + 名称：见 `lib/ui/tools/tools_page.dart`（`_Category` 列表）
-- 每个工具的入口：见 `lib/ui/tools/tool_pages.dart`（`ToolPage` 定义）
+- 每个工具的入口：见 `lib/ui/tools/tools_page.dart` 底部的 `switch (tool)` 分发
 - **服务器下载站**（不是内置，是动态从 WebDAV 拉的）：`lib/ui/tools/download_site_page.dart`
 
 **修改服务器小工具**：
 - 服务器路径：`/StudyHub/tools/<子目录>/<工具名>.html`
 - 显示顺序：按名称前缀数字排（如 `1.字典.html`、`2.数独.html`），显示时自动剥掉前缀
+
+**网页版小工具（仓库外，电脑 / 手机浏览器直接用）**：
+- 目录：`D:\WorkBuddy\StudyHub\网页版小工具\`（41+ 个 `.html`，不在 git 里）
+- 新增一个工具要做两件事：写 `工具名.html`（照抄 `_模板.html` 的 CSS 变量）+ 在 `index.html` 的对应分类里加一条 `<a class="tool">`
+- v1.9.0+28 新增 **`路路词典.html`**（原 App 内嵌词典移到这里，功能对齐 + 词库/生词本/历史存 `localStorage`）
+- **坑**：这个目录里的 `*.html` 用 Python 脚本**写不进去**（PermissionError），要用编辑器 / 本助手直接写文件
 - 详见 `lib/core/utils.dart` 的 `stripLeadingNumber` 和 `lib/core/sort_utils.dart` 的 `_isPinnedName`
 
 ---
@@ -583,6 +649,37 @@ studyhub_app/
    - **不要**自己改 `android/app/build.gradle` 之外的事
 
 7. **CI 触发条件**：`main` 分支 push 自动编译 + Release。**别在 release tag 上 push**，会让 Release 重复。
+
+8. **Dart 的类型 promote 在字段访问上不生效**（v1.9.0+23~+26 连踩 4 轮）
+   - `if (rules is ArrowRules && rules.arrows.isNotEmpty)` → 报 `SudokuRules has no arrows getter`
+   - `(rules).arrows` 去掉括号、嵌套 `if` —— **都不 promote**
+   - 唯一稳的写法：`(rules as ArrowRules).arrows` 强制 cast
+   - 结论：**派生类独有字段不要写在 `is` 判断的同一表达式里**
+
+9. **`SelectableText` / `SelectionArea` 会抢横向拖动**（v1.9.0+28）
+   - 需要在可选中文字上做「左右滑翻页」时，别用 `GestureDetector.onHorizontalDragEnd`
+   - 用 `Listener.onPointerDown / onPointerUp` 自己算位移 + 时长（列表：`note_read_page.dart`）
+
+10. **WebDAV URL 不要二次编码**（v1.9.0+28）
+    - `flutter_markdown` 给的 uri 已是百分号编码；再经 `Uri.encodeComponent` 会变成 `%25`
+    - 处理相对图片路径前，先 `Uri.decodeComponent` 还原一次（`note_repo._normalizeSrc`）
+
+11. **CustomPainter 的 `filledMask` 截断陷阱**（v1.9.0+28）
+    - 锯齿数独的宫界线原来「格子有数字就不画」，结果开局提示一多，**整个锯齿宫消失**
+    - 边界线画在**格子边**上，不会压到居中数字；除非真会遮挡，否则别做截断
+
+12. **前置摄像头录像不要额外 `+180°`**（v1.9.0+28）
+    - `MediaRecorder.setOrientationHint` 用 `SENSOR_ORIENTATION` 原值即可（后摄 90 / 前摄 270）
+    - 自己再加 180 会让前摄录出来是倒的（镜像由显示层处理）
+
+13. **模拟位置需要用户在开发者选项里授权**（v1.9.0+28 虚拟定位）
+    - `LocationManager.addTestProvider` 在未被选为「模拟位置信息应用」时抛 `SecurityException`
+    - 代码必须把这条原因展示给用户，并给一个「打开开发者选项」的按钮
+
+14. **改完大文件先自检再 push**
+    - 数独一次 1700 行没跑 analyze，导致 5 个 commit 连续编译失败
+    - 本地没有 Flutter SDK 时，至少 `grep` 复核：重复的 `initState`、final 字段被赋值、
+      `Border.all` 喂给 `side`、`List<int>.fill(0)` 这类不存在的 API
 
 ---
 

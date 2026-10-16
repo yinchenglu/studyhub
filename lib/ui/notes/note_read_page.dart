@@ -1,4 +1,5 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -301,6 +302,42 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
     _jumpTo(widget.siblings[j]);
   }
 
+  // ------------------------- v1.9.0+28 原始指针翻篇判定 -------------------------
+
+  /// 按下时的位置 / 时间（Listener 收原始事件，不进手势竞技场）
+  Offset? _dragStart;
+  DateTime? _dragStartAt;
+
+  void _onPointerDown(PointerDownEvent e) {
+    _dragStart = e.position;
+    _dragStartAt = DateTime.now();
+  }
+
+  void _onPointerUp(PointerUpEvent e) {
+    final s = _dragStart;
+    final t0 = _dragStartAt;
+    _dragStart = null;
+    _dragStartAt = null;
+    if (s == null || t0 == null || !_hasSibs) return;
+    final dx = e.position.dx - s.dx;
+    final dy = e.position.dy - s.dy;
+    final ms = DateTime.now().difference(t0).inMilliseconds;
+    // 长按（选字/放大镜）不算翻篇
+    if (ms > 600) return;
+    // 位移太小当点击
+    if (dx.abs() < 80) return;
+    // 斜得厉害当纵向滚动
+    if (dx.abs() < dy.abs() * 2) return;
+    // 右划（dx>0）= 上一篇，左划 = 下一篇（与原 onHorizontalDragEnd 方向一致）
+    _siblingStep(dx > 0 ? -1 : 1);
+  }
+
+  /// v1.9.0+28：knots3d 等第三方 md 用 `<br>` 做表格内换行，
+  /// flutter_markdown 不渲染行内 HTML，会原样显示成 `<br>` 文字
+  /// （绳结总目录的格子里满屏都是）。统一替换成换行符。
+  String get _mdText =>
+      (_content ?? '').replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
+
   /// 「列表」：本目录的笔记，点一条直接切过去
   Future<void> _showList() async {
     final cur = _path;
@@ -550,25 +587,19 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
           ),
         ],
       ),
-      body: GestureDetector(
+      body: Listener(
         behavior: HitTestBehavior.translucent,
-        // v1.7.0：左划 = 下一篇，右划 = 上一篇。
+        // v1.9.0+28 修：单屏（不用往下滚）的 md 左右划不翻篇。
         //
-        // 用 onHorizontalDragEnd 而不是 onHorizontalDragUpdate —— 只要一个
-        // 「甩出去」的判定，中途不跟手：正文没有横滑动作，做成跟手的位移动画
-        // 反而会跟「长按选字」的手感打架。
-        // 判据用**速度**而不是位移：手指划完停在屏幕上再抬手，速度会掉到 0，
-        // 那种「拖了一半又停住」不该被当成翻篇。
-        onHorizontalDragEnd: _hasSibs
-            ? (d) {
-                final v = d.velocity.pixelsPerSecond.dx;
-                if (v > 300) {
-                  _siblingStep(-1);
-                } else if (v < -300) {
-                  _siblingStep(1);
-                }
-              }
-            : null,
+        // 之前用 GestureDetector.onHorizontalDragEnd —— 但正文里的
+        // SelectableText / SelectionArea 在手势竞技场里**更深**，
+        // 横向拖动被它抢去当「拖动选字」了，外层收不到 onHorizontalDragEnd。
+        // 内容长时滚动容器参与竞争后表现时好时坏，内容短（一屏放下）时必挂。
+        //
+        // 改用 Listener 收**原始指针事件**：不进手势竞技场，谁来抢都能拿到。
+        // 自己算位移 + 时长：快而横的甩动 = 翻篇；慢拖 / 长按选字不算。
+        onPointerDown: _onPointerDown,
+        onPointerUp: _onPointerUp,
         child: _loading
             ? const Center(child: CircularProgressIndicator())
             : _error != null
@@ -584,7 +615,7 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                         controller: _scroll,
                         padding: const EdgeInsets.all(16),
                         child: SelectableText(
-                          _content ?? '',
+                          _mdText,
                           style: const TextStyle(
                               fontSize: 14, height: 1.7, fontFamily: 'monospace'),
                         ),
@@ -593,7 +624,7 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                         controller: _scroll,
                         padding: const EdgeInsets.fromLTRB(16, 12, 16, 48),
                         child: MarkdownBody(
-                          data: _content ?? '',
+                          data: _mdText,
                           selectable: true,
                           // v1.9.0：md 里的链接点击跳转。
                           // 之前 onTapLink 是空回调，所以 md 里点啥都没反应。

@@ -14,10 +14,10 @@ import 'tool_pages_compass.dart';
 import 'tool_pages_convert.dart';
 import 'tool_pages_ext.dart';
 import 'tool_pages_id.dart';
+import 'tool_pages_mockloc.dart';
 import 'tool_pages_ph.dart';
 import 'tool_pages_ph2.dart';
 import 'tool_pages_ph3.dart';
-import 'tool_pages_dict.dart';
 import 'tool_pages_recorder.dart';
 import 'tool_pages_sudoku.dart';
 import 'tool_pages_sync.dart';
@@ -138,10 +138,10 @@ class ToolsPage extends ConsumerStatefulWidget {
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
       // 快递查询要访问快递 100 的接口，是联网工具
       _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
-      // v1.9.0 大改：9 种主流异形 + 笔记模式 + 地狱难度 + 自动出题
-      _ToolDef('数独', Icons.grid_3x3, Color(0xFF534AB7)),
-      // v1.9.0 新增：对标欧路基础功能（多词库 / 查词 / 生词本 / 历史）
-      _ToolDef('路路词典', Icons.menu_book_outlined, Color(0xFF185FA5)),
+      // v1.9.0+28：改名「数独练习」；路路词典下架（改成网页版小工具，不再内嵌）
+      _ToolDef('数独练习', Icons.grid_3x3, Color(0xFF534AB7)),
+      // v1.9.0+28 新增：虚拟定位（改本机定位坐标，需开发者选项里选为模拟位置应用）
+      _ToolDef('虚拟定位', Icons.my_location, Color(0xFF0F7B6C)),
     ]),
 
     // ⑤ 公卫小工具 —— 原「公卫数据」，v1.6.0 改名并扩容。
@@ -714,12 +714,12 @@ Widget toolPageOf(String name) {
       return const CompassPage();
     case '后台录音录像':
       return const AudioRecorderPage();
-    // ---- v1.9.0 数独大改 ----
-    case '数独':
+    // ---- v1.9.0+28 数独练习（原「数独」改名；路路词典已下架改网页版） ----
+    case '数独练习':
       return const SudokuPage();
-    // ---- v1.9.0 路路词典 ----
-    case '路路词典':
-      return const DictPage();
+    // ---- v1.9.0+28 虚拟定位 ----
+    case '虚拟定位':
+      return const MockLocPage();
     // ---- v1.8.0 ----
     case '单位换算':
       return const UnitConvertPage();
