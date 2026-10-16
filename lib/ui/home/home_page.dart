@@ -327,6 +327,16 @@ class _LoggedInView extends ConsumerWidget {
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ServerGuidePage())),
           ),
         ),
+        // v1.9.0：README 同步放一份在「服务器目录规范」下方
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.menu_book_outlined),
+            title: const Text('README · 项目自述'),
+            subtitle: const Text('代码框架 / 数据来源 / 维护指南'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ReadmePage())),
+          ),
+        ),
         const SizedBox(height: 16),
 
         // ---- 最近浏览（视频播放记录 + 笔记打开记录）----

@@ -323,3 +323,185 @@ quiz/单词/英语四级核心词.json
 3. `flutter pub get` → `flutter run` 试跑
 4. `flutter build apk --release` → 得到 APK → 装进手机
 5. 服务器上建好 `StudyHub/{notes,media,quiz,tools,backup}` → 在 App 首页登录 WebDAV
+
+---
+
+## 十一、v1.9.0 累积改动（最新）
+
+### 维护相关
+- **版本号一键同步**：`tools/bump_version.py 1.10.0` 自动改 `pubspec.yaml` + `lib/core/constants.dart` 的 `kAppVersion`。
+- **CI release 标题从 pubspec.yaml 动态提取**——发版忘改版本号也不会再显示错的。
+- **「设置 → 关于」红字强提示**：两处版本号不一致时，App 启动时 assert + 设置页顶部红条。
+
+### 笔记
+- AppBar 菜单顺序：列表 / 阅读模式 / 更多（⋮）
+- 单页 md（只有一个兄弟节点）也能左右滑切换
+- 排序前缀：名称以「数字. 」开头的 md 自动排第一（如 `1.首页.md` 永远在第一位）
+- 显示时去掉前缀：`1.首页.md` 列表里显示「首页」
+- **md 链接点击跳转**（之前是空回调）：
+  - `http(s)://` → 系统浏览器
+  - 相对路径 → 拼到当前 md 目录
+  - 跳转时取同目录兄弟作为新笔记的左右滑列表
+
+### 服务器下载站
+- 顶部 + 按钮：新建文件夹 / 上传图片视频（image_picker，**只能传图片/视频**）
+- 长按菜单：重命名、编辑（文本文件）、删除（文件夹递归）
+
+### 视频
+- 「已锁定」徽标 3 秒后自动隐藏，触屏再呼出
+
+### PDF
+- v1.8.0 翻页模式漏放 `SfPdfViewer` 的 bug 修了（之前翻页模式看不到内容）
+
+### 设置
+- 「笔记 → 隐藏的文件夹名」可编辑（CSV，默认 `image`，可加 `assets, pic, photos` 等）
+
+---
+
+## 十二、数据来源（license & 怎么更新）
+
+| 数据 | 来源仓库 | License | 怎么更新 |
+|---|---|---|---|
+| 区划码 `assets/data/id_region.json` | https://github.com/yescallop/areacodes | CC0 | 直接 `curl` 它的 `data/2025.txt` 覆盖 / 用 `tools/build_id_region.py` 重建 |
+| 拼音排序表 `assets/data/pinyin_sort.txt` | https://github.com/mozillazg/python-pinyin | MIT | 用 `.workbuddy/gen_pinyin.py` 重新生成 |
+| 翻页时钟字体 | 思源宋体/方正免费字体 | OFL | 替换 `assets/fonts/` 下的 `*.ttf` 即可 |
+
+### 身份证区划码维护流程（小白友好版）
+
+1. **yescallop/areacodes 还在更新**（最常见情况）
+   - 进 https://github.com/yescallop/areacodes/blob/master/codes.json 看是否更新
+   - 下载最新 codes.json，覆盖到 `studyhub_app/assets/data/id_region.json`（**格式完全一样**）
+   - 同步覆盖到 `网页版小工具/id_region.json` 和 `id_region_data.js`（**这两个文件内容相同**）
+   - 重新跑 `python tools/build_id_region.py` 生成带历史码的版本
+   - Excel 版 `身份证户籍地批量匹配.xlsx`：从新 `id_region.json` 重新生成
+2. **yescallop 不更新了**（备用）
+   - 进国家统计局 http://www.stats.gov.cn/sj/tjbz/qhdm/ 看最新县及县以上的区划码
+   - 把统计局的码表改成 `code  name` 格式（每行空格分隔），放到 `studyhub_app/assets/data/id_region.json`
+   - 跑 `tools/build_id_region.py` 加历史码
+
+---
+
+## 十三、内置工具 / 资料放在哪（小白友好版）
+
+```
+studyhub_app/
+├── lib/
+│   ├── core/                  通用工具（自然排序、设置常量、版本号）
+│   │   ├── constants.dart     全局常量 + AppDirs（服务器目录结构） + kAppVersion
+│   │   ├── sort_utils.dart    排序逻辑（带「数字. 前缀置顶」）
+│   │   └── utils.dart         baseName / joinPath / stripLeadingNumber 等
+│   ├── data/
+│   │   ├── dav/               WebDAV 客户端（增删查、上传、移动）
+│   │   ├── local/             本地数据库 + 设置存储
+│   │   ├── models/            题目、笔记、收藏等数据模型
+│   │   └── repositories/      笔记/题库/视频仓库
+│   ├── ui/
+│   │   ├── home/              首页 + 设置页
+│   │   ├── notes/             笔记阅读 / 编辑 / 导出
+│   │   ├── quiz/              题库 + 答题
+│   │   ├── tools/             工具页 + 服务器小工具入口
+│   │   ├── media/             视频 / 图片播放
+│   │   └── common/            通用组件（PDF 预览、文件选择等）
+│   └── main.dart              入口：初始化媒体/数据库/拼音
+├── assets/
+│   ├── data/                  数据文件（区划码 json、拼音表）
+│   ├── fonts/                 字体
+│   ├── icons/                 图标
+│   └── sounds/                提示音
+├── tools/
+│   ├── bump_version.py        改版本号脚本（v1.9.0 新增）
+│   └── build_id_region.py     构建区划码数据
+├── android_custom/            Android 清单 + 图标覆盖层（CI 用）
+├── pubspec.yaml               依赖 + 版本号（version: 1.9.0+16）
+└── .github/workflows/
+    └── build-apk.yml          CI 编译流程
+```
+
+**修改内置工具的位置**（按你的图重排时改这里）：
+- 工具分类 + 顺序 + 名称：见 `lib/ui/tools/tools_page.dart`（`_Category` 列表）
+- 每个工具的入口：见 `lib/ui/tools/tool_pages.dart`（`ToolPage` 定义）
+- **服务器下载站**（不是内置，是动态从 WebDAV 拉的）：`lib/ui/tools/download_site_page.dart`
+
+**修改服务器小工具**：
+- 服务器路径：`/StudyHub/tools/<子目录>/<工具名>.html`
+- 显示顺序：按名称前缀数字排（如 `1.字典.html`、`2.数独.html`），显示时自动剥掉前缀
+- 详见 `lib/core/utils.dart` 的 `stripLeadingNumber` 和 `lib/core/sort_utils.dart` 的 `_isPinnedName`
+
+---
+
+## 十四、服务器目录规范（小白友好版）
+
+**WebDAV 根目录** = App 登录时填的服务器根；通常就是 `/`。
+
+**App 预期目录**（都建在登录根目录下）：
+
+```
+<根目录>/
+  ├─ StudyHub/                 ← 资料主目录
+  │  ├─ notes/                 笔记
+  │  │  ├─ Python-100-Days/   ← 一套笔记
+  │  │  │  ├─ 1.首页.md        ← 索引类 md 名称前缀加「数字. 」，自动排第一位
+  │  │  │  ├─ 01.基础/         ← 子目录就是分类
+  │  │  │  │  └─ *.md
+  │  │  │  └─ image/           ← 配图目录（默认隐藏，App 不显示）
+  │  │  └─ knots3d/
+  │  ├─ media/                 视频 / 图片
+  │  ├─ quiz/                  题库（每个子目录 = 一套）
+  │  ├─ tools/                 服务器小工具（HTML）
+  │  │  ├─ 1.数独.html
+  │  │  ├─ 2.单位换算.html
+  │  │  └─ 3.某分类/
+  │  │     └─ 1.某工具.html   ← 嵌套也支持
+  │  ├─ backup/                App 自动写错题本和笔记备份
+  │  └─ download/              服务器下载站
+```
+
+**隐藏目录**：在「设置 → 笔记 → 隐藏的文件夹名」里输入逗号分隔的文件夹名（默认 `image`，可加 `assets, pic, photos`）。
+
+**排序规则**：
+- 目录/工具名称以「数字. 」（如 `1.`, `2.`, `01. `）开头 → 自动排第一
+- 显示时**自动去掉前缀**（用户看到的是「数独」而不是「1.数独」）
+- 不加前缀就按电脑的「自然排序」（数字按大小、中文按拼音）
+
+---
+
+## 十五、维护时容易踩的坑（小白必看）
+
+1. **改版本号必须两处同步**
+   - `pubspec.yaml` 的 `version: X.Y.Z+N`
+   - `lib/core/constants.dart` 的 `kAppVersion = 'X.Y.Z'`
+   - 或者跑 `python tools/bump_version.py 1.10.0` 一次同步
+
+2. **不要用 `TextStyle(12)` 这种位置参数**
+   - Flutter 几乎所有组件都是**命名参数构造器**
+   - 错：`TextStyle(12)` → 对：`TextStyle(fontSize: 12)`
+   - lint 不抓，只有编译抓
+
+3. **不要用 file_picker（任何版本）**
+   - 8.x → AAR 内部用 android-34 编译，外部怎么改 compileSdk 都救不了
+   - 6.x → 用已删除的 v1 Android Plugin API
+   - 用现成的 `image_picker` 代替（只能上传图片/视频）
+
+4. **`setState(() { ... })` 内部不能 `await`**
+   - setState 回调是 VoidCallback 不是 async
+   - 先 `final x = await ...;` 拿到值再放进 setState
+
+5. **新加的依赖要测试编译**
+   - Flutter 3.47.6 默认 compileSdk 35，**很多新插件要求 36**
+   - 改 SDK 版本要改 Flutter SDK 而不是 build.gradle
+
+6. **CI 已经做的自动注入**
+   - `minSdk` 自动抬到 ≥ 24（写在 `.github/workflows/build-apk.yml`）
+   - `useLegacyPackaging = true`（libmpv 加载需要）
+   - **不要**自己改 `android/app/build.gradle` 之外的事
+
+7. **CI 触发条件**：`main` 分支 push 自动编译 + Release。**别在 release tag 上 push**，会让 Release 重复。
+
+---
+
+## 十六、一句话总结（v1.9.0 版）
+
+1. 数据都放自己的 WebDAV 服务器
+2. 服务器上建 `StudyHub/{notes,media,quiz,tools,backup,download}` 6 个目录
+3. App 首页登录，扫一遍服务器，资料就出现在对应模块
+4. 想改什么：看上面 11-15 章
