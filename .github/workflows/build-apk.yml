@@ -182,6 +182,30 @@ jobs:
                   src = src[: m2.start()] + "minSdkVersion Math.max(%s, 24) /* MIN_SDK_BUMP_24 */" % value + src[m2.end():]
                   print("已把 minSdkVersion 抬到至少 24（原值 %s）" % value)
 
+          # ---------- 2.5 compileSdk 抬到至少 36（v1.9.0 新增） ----------
+          # 为什么：
+          #   file_picker 8.x 依赖 flutter_plugin_android_lifecycle 2.x，
+          #   它要 compileSdkVersion ≥ 36，Flutter 3.47.6 默认是 35，
+          #   build 报 checkReleaseAarMetadata 失败。
+          # 处理：和 minSdk 一样，用 maxOf 抬到至少 36。
+          if "COMPILE_SDK_BUMP_36" in src:
+              print("compileSdk 已注入过，跳过")
+          else:
+              m = re.search(r"compileSdk\s*=\s*([^\n]+)", src)
+              if m:
+                  value = m.group(1).strip().split("//")[0].strip()
+                  src = src[: m.start()] + "compileSdk = %s(%s, 36) /* COMPILE_SDK_BUMP_36 */" % (
+                      "maxOf" if kotlin else "Math.max", value,
+                  ) + src[m.end():]
+                  print("已把 compileSdk 抬到至少 36（原值 %s）" % value)
+              else:
+                  # 旧版 Flutter 用的是 compileSdkVersion 数字，兜底走老路径
+                  m2 = re.search(r"compileSdkVersion\s+([^\n]+)", src)
+                  if m2:
+                      value = m2.group(1).strip().split("//")[0].strip()
+                      src = src[: m2.start()] + "compileSdkVersion Math.max(%s, 36) /* COMPILE_SDK_BUMP_36 */" % value + src[m2.end():]
+                      print("已把 compileSdkVersion 抬到至少 36（原值 %s）" % value)
+
           open(path, "w", encoding="utf-8").write(src)
           print("写入完成 ->", path)
           PY
