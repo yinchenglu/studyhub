@@ -465,6 +465,24 @@ quiz/单词/英语四级核心词.json
   → 服务器 404，全部报「图片加载失败: %25E5%2595%...」。
   修法：`note_repo` 里先 `Uri.decodeComponent` 还原一次，再统一编码。
 
+### 服务器下载站（v1.9.0+29 追加）
+- 页面最上面多了一个入口：「**进入 StudyHub 根目录**」——点开能看到服务器上全部内容
+  （`notes` / `media` / `quiz` / `tools` / `download` / `backup` 六个目录），
+  再逐层点进去翻文件；左上角返回上一层。
+- 实现：把「服务器速查表」那套浏览页（`ServerFilesPage`）抽成可传起点，
+  新增 `rootPath` / `titleOverride` 两个参数，传 `rootPath: ''` 就是从根目录开始。
+  顺带修了它原来写死 `AppDirs.tools` 的前缀切片、并补了「返回上一层」按钮。
+
+### 修编译（v1.9.0+29）
+- **虚拟定位的原生 `addTestProvider` 少传了一个参数**，CI 报
+  `MainActivity.kt:1449 None of the following candidates is applicable`：
+  这个重载要 **10 个参数**
+  （name + requiresNetwork / requiresSatellite / requiresCell / hasMonetaryCost /
+  supportsAltitude / supportsSpeed / supportsBearing + powerRequirement + accuracy），
+  上一版只传了 9 个（漏 `supportsBearing`），于是 `Int` 被当成 `Boolean` 用，编译失败。
+- 教训：Kotlin 的重载报错信息会把**所有候选签名**列出来，
+  数一下参数个数比读报错文字快得多。
+
 ### 设置（v1.9.0+28）
 - 删掉「README · 项目自述」入口（首页已有）
 - 删掉「v1.9.0 更新内容」整块卡片（改动清单见本 README 第十一章）

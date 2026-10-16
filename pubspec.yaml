@@ -35,7 +35,8 @@ publish_to: 'none'
 #   v1.9.0+26 → 1026 / 2026   ← 修 ArrowRules：嵌套 if 仍不收窄，改 `(rules as ArrowRules)` 强制 cast
 #   v1.9.0+27 → 1027 / 2027   ← 视频/图片 grid 平铺模式 + 自动缓存缩略图 + 双指缩放
 #   v1.9.0+28 → 1028 / 2028   ← 数独练习重做 / 虚拟定位 / 词典改网页版 / 笔记排序与横滑修复 / 设置精简
-version: 1.9.0+28
+#   v1.9.0+29 → 1029 / 2029   ← 修 addTestProvider 参数（CI 编译失败）；下载站加「进 StudyHub 根目录」入口
+version: 1.9.0+29
 environment:
   # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps
   # 要 >=3.12，取最大值。

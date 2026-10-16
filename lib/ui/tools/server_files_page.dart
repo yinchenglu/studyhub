@@ -13,7 +13,16 @@ import '../../providers/providers.dart';
 /// 服务器速查表：浏览 WebDAV /tools 目录里的词库、速查表、模板
 /// 顺便提供「题库体检」——检查 quiz 目录下的 JSON 有没有写错
 class ServerFilesPage extends ConsumerStatefulWidget {
-  const ServerFilesPage({super.key});
+  const ServerFilesPage({super.key, this.rootPath = AppDirs.tools, this.titleOverride});
+
+  /// 从哪个相对目录开始浏览。
+  ///   默认 `tools`（服务器速查表）；
+  ///   v1.9.0+29 起「服务器下载站」上的按钮会传 `''` —— 即 StudyHub 根目录，
+  ///   进去就能看到 notes / media / quiz / tools / download / backup 六个目录。
+  final String rootPath;
+
+  /// 自定义标题（空则按 rootPath 自动取名字）
+  final String? titleOverride;
 
   @override
   ConsumerState<ServerFilesPage> createState() => _ServerFilesPageState();
@@ -24,6 +33,20 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
   bool _loading = true;
   String? _error;
   List<DavEntry> _entries = const [];
+
+  /// 当前浏览的起点（相对资料根的路径，可为空 = 根目录）
+  String get _root => widget.rootPath.replaceAll(RegExp(r'^/+|/+$'), '');
+
+  /// 是不是「速查表」那套（只有它显示题库体检按钮、用那段空态文案）
+  bool get _isToolsRoot => _root == AppDirs.tools;
+
+  bool get _atRoot => _sub.isEmpty;
+
+  String get _title {
+    if (widget.titleOverride != null) return widget.titleOverride!;
+    if (_root == AppDirs.tools) return '服务器速查表';
+    return _root.isEmpty ? 'StudyHub 根目录' : baseName(_root);
+  }
 
   @override
   void initState() {
@@ -39,7 +62,8 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
       _error = null;
     });
     try {
-      final entries = await client.list(joinPath(AppDirs.tools, _sub), depth: 1);
+      final entries =
+          await client.list(joinPath(_root, _sub), depth: 1);
       // v1.9.0：服务器小工具目录用 sortEntries 排序，名称按自然排序，
       // 「1.xxx」前缀的工具自动排到第一位。
       final sorted = sortEntries(entries, const SortPref());
@@ -57,24 +81,48 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
     }
   }
 
+  /// 从条目路径算出「相对浏览根」的子路径
+  String _subOf(String path) {
+    if (_root.isEmpty) return path.replaceAll(RegExp(r'^/+'), '');
+    final p = path.replaceAll(RegExp(r'^/+'), '');
+    return p.startsWith('$_root/') ? p.substring(_root.length + 1) : p;
+  }
+
+  /// 返回上一层
+  Future<void> _up() async {
+    if (_sub.isEmpty) return;
+    setState(() => _sub = parentOf(_sub));
+    await _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
+        leading: _atRoot
+            ? null
+            : IconButton(
+                tooltip: '上一层',
+                icon: const Icon(Icons.arrow_back),
+                onPressed: _up,
+              ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('服务器速查表'),
-            Text('/${AppDirs.tools}${_sub.isEmpty ? '' : '/$_sub'}', style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+            Text(_title),
+            Text(
+                '/${_root.isEmpty ? '' : '$_root'}${_sub.isEmpty ? '' : '/$_sub'}',
+                style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: '给题库做个体检',
-            onPressed: _validateBanks,
-            icon: const Icon(Icons.fact_check_outlined),
-          ),
+          if (_isToolsRoot)
+            IconButton(
+              tooltip: '给题库做个体检',
+              onPressed: _validateBanks,
+              icon: const Icon(Icons.fact_check_outlined),
+            ),
           IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
         ],
       ),
@@ -99,7 +147,9 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
                             Text('这个目录是空的', style: TextStyle(color: scheme.onSurfaceVariant)),
                             const SizedBox(height: 8),
                             Text(
-                              '把你的词库、速查表、模板（.md / .txt / .csv / .json）放到服务器的 ${AppDirs.tools} 目录里，这里就能直接翻。',
+                              _isToolsRoot
+                                  ? '把你的词库、速查表、模板（.md / .txt / .csv / .json）放到服务器的 ${AppDirs.tools} 目录里，这里就能直接翻。'
+                                  : '这个目录下暂时没有文件。点左上角返回上一层看看别的目录。',
                               textAlign: TextAlign.center,
                               style: TextStyle(fontSize: 12.5, height: 1.6, color: scheme.onSurfaceVariant),
                             ),
@@ -127,10 +177,11 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
                             trailing: const Icon(Icons.chevron_right, size: 18),
                             onTap: () async {
                               if (e.isDir) {
-                                setState(() => _sub = e.path.substring(AppDirs.tools.length + 1));
+                                setState(() => _sub = _subOf(e.path));
                                 await _load();
                               } else {
-                                await Navigator.of(context).push(MaterialPageRoute(builder: (_) => TextFilePage(path: e.path)));
+                                await Navigator.of(context).push(MaterialPageRoute(
+                                    builder: (_) => TextFilePage(path: e.path)));
                               }
                             },
                           );

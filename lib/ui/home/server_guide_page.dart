@@ -121,8 +121,8 @@ class _TreeCard extends StatelessWidget {
             '/\n'
             '└─ StudyHub/\n'
             '   ├─ notes/     笔记\n'
-            '   │   ├─ 中医/    人体穴位图.png、经络知识.md\n'
-            '   │   └─ 绳结/    平结.md、平结演示.gif\n'
+            '   │   ├─ 中医/    经络知识.md\n'
+            '   │   └─ 绳结/    平结.md、演示.gif\n'
             '   ├─ media/     视频与图片\n'
             '   │   ├─ 教学视频/\n'
             '   │   └─ 图片/\n'
@@ -130,13 +130,13 @@ class _TreeCard extends StatelessWidget {
             '   │   └─ python基础/\n'
             '   │       ├─ 第一章.json\n'
             '   │       └─ 第二章.json\n'
-            '   ├─ tools/     词库、速查表、html 小工具\n'
-            '   │   ├─ 单位换算/index.html    ← 一个子文件夹 = 一个分类\n'
-            '   │   └─ 公式表.html            ← 放根目录 = 「独立小工具」\n'
-            '   ├─ download/  下载站（放想在手机上下载的文件）\n'
+            '   ├─ tools/     消杀计算器等html小工具\n'
+            '   │   ├─ 换算/      子文件夹=分类\n'
+            '   │   └─ 公式.html  放根目录=独立小工具\n'
+            '   ├─ download/  下载站（要下载的文件）\n'
             '   │   ├─ 课件/讲义.pdf\n'
             '   │   └─ 软件/xxx.apk\n'
-            '   └─ backup/    错题本、笔记备份（App 自动写）',
+            '   └─ backup/    错题本、笔记备份（App自写）',
             style: TextStyle(fontFamily: 'monospace', fontSize: 12.5, height: 1.65),
           ),
         ],

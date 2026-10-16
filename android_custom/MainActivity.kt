@@ -1446,9 +1446,26 @@ class MainActivity : FlutterActivity() {
                     lm.removeTestProvider(provider)
                 } catch (_: Throwable) {
                 }
+                // v1.9.0+29 修：这个重载要 **10 个参数**
+                //   (name, requiresNetwork, requiresSatellite, requiresCell,
+                //    hasMonetaryCost, supportsAltitude, supportsSpeed,
+                //    supportsBearing, powerRequirement, accuracy)
+                // 上一版只传了 9 个（漏了 supportsBearing），CI 报
+                //   MainActivity.kt:1449 None of the following candidates is applicable
+                //   fun addTestProvider(p0: String, … p7: Boolean, p8: Int, p9: Int):
+                //     No value passed for parameter 'p9'.
+                //   Argument type mismatch: actual type is 'Int', but 'Boolean' was expected.
                 lm.addTestProvider(
-                    provider, false, true, false, false, true, true,
-                    Criteria.POWER_LOW, Criteria.ACCURACY_FINE
+                    provider,
+                    false, // requiresNetwork
+                    true,  // requiresSatellite
+                    false, // requiresCell
+                    false, // hasMonetaryCost
+                    true,  // supportsAltitude
+                    true,  // supportsSpeed
+                    true,  // supportsBearing
+                    Criteria.POWER_LOW,
+                    Criteria.ACCURACY_FINE
                 )
                 lm.setTestProviderEnabled(provider, true)
                 lm.setTestProviderLocation(provider, mockLocationFor(provider, lat, lng, acc))

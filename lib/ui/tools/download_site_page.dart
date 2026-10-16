@@ -154,6 +154,20 @@ class _DownloadSitePageState extends ConsumerState<DownloadSitePage> {
             ],
           ),
           actions: [
+            // v1.9.0+29 新增：一键进 StudyHub 根目录。
+            // 用户点开后能看到服务器上所有内容（notes / media / quiz / tools /
+            // download / backup 六个目录），再逐层点进去翻文件。
+            if (logged)
+              IconButton(
+                tooltip: 'StudyHub 根目录（所有笔记 / 视频 / 题库）',
+                icon: const Icon(Icons.folder_special_outlined),
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => const ServerFilesPage(
+                    rootPath: '',
+                    titleOverride: 'StudyHub 根目录',
+                  ),
+                )),
+              ),
             // v1.9.0：服务器下载站加「新建文件夹 / 上传文件」入口
             if (logged)
               PopupMenuButton<String>(
@@ -222,6 +236,54 @@ class _DownloadSitePageState extends ConsumerState<DownloadSitePage> {
     );
   }
 
+  /// v1.9.0+29：下载站最上面那条「进 StudyHub 根目录」的入口。
+  ///
+  /// 为什么加：用户希望点一下就能看到服务器上的**全部**内容
+  /// （笔记 / 视频 / 题库 / 速查表 / 下载 / 备份），而不是只有下载站这一层。
+  /// 复用「服务器速查表」那套浏览页（ServerFilesPage），起点换成根目录，
+  /// 进去后可以逐层点进子目录，左上角返回上一层。
+  Widget _rootEntryTile(ColorScheme scheme) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+      child: Material(
+        color: scheme.primaryContainer.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => const ServerFilesPage(
+              rootPath: '',
+              titleOverride: 'StudyHub 根目录',
+            ),
+          )),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                Icon(Icons.folder_special_outlined, color: scheme.primary),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('进入 StudyHub 根目录',
+                          style: TextStyle(fontWeight: FontWeight.w600)),
+                      Text(
+                        '查看服务器上全部内容：笔记 / 视频 / 题库 / 速查表 / 备份',
+                        style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_right, size: 20),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _body(ColorScheme scheme) {
     if (_loading && _entries.isEmpty) return const Center(child: CircularProgressIndicator());
     if (_error != null) {
@@ -242,7 +304,8 @@ class _DownloadSitePageState extends ConsumerState<DownloadSitePage> {
     if (_entries.isEmpty) {
       return ListView(
         children: [
-          const SizedBox(height: 70),
+          _rootEntryTile(scheme),
+          const SizedBox(height: 50),
           Icon(Icons.inbox_outlined, size: 46, color: scheme.onSurfaceVariant),
           const SizedBox(height: 12),
           const Center(child: Text('货架还是空的')),
@@ -279,10 +342,12 @@ class _DownloadSitePageState extends ConsumerState<DownloadSitePage> {
 
     return ListView.separated(
       padding: const EdgeInsets.only(bottom: 28),
-      itemCount: _entries.length,
+      itemCount: _entries.length + 1,
       separatorBuilder: (_, __) => const Divider(height: 1, indent: 62),
       itemBuilder: (_, i) {
-        final e = _entries[i];
+        // 第 0 项固定是「进 StudyHub 根目录」的入口按钮
+        if (i == 0) return _rootEntryTile(scheme);
+        final e = _entries[i - 1];
         final ext = FileTypes.ext(e.name);
         final downloaded = _downloaded.contains(e.path);
         return ListTile(
