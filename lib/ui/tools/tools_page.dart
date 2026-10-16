@@ -81,61 +81,72 @@ class ToolsPage extends ConsumerStatefulWidget {
     ]),
 
     // ② 测量与设计 —— 原「测量与感官」，v1.6.0 起并入 7 个工具（用户点名）
+    // v1.9.0+22 按用户截图重排：
+    //   * 「挂画助手」从最末位提前到第 3（视觉测量里最常用的放最前）
+    //   * 「简易画板 / 高级计算器 / 单位换算」前移成第 2 行（这些都是写画、做题时常切换的工具）
+    //   * 「地图坐标转换 / 指南针 / 配色助手 / 颜色码转换」挪到最后 4 个
+    //     —— 这些属于「对着屏幕 / 取色卡才用」，用频次低
     _Category('测量与设计', [
       _ToolDef('直尺', Icons.straighten, Color(0xFF185FA5)),
       _ToolDef('量角器', Icons.architecture, Color(0xFF7F77DD)),
+      // v1.7.0：SOS 手电筒已按用户要求挪去「生活与娱乐」；
+      // v1.9.0+22 再把「挂画助手」前移到这一行的第三位（用户截图要求）
+      _ToolDef('挂画助手', Icons.straighten_outlined, Color(0xFF72243E)),
       _ToolDef('噪声测量', Icons.graphic_eq, Color(0xFF1D9E75)),
       _ToolDef('屏幕坏点检测', Icons.grid_on, Color(0xFFD4537E)),
-      _ToolDef('挂画助手', Icons.straighten_outlined, Color(0xFF72243E)),
-      // ↓ v1.6.0 从「生活与娱乐 / 地理与定位 / 颜色与设计 / 计算与网络」挪进来
-      // v1.7.0：SOS 手电筒已按用户要求挪去「生活与娱乐」
+      _ToolDef('简易画板', Icons.brush_outlined, Color(0xFF7F77DD)),
+      _ToolDef('高级计算器', Icons.functions, Color(0xFF534AB7)),
+      // v1.8.0 新增：18 类单位换算 + 人民币大小写 + 亲戚称呼，
+      // 全部集中在一个界面里用顶部分类切换（用户点名要「集中在一个界面」）
+      _ToolDef('单位换算', Icons.transform, Color(0xFF0F6E56)),
+      // ↓ v1.9.0+22 后挪到末尾 4 个（截图要求）：
       _ToolDef('地图坐标转换', Icons.swap_horiz, Color(0xFF1D9E75)),
       // 指南针：地磁方向 + 经纬度 + 海拔。
       // 方向靠磁力计（离线、不要权限），经纬度/海拔靠定位（要权限）。
       _ToolDef('指南针', Icons.explore, Color(0xFF0F7B6C)),
       _ToolDef('配色助手', Icons.auto_awesome, Color(0xFFD4537E)),
       _ToolDef('颜色码转换', Icons.colorize_outlined, Color(0xFF0C447C)),
-      _ToolDef('简易画板', Icons.brush_outlined, Color(0xFF7F77DD)),
-      _ToolDef('高级计算器', Icons.functions, Color(0xFF534AB7)),
-      // v1.8.0 新增：18 类单位换算 + 人民币大小写 + 亲戚称呼，
-      // 全部集中在一个界面里用顶部分类切换（用户点名要「集中在一个界面」）
-      _ToolDef('单位换算', Icons.transform, Color(0xFF0F6E56)),
     ]),
 
     // ③ 网络与编码 —— 原「文字与编码」，v1.6.0 起并入 CIDR 子网计算
+    // v1.9.0+22 按用户截图重排：把 CIDR 子网计算从第 5 位提到第 3 位
+    // （紧挨着加密编码），二维码 / 条码 / 身份证往后压。
     _Category('网络与编码', [
       _ToolDef('摩斯电码', Icons.wifi_tethering, Color(0xFF0F6E56)),
       _ToolDef('加密编码', Icons.lock_outline, Color(0xFF993C1D)),
+      // v1.9.0+22：用户截图把 CIDR 子网计算从第 5 位提到第 3 位
+      _ToolDef('CIDR 子网计算', Icons.hub_outlined, Color(0xFF0C447C)),
       _ToolDef('二维码生成', Icons.qr_code_2, Color(0xFF1D9E75)),
       // v1.5.0 新增：一维条码（Code128 / Code39 / EAN-13 / EAN-8 / UPC-A）
       _ToolDef('条码生成器', Icons.view_week, Color(0xFF72243E)),
-      // v1.6.0 从「计算与网络」挪进来
-      _ToolDef('CIDR 子网计算', Icons.hub_outlined, Color(0xFF0C447C)),
       // v1.7.0 从「地理与定位」挪进来（该分类因此清空、取消）
       // 身份证前 6 位查户籍地（自带 2978 个区划码，不用联网）
       _ToolDef('身份证查户籍', Icons.badge_outlined, Color(0xFFB8860B)),
     ]),
 
     // ④ 生活与娱乐 —— 用户要求排第四，并并入 3 个工具
+    // v1.9.0+22 按用户截图重排：把 SOS 手电筒提到第 1 位（户外场景最常点开的就是它），
+    // 后台录像次之（按错就着它录），其它按原顺序接续。
     _Category('生活与娱乐', [
-      _ToolDef('抛硬币', Icons.casino_outlined, Color(0xFFE0A020)),
-      // 快递查询要访问快递 100 的接口，是联网工具
-      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
-      // ↓ v1.6.0 从「同步与备份 / 音频与录制 / 设备与应用」挪进来
-      // 文件夹同步：本地文件夹 ↔ 服务器文件夹，后台每隔几分钟对一次
-      _ToolDef('文件夹同步', Icons.sync_alt, Color(0xFF0F7B6C)),
+      // v1.7.0 从「测量与设计」挪进来（用户点名）；v1.9.0+22 提到本类第 1 位
+      _ToolDef('SOS 手电筒', Icons.flashlight_on, Color(0xFFB8860B)),
       // 后台录音录像：类似 Alibi
       _ToolDef('后台录音录像', Icons.fiber_manual_record, Color(0xFFD4537E)),
+      _ToolDef('抛硬币', Icons.casino_outlined, Color(0xFFE0A020)),
+      // 文件夹同步：本地文件夹 ↔ 服务器文件夹，后台每隔几分钟对一次
+      _ToolDef('文件夹同步', Icons.sync_alt, Color(0xFF0F7B6C)),
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
+      // 快递查询要访问快递 100 的接口，是联网工具
+      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
       // v1.9.0 大改：9 种主流异形 + 笔记模式 + 地狱难度 + 自动出题
       _ToolDef('数独', Icons.grid_3x3, Color(0xFF534AB7)),
       // v1.9.0 新增：对标欧路基础功能（多词库 / 查词 / 生词本 / 历史）
       _ToolDef('路路词典', Icons.menu_book_outlined, Color(0xFF185FA5)),
-      // v1.7.0 从「测量与设计」挪进来（用户点名）
-      _ToolDef('SOS 手电筒', Icons.flashlight_on, Color(0xFFB8860B)),
     ]),
 
-    // ⑤ 公卫小工具 —— 原「公卫数据」，v1.6.0 改名并扩容
+    // ⑤ 公卫小工具 —— 原「公卫数据」，v1.6.0 改名并扩容。
+    // v1.9.0+22 按用户截图重排：把「Logistic 回归」「实时再生指数 Rt」前移，
+    // 「食物中毒分析」「营养配餐」挪到末尾 2 个。
     _Category('公卫小工具', [
       _ToolDef('消杀计算器', Icons.science_outlined, Color(0xFF0F7B6C)),
       // v1.6.0 新增：现场配药时设备该开多大流量
@@ -146,11 +157,13 @@ class ToolsPage extends ConsumerStatefulWidget {
       // v1.6.0 新增的两个高级统计分析
       _ToolDef('分层分析', Icons.layers_outlined, Color(0xFF0C447C)),
       _ToolDef('交互作用', Icons.hub_outlined, Color(0xFF72243E)),
-      _ToolDef('食物中毒分析', Icons.restaurant_menu, Color(0xFFD4537E)),
+      // ↓ v1.9.0+22：把「Logistic 回归」「实时再生指数 Rt」前移，
+      // 「食物中毒分析」「营养配餐」挪到末尾 2 个（用户截图要求）
       _ToolDef('Logistic 回归', Icons.insights, Color(0xFF0C447C)),
-      _ToolDef('营养配餐', Icons.local_dining, Color(0xFF1D9E75)),
       // v1.6.0 新增：逐日估计传染速度
       _ToolDef('实时再生指数 Rt', Icons.ssid_chart, Color(0xFFD93025)),
+      _ToolDef('食物中毒分析', Icons.restaurant_menu, Color(0xFFD4537E)),
+      _ToolDef('营养配餐', Icons.local_dining, Color(0xFF1D9E75)),
     ]),
   ];
 
