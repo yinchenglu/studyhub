@@ -42,7 +42,7 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
       final entries = await client.list(joinPath(AppDirs.tools, _sub), depth: 1);
       // v1.9.0：服务器小工具目录用 sortEntries 排序，名称按自然排序，
       // 「1.xxx」前缀的工具自动排到第一位。
-      final sorted = sortEntries(entries, SortPref.byName);
+      final sorted = sortEntries(entries, const SortPref());
       if (!mounted) return;
       setState(() {
         _entries = sorted;

@@ -150,9 +150,9 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
     // 4. 跳过去：先看是不是文件
     final repo = ref.read(noteRepoProvider);
     if (repo == null) return;
-    // 5. 列同目录兄弟（保持左右滑切换）
+    // 5. 列同目录兄弟（保持左右滑切换）。失败时给空列表，不影响跳转。
     final dir = parentOf(rel);
-    final List<String> siblings;
+    List<String> siblings = const [];
     try {
       final entries = await repo.listDir(dir);
       // 只算「能当笔记打开」的文件
