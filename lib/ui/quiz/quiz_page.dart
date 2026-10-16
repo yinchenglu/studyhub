@@ -485,15 +485,16 @@ class QuizPageState extends ConsumerState<QuizPage> {
                     '题目、正确答案、解析一起摊开，像看书一样一页页翻', () => _startBrowse(ref0)),
               ] else ...[
                 const _SheetLabel('刷这一套'),
+                // v1.9.0：把「刷题模式」置顶当默认。
+                // 之前第一是「顺序练」，但填空 / 简答题根本没法机判，
+                // 用户更常把题库当「题书」翻看 —— 现在进题库第一眼就是它。
+                _mode(Icons.menu_book_outlined, '刷题模式（只看不做）',
+                    '题目、正确答案、解析一起摊开，像看书一样一页页翻', () => _startBrowse(ref0)),
                 _mode(Icons.list_alt, '顺序练', '按题库原顺序，每次 ${ref.read(quizPrefsProvider).perRound} 题', () => _startSingle(ref0, _Mode.order)),
                 _mode(Icons.shuffle, '随机练', '打乱顺序，每次 ${ref.read(quizPrefsProvider).perRound} 题', () => _startSingle(ref0, _Mode.random)),
                 _mode(Icons.auto_awesome, '智能复习', '错题优先 + 没做过的题优先', () => _startSingle(ref0, _Mode.smart)),
                 _mode(Icons.fiber_new_outlined, '只刷没刷过的', '跳过已经刷过的题目', () => _startSingle(ref0, _Mode.fresh)),
                 _mode(Icons.replay, '只练错题', '把这一套的错题重做一遍', () => _startSingle(ref0, _Mode.wrongOnly)),
-                // v1.5.0 新增：刷题模式。放在「只练错题」之后、「模拟考试」之前 ——
-                // 前五个都是「做题」，这个是「不作曲只看」，用图标和措辞隔开。
-                _mode(Icons.menu_book_outlined, '刷题模式（只看不做）',
-                    '题目、正确答案、解析一起摊开，像看书一样一页页翻', () => _startBrowse(ref0)),
                 _mode(Icons.timer_outlined, '模拟考试', '${ref.read(quizPrefsProvider).examCount} 题 / ${ref.read(quizPrefsProvider).examMinutes} 分钟', () => _setupExam(ref0)),
                 if (_banks.length > 1) ...[
                   const Divider(height: 18),
@@ -540,13 +541,14 @@ class QuizPageState extends ConsumerState<QuizPage> {
                   style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
             ),
             const Divider(height: 8),
+            // v1.9.0：跟单套题库一致，把「刷题模式」置顶当默认。
+            _mode(Icons.menu_book_outlined, '刷题模式（只看不做）',
+                '该目录下所有题目、答案、解析一起摊开', () => _startBrowseDir()),
             _mode(Icons.list_alt, '顺序合并刷', '按题库顺序一套套来，每次 ${ref.read(quizPrefsProvider).perRound} 题', () => _startDir(_Mode.order)),
             _mode(Icons.shuffle, '随机合并刷', '所有题目打乱后抽 ${ref.read(quizPrefsProvider).perRound} 题', () => _startDir(_Mode.random)),
             _mode(Icons.auto_awesome, '智能复习', '错题优先 + 没做过的题优先', () => _startDir(_Mode.smart)),
             _mode(Icons.fiber_new_outlined, '只刷没刷过的', '跳过已经刷过的题目', () => _startDir(_Mode.fresh)),
             _mode(Icons.replay, '只练错题', '该目录下所有题库的错题', () => _startDir(_Mode.wrongOnly)),
-            _mode(Icons.menu_book_outlined, '刷题模式（只看不做）',
-                '该目录下所有题目、答案、解析一起摊开', () => _startBrowseDir()),
             _mode(Icons.timer_outlined, '模拟考试', '${ref.read(quizPrefsProvider).examCount} 题 / ${ref.read(quizPrefsProvider).examMinutes} 分钟', () => _setupExamDir()),
             const Divider(height: 18),
             _mode(Icons.restart_alt, '重置整个目录的进度', '把这 ${_banks.length} 套题库的「已刷」清零', () => _resetProgress(paths), danger: true),
