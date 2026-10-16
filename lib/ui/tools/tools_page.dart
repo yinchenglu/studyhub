@@ -414,8 +414,7 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
                 const SizedBox(width: 9),
                 Expanded(
                   child: Text(
-                    '卡片右上角带蓝色小点的，是需要联网的工具；'
-                    '没有小点的都能离线用。\n'
+                    '卡片描红边的是需要联网的工具，没描红边的都能离线用。\n'
                     '长按任意格子拖动可以换顺序，拖动只在同一类里生效；'
                     '想给工具改个显示名，点右上角那个按钮进自定义模式。\n'
                     '上面两个按钮需要连上你的 WebDAV 服务器：'
@@ -530,9 +529,21 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
   Widget _toolCard(BuildContext context, _ToolDef t,
       {required String label, VoidCallback? onTap, bool shadow = false}) {
     final scheme = Theme.of(context).colorScheme;
+    // v1.9.0 需求 7：联网工具的标识从「右上角蓝点」改成「整张卡片描红边」。
+    // 原来那点太小，列表里一眼扫过去容易被忽略；
+    // 改成 1.5 px 的红边之后，不用停下来凑近看也能扫到。
+    // 颜色用 Color(0xFFB23A3A) —— 比纯红 #FF0000 略柔，
+    // 在卡片背景下「醒目但不刺眼」。
+    final onlineBorder = t.online
+        ? Border.all(color: const Color(0xFFB23A3A), width: 1.5)
+        : null;
     return Card(
       margin: EdgeInsets.zero,
       elevation: shadow ? 8 : null,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: onlineBorder ?? BorderSide.none,
+      ),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
         // onTap 为 null（拖动影子、或者自定义模式下漏传）时 InkWell 不响应，
@@ -544,9 +555,9 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
         child: Stack(
           children: [
             Padding(
-              // 联网工具右上角有小点，右边多让一点位，免得点压到字上
-              padding: EdgeInsets.only(
-                  left: 6, right: t.online ? 11 : 6, top: 3, bottom: 3),
+              // v1.9.0：取消原来给「联网蓝点」多留的 11 px 右边距
+              // （蓝点已改为红框，整张卡片描边）。
+              padding: const EdgeInsets.fromLTRB(6, 3, 6, 3),
               child: Row(
                 children: [
                   // v1.7.0：图标和文字放进**同一排**（原来是图标在上、文字在下）。
@@ -588,20 +599,8 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
                 ],
               ),
             ),
-            // 联网工具：卡片右上角一个小圆点（用户要求「加一个网络的小点」）
-            if (t.online)
-              Positioned(
-                right: 5,
-                top: 5,
-                child: Container(
-                  width: 6,
-                  height: 6,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF185FA5),
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ),
+            // v1.9.0：原来这里是「联网工具右上角蓝点」（v1.6.0 加的），
+            // 整张卡片已改成红框描边（见 Card.shape），这里的小点删除。
           ],
         ),
       ),
