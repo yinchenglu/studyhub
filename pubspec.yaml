@@ -88,6 +88,9 @@ dependencies:
   crypto: ^3.0.5
   flutter_colorpicker: ^1.1.0
   image_picker: ^1.1.2
+  # v1.9.0：服务器下载站加「上传」功能，需要文件选择器。
+  # 只用 pickFiles（限定类型），不申请任何运行时权限。
+  file_picker: ^8.1.4
 
   # 下载到自定义目录时的存储权限申请
   permission_handler: ^11.3.1

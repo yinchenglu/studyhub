@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -153,6 +154,32 @@ class _DownloadSitePageState extends ConsumerState<DownloadSitePage> {
             ],
           ),
           actions: [
+            // v1.9.0：服务器下载站加「新建文件夹 / 上传文件」入口
+            if (logged)
+              PopupMenuButton<String>(
+                tooltip: '新建',
+                onSelected: (v) async {
+                  if (v == 'mkdir') await _createFolder();
+                  if (v == 'upload') await _uploadFile();
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'upload',
+                    child: ListTile(
+                        leading: Icon(Icons.upload_file_outlined),
+                        title: Text('上传文件'),
+                        dense: true),
+                  ),
+                  PopupMenuItem(
+                    value: 'mkdir',
+                    child: ListTile(
+                        leading: Icon(Icons.create_new_folder_outlined),
+                        title: Text('新建文件夹'),
+                        dense: true),
+                  ),
+                ],
+                icon: const Icon(Icons.add),
+              ),
             if (files.isNotEmpty)
               PopupMenuButton<String>(
                 onSelected: (v) async {
@@ -365,51 +392,267 @@ class _DownloadSitePageState extends ConsumerState<DownloadSitePage> {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                      child: Text(e.name, style: const TextStyle(fontWeight: FontWeight.w600))),
-                ],
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                        child: Text(e.name, style: const TextStyle(fontWeight: FontWeight.w600))),
+                  ],
+                ),
               ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.download_outlined),
-              title: const Text('下载到手机'),
-              subtitle: Text('${formatBytes(e.size)} · 存到下载目录'),
-              onTap: () {
-                Navigator.pop(context);
-                _downloadOne(e);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.ios_share),
-              title: const Text('先下载再分享'),
-              onTap: () {
-                Navigator.pop(context);
-                _downloadOne(e, share: true);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.copy_outlined),
-              title: const Text('复制文件的直链'),
-              subtitle: const Text('可以在浏览器里打开（需要能连通你的服务器）'),
-              onTap: () {
-                Navigator.pop(context);
-                final client = ref.read(davClientProvider);
-                if (client == null) return;
-                Clipboard.setData(ClipboardData(text: client.urlFor(e.path)));
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(const SnackBar(content: Text('链接已复制')));
-              },
-            ),
-          ],
+              // 通用：重命名 / 删除
+              ListTile(
+                leading: const Icon(Icons.drive_file_rename_outline),
+                title: const Text('重命名'),
+                subtitle: const Text('在同一目录下改名'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _rename(e);
+                },
+              ),
+              // 文件才能下载/分享/编辑/复制直链
+              if (!e.isDir) ...[
+                ListTile(
+                  leading: const Icon(Icons.download_outlined),
+                  title: const Text('下载到手机'),
+                  subtitle: Text('${formatBytes(e.size)} · 存到下载目录'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _downloadOne(e);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.ios_share),
+                  title: const Text('先下载再分享'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _downloadOne(e, share: true);
+                  },
+                ),
+                if (FileTypes.isReadableText(e.name))
+                  ListTile(
+                    leading: const Icon(Icons.edit_outlined),
+                    title: const Text('编辑文本'),
+                    subtitle: const Text('直接改完保存到服务器'),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _editTextFile(e);
+                    },
+                  ),
+                ListTile(
+                  leading: const Icon(Icons.copy_outlined),
+                  title: const Text('复制文件的直链'),
+                  subtitle: const Text('可以在浏览器里打开（需要能连通你的服务器）'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    final client = ref.read(davClientProvider);
+                    if (client == null) return;
+                    Clipboard.setData(ClipboardData(text: client.urlFor(e.path)));
+                    ScaffoldMessenger.of(ctx)
+                        .showSnackBar(const SnackBar(content: Text('链接已复制')));
+                  },
+                ),
+              ],
+              // 删除（v1.9.0）
+              const Divider(),
+              ListTile(
+                leading: Icon(Icons.delete_outline, color: Theme.of(ctx).colorScheme.error),
+                title: Text('删除', style: TextStyle(color: Theme.of(ctx).colorScheme.error)),
+                subtitle: Text(e.isDir ? '文件夹及其内容会一起被删掉' : '无法恢复，请确认'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _delete(e);
+                },
+              ),
+            ],
+          ),
         ),
+      ),
+    );
+  }
+
+  /// v1.9.0：新建文件夹
+  Future<void> _createFolder() async {
+    final client = ref.read(davClientProvider);
+    if (client == null) return;
+    final name = await _askName(ctx: context, title: '新建文件夹', hint: '文件夹名', initial: '新文件夹');
+    if (name == null || name.isEmpty) return;
+    final clean = name.replaceAll('/', '_').replaceAll('\\', '_').trim();
+    if (clean.isEmpty) return;
+    setState(() => _loading = true);
+    try {
+      await client.ensureDir(joinPath(_dirPath, clean));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已建「$clean」')));
+    } catch (err) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('建文件夹失败：$err')));
+    } finally {
+      await _load();
+    }
+  }
+
+  /// v1.9.0：上传本地文件到当前目录（file_picker → 上传到 WebDAV）
+  Future<void> _uploadFile() async {
+    final client = ref.read(davClientProvider);
+    if (client == null) return;
+    FilePickerResult? picked;
+    try {
+      picked = await FilePicker.platform.pickFiles(
+        allowMultiple: false,
+        withData: false, // 大文件用流式上，避免一次性吃内存
+        type: FileType.any,
+      );
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('文件选择器打不开：$e')));
+      return;
+    }
+    if (picked == null || picked.files.isEmpty) return;
+    final f = picked.files.first;
+    final path = f.path;
+    if (path == null) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('这个文件没法上传（路径不可用）')));
+      return;
+    }
+    final name = (f.name.isNotEmpty ? f.name : p.basename(path));
+    final target = joinPath(_dirPath, name);
+    setState(() => _loading = true);
+    try {
+      final src = File(path);
+      final stream = src.openRead();
+      final len = await src.length();
+      await client.writeFileStream(target, stream, contentLength: len);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已上传：$name')));
+    } catch (err) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('上传失败：$err')));
+    } finally {
+      await _load();
+    }
+  }
+
+  /// v1.9.0：重命名（同一目录）
+  Future<void> _rename(DavEntry e) async {
+    final client = ref.read(davClientProvider);
+    if (client == null) return;
+    final stem = baseName(e.path);
+    final newName = await _askName(ctx: context, title: '重命名', hint: '新名字', initial: stem);
+    if (newName == null || newName.isEmpty || newName == stem) return;
+    final clean = newName.replaceAll('/', '_').replaceAll('\\', '_').trim();
+    if (clean.isEmpty) return;
+    // 目标路径：保持在同一目录
+    final dir = parentOf(e.path);
+    final target = joinPath(dir, clean);
+    setState(() => _loading = true);
+    try {
+      await client.move(e.path, target);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已改名：$clean')));
+    } catch (err) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('改名失败：$err')));
+    } finally {
+      await _load();
+    }
+  }
+
+  /// v1.9.0：编辑文本文件（.md/.txt/.json/.csv 等）
+  Future<void> _editTextFile(DavEntry e) async {
+    final client = ref.read(davClientProvider);
+    if (client == null) return;
+    String content;
+    try {
+      content = await client.readText(e.path);
+    } catch (err) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('读不回来：$err')));
+      return;
+    }
+    if (!mounted) return;
+    final newContent = await Navigator.of(context).push<String>(MaterialPageRoute(
+      builder: (_) => _TextEditorPage(title: e.name, initial: content),
+    ));
+    if (newContent == null || newContent == content) return;
+    setState(() => _loading = true);
+    try {
+      await client.writeText(e.path, newContent);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已保存：${e.name}')));
+    } catch (err) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('保存失败：$err')));
+    } finally {
+      await _load();
+    }
+  }
+
+  /// v1.9.0：删除（文件直接删，文件夹递归删：WebDAV 协议里服务端要逐个删子项）
+  Future<void> _delete(DavEntry e) async {
+    final client = ref.read(davClientProvider);
+    if (client == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('删除${e.isDir ? '文件夹' : '文件'}？'),
+        content: Text(
+          e.isDir
+              ? '「${e.name}」及其内部所有内容会从服务器上删除，无法恢复。'
+              : '「${e.name}」会从服务器上删除，无法恢复。',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _loading = true);
+    try {
+      if (e.isDir) {
+        // 递归列出并删（WebDAV 服务端通常不会替客户端级联删）
+        await _deleteRecursive(client, e.path);
+      } else {
+        await client.delete(e.path);
+      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已删：${e.name}')));
+    } catch (err) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('删除失败：$err')));
+    } finally {
+      await _load();
+    }
+  }
+
+  Future<void> _deleteRecursive(WebDavClient client, String path) async {
+    final entries = await client.list(path, depth: 1);
+    for (final e in entries) {
+      if (e.isDir) {
+        await _deleteRecursive(client, e.path);
+      } else {
+        await client.delete(e.path);
+      }
+    }
+    await client.delete(path);
+  }
+
+  /// 复用：让用户输入一个名字（用于新建/重命名）
+  Future<String?> _askName({required BuildContext ctx, required String title, required String hint, String initial = ''}) {
+    final ctrl = TextEditingController(text: initial);
+    return showDialog<String>(
+      context: ctx,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(hintText: hint, border: const OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogCtx), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(dialogCtx, ctrl.text), child: const Text('确定')),
+        ],
       ),
     );
   }
@@ -473,5 +716,63 @@ class _DownloadSitePageState extends ConsumerState<DownloadSitePage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text('下载完成：$done / ${files.length} 个文件')));
+  }
+}
+
+/// v1.9.0：简易文本编辑器（仅用于「服务器下载站」里直接改 .md / .txt / .json 等）。
+/// 不替换项目里别的编辑器。
+class _TextEditorPage extends StatefulWidget {
+  final String title;
+  final String initial;
+  const _TextEditorPage({required this.title, required this.initial});
+  @override
+  State<_TextEditorPage> createState() => _TextEditorPageState();
+}
+
+class _TextEditorPageState extends State<_TextEditorPage> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.initial);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final changed = _ctrl.text != widget.initial;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title, overflow: TextOverflow.ellipsis),
+        actions: [
+          IconButton(
+            tooltip: '保存',
+            onPressed: changed ? () => Navigator.of(context).pop(_ctrl.text) : null,
+            icon: const Icon(Icons.save_outlined),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(12),
+        child: TextField(
+          controller: _ctrl,
+          maxLines: null,
+          expands: true,
+          textAlignVertical: TextAlignVertical.top,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 13, height: 1.5),
+          decoration: const InputDecoration(
+            border: InputBorder.none,
+            hintText: '（空文件）',
+          ),
+          onChanged: (_) => setState(() {}), // 让保存按钮 enable/disable
+        ),
+      ),
+    );
   }
 }
