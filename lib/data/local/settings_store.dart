@@ -531,10 +531,14 @@ class SettingsStore {
   }
 
   /// 录像用哪一侧摄像头：'back' / 'front'。
+  ///
+  /// v1.9.0：默认改成 'front'。这个工具最常见的场景是「录下自己的想法 / 一段口播」，
+  /// 用前摄录比后摄自然得多。第一次进入录像页就是前摄，不需要手动再点「切换」。
+  /// 用户随时可在页面上切回后摄，这个值会跟着存下来。
   Future<String> recorderLens() async {
     final p = await _prefs;
     final v = p.getString(_kRecLens);
-    return (v == 'front') ? 'front' : 'back';
+    return (v == 'back') ? 'back' : 'front';
   }
 
   Future<void> setRecorderLens(String v) async {

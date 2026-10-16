@@ -175,10 +175,10 @@ class Defaults {
 
   /// 录像最长时长默认值（分钟）。0 = 不限。
   ///
-  /// 录像给 0，但页面上会摆出几档 —— 录像是真占空间的
-  /// （1080p 大约 1 分钟 60 MB），长时间没人看着录很容易把存储吃光，
-  /// 所以选项里有 5 / 10 / 30 分钟这些常用档。
-  static const int videoMaxMinutes = 0;
+  /// 录像给 60：1080p 一分钟约 60 MB，如果用户忘了按停止就会把存储吃光，
+  /// 给个 60 分钟默认值既能录完一节课、一场小会，又能在用户走神时及时封顶。
+  /// 用户仍可在页面上切成其他档（含不限）。
+  static const int videoMaxMinutes = 60;
 
   /// 录音最长时长可选项（分钟，0 = 不限）
   static const List<int> audioMaxOptions = [0, 5, 10, 20, 30, 60, 120];
@@ -204,4 +204,7 @@ const String kAppVersion = '1.9.0';
 /// pubspec.yaml 的 version（去掉 +N 之后必须等于 kAppVersion）。
 /// 启动时会在 main() 里 assert，保证两个一致。
 /// ——用工具：python tools/bump_version.py 1.10.0
-const String kPubspecVersion = '1.9.0+16';
+///
+/// v1.9.0+17 修：bump_version.py 之前**只改 kAppVersion 不改 kPubspecVersion**，
+/// 会让启动 assert 失败。这里把 bump_version.py 一起修了（见 bump_version.py）。
+const String kPubspecVersion = '1.9.0+17';

@@ -89,7 +89,12 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
   /// v1.6.0 修的真 bug：以前这个页面**只能**用后置 —— 那个看着像「切换摄像头」
   /// 的按钮其实只是重新 `_initCam()` 一次，选的还是后置。用户反馈的
   /// 「只能调用后摄像头，前摄失败」说的就是这事。
-  String _lens = 'back';
+  ///
+  /// v1.9.0：初始值改成 'front'，配合 SettingsStore.recorderLens() 的默认值，
+  /// 第一次进入录像页默认就是前摄（这个工具最常见的场景是录自己的想法 / 口播，
+  /// 用前摄比后摄自然得多）。state 里的初始值只在 SettingsStore 还没读到之前
+  /// 用一帧（<= 几十毫秒），没有副作用；用户随时可切回后摄，新值会跟着存下。
+  String _lens = 'front';
 
   /// 录像要不要录声音。
   bool _vAudio = true;

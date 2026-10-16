@@ -42,6 +42,9 @@ CONSTANTS = REPO / 'lib' / 'core' / 'constants.dart'
 
 RE_VERSION = re.compile(r'^version:\s*(\d+)\.(\d+)\.(\d+)\+(\d+)\s*$', re.M)
 RE_KAPP = re.compile(r"const String kAppVersion = '(\d+\.\d+\.\d+)';")
+# v1.9.0+17 修：以前只改 kAppVersion 不改 kPubspecVersion，
+# 启动时 assert kAppVersion == kPubspecVersion 去掉 +N 的部分会失败。
+RE_KPUB = re.compile(r"const String kPubspecVersion = '(\d+\.\d+\.\d+)\+(\d+)';")
 
 
 def die(msg):
@@ -49,8 +52,8 @@ def die(msg):
     sys.exit(1)
 
 
-def bump(version: str, build: int | None) -> tuple[str, str, str, int]:
-    """返回 (pubspec_version, kapp_version, old_pubspec, new_pubspec)"""
+def bump(version: str, build: int | None) -> tuple[str, str, str, int, str, str, str]:
+    """返回 (pubspec_version, kapp_version, old_pubspec, new_pubspec, kpub_old, kpub_new, kapp_old)"""
     m = re.match(r'^(\d+)\.(\d+)\.(\d+)$', version)
     if not m:
         die(f'版本号格式不对：{version}（应该是 X.Y.Z，比如 1.10.0）')
@@ -72,7 +75,17 @@ def bump(version: str, build: int | None) -> tuple[str, str, str, int]:
     old_kapp = m_k.group(0)
     new_kapp = f"const String kAppVersion = '{m.group(0)}';"
 
-    return new_v, new_kapp, old_v, old_kapp
+    # kPubspecVersion 也同步（否则启动会 assert 失败）
+    m_kp = RE_KPUB.search(consts)
+    if not m_kp:
+        # 旧版（v1.9.0 之前）只有 kAppVersion，没有 kPubspecVersion，跳过不报错
+        old_kpub = None
+        new_kpub = None
+    else:
+        old_kpub = m_kp.group(0)
+        new_kpub = f"const String kPubspecVersion = '{m.group(0)}+{new_build}';"
+
+    return new_v, new_kapp, old_v, old_kapp, old_kpub, new_kpub, m.group(0)
 
 
 def main():
@@ -83,7 +96,7 @@ def main():
     version = sys.argv[1]
     build = int(sys.argv[2]) if len(sys.argv) > 2 else None
 
-    new_v, new_kapp, old_v, old_kapp = bump(version, build)
+    new_v, new_kapp, old_v, old_kapp, old_kpub, new_kpub, _ = bump(version, build)
 
     # 写
     pubspec = PUBSPEC.read_text(encoding='utf-8')
@@ -92,10 +105,14 @@ def main():
 
     consts = CONSTANTS.read_text(encoding='utf-8')
     consts = consts.replace(old_kapp, new_kapp)
+    if old_kpub is not None and new_kpub is not None:
+        consts = consts.replace(old_kpub, new_kpub)
     CONSTANTS.write_text(consts, encoding='utf-8')
 
     print(f'✓ pubspec.yaml  : {old_v:>22s} → {new_v}')
     print(f"✓ constants.dart: {old_kapp.split(' = ')[1].rstrip(';')} → {new_kapp.split(' = ')[1]}")
+    if old_kpub is not None:
+        print(f"✓ constants.dart: {old_kpub.split(' = ')[1].rstrip(';')} → {new_kpub.split(' = ')[1]}")
     print()
     print('接下来要做：')
     print('  1. cd studyhub_app && flutter pub get')
