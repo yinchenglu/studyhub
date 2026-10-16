@@ -68,7 +68,9 @@ class DictBook {
   final String id; // 唯一 id（hash 文件名）
   final String name; // 显示名（用户可改）
   final String path; // 词库文件路径（空 = 内置）
-  final int size; // 词条数
+  /// 词条数。v1.9.0+24 改成 mutable：手动加词条时需要原地递增
+  /// (`_books.firstWhere(...).size++`)，final 编译不过。
+  int size;
   final DateTime loadedAt;
 
   DictBook({
@@ -691,15 +693,10 @@ class _DictPageState extends State<DictPage> {
     return parts.join(' + ') + ' · 共 $total 词条';
   }
 
-  // 输入框 controller（state 级，避免 build 里反复 new）
-  late final TextEditingController _searchCtrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _searchCtrl = TextEditingController();
-    _load();
-  }
+  // 输入框 controller（state 级，避免 build 里反复 new）。
+  // ——这个 controller 在 build 里通过 `_searchCtrl.text = _query` 同步，
+  // 不用 listen 自己的变化，所以声明成 late final 即可。
+  late final TextEditingController _searchCtrl = TextEditingController();
 
   @override
   void dispose() {
@@ -763,7 +760,10 @@ class _DictPageState extends State<DictPage> {
             for (final b in _books)
               Padding(
                 padding: const EdgeInsets.only(right: 6),
-                child: ChoiceChip(
+                // v1.9.0+24：用 InputChip 替代 ChoiceChip —— ChoiceChip
+                // 没有 onDeleted 参数，没法在 chip 上直接挂「删除」入口；
+                // InputChip 自带删除按钮（默认 × 图标），点一下确认弹窗。
+                child: InputChip(
                   label: Text('${b.name} (${b.size})'),
                   selected: _activeDictId == b.id,
                   onSelected: (_) => setState(() => _activeDictId = b.id),
@@ -872,7 +872,7 @@ class _DictPageState extends State<DictPage> {
           loadedAt: DateTime.now(),
         ));
       } else {
-        _books.firstWhere((b) => b.id == dictId).size += 0;
+        _books.firstWhere((b) => b.id == dictId).size++;
       }
     });
     _save();

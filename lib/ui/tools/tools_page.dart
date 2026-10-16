@@ -553,15 +553,15 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
     // 改成 1.5 px 的红边之后，不用停下来凑近看也能扫到。
     // 颜色用 Color(0xFFB23A3A) —— 比纯红 #FF0000 略柔，
     // 在卡片背景下「醒目但不刺眼」。
-    final onlineBorder = t.online
-        ? Border.all(color: const Color(0xFFB23A3A), width: 1.5)
-        : null;
+    final onlineBorderSide = t.online
+        ? const BorderSide(color: Color(0xFFB23A3A), width: 1.5)
+        : BorderSide.none;
     return Card(
       margin: EdgeInsets.zero,
       elevation: shadow ? 8 : null,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        side: onlineBorder ?? BorderSide.none,
+        side: onlineBorderSide,
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),

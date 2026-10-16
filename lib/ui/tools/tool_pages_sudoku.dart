@@ -375,7 +375,9 @@ class JigsawRules extends StandardRules {
           grid[r][c] = -1;
         }
       }
-      sizes.fill(0);
+      for (var i = 0; i < 9; i++) {
+        sizes[i] = 0;
+      }
       // 先用一个 BFS-style 切法：从左上开始，逐格尝试往同区或新邻区扩展
       grid[0][0] = 0;
       sizes[0] = 1;
@@ -504,15 +506,15 @@ class KillerRules extends StandardRules {
       final wantSize = 2 + rng.nextInt(4);
       while (cellsList.length < wantSize) {
         final head = cellsList[rng.nextInt(cellsList.length)];
-        final nbrs = [
+        final nbrs = <List<int>>[
           [head[0] - 1, head[1]],
           [head[0] + 1, head[1]],
           [head[0], head[1] - 1],
           [head[0], head[1] + 1],
         ]..shuffle(rng);
         bool grew = false;
-        for (final n in nbrs) {
-          final nr = n[0], nc = n[1];
+        for (final nb in nbrs) {
+          final nr = nb[0], nc = nb[1];
           if (nr < 0 || nr >= n || nc < 0 || nc >= n) continue;
           if (visited[nr][nc]) continue;
           visited[nr][nc] = true;
@@ -602,8 +604,12 @@ class GreaterRules extends StandardRules {
 /// 奇偶：行 / 列 / 宫 + 部分格固定奇偶
 class EvenOddRules extends StandardRules {
   /// `(r,c) → 'e' (偶) / 'o' (奇)`。空位置不进约束。
-  /// v1.9.0+23：改成 mutable，因为 digHoles 时要把 full 的偶标**深拷贝**
-  /// 到 p 上；final 会让 `p.evenOdd = ...` 编译失败。
+  ///
+  /// v1.9.0+24 改：标记存在 *规则* 上而不是 *棋盘* 上。
+  /// 之前想存在棋盘导致 digHoles 要给 `p.evenOdd = ...`，但
+  /// `SudokuBoard` 没有这个字段，编译不过。规则跟棋盘 1:1 绑定，
+  /// 把标记放规则上更自然。digHoles 不再 override（父类已拷贝 cells/fixed/notes，
+  /// 这些都不变；cageId/cages/relationMark 在标准数独上用不到，奇偶数独也不用）。
   List<List<String>> evenOdd;
 
   EvenOddRules(super.type, this.evenOdd);
@@ -635,14 +641,6 @@ class EvenOddRules extends StandardRules {
       ..clear()
       ..addAll(marks);
     return full;
-  }
-
-  @override
-  SudokuBoard digHoles(SudokuBoard full, int holes, math.Random rng,
-      {bool requireUnique = false}) {
-    final p = super.digHoles(full, holes, rng, requireUnique: requireUnique);
-    p.evenOdd = List.generate(full.size, (r) => List<String>.from(evenOdd[r]));
-    return p;
   }
 }
 
@@ -1369,7 +1367,7 @@ class _SudokuGrid extends StatelessWidget {
                 _consecutiveOverlay(board, cell, scheme),
               if (rules is EvenOddRules)
                 _evenOddOverlay(rules, cell, scheme),
-              if (rules is ArrowRules && (rules).arrows.isNotEmpty)
+              if (rules is ArrowRules && rules.arrows.isNotEmpty)
                 _arrowOverlay(board, rules, cell, scheme),
             ],
           ),

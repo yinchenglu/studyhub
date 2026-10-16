@@ -405,6 +405,23 @@ quiz/单词/英语四级核心词.json
 - **持久化**：SharedPreferences，重装 APP 不丢
 - 文件 `lib/ui/tools/tool_pages_dict.dart`（~990 行）
 
+### 修编译（v1.9.0+23 / +24）
+- **+19 数独一口气 1700+ 行没跑 dart analyze 就 push**，导致
+  +19 / +20 / +21 / +22 / +23 5 个连续 commit 全在「编译 APK」步骤失败。
+- **+23 修了 5 个数独编译错**
+  (`SudokuBoard.cageId/cages/relationMark` 改 mutable；
+  `EvenOddRules.evenOdd` 改 mutable；
+  `ArrowRules.arrows` 从 `List<List<List<int>>>` 改成 `List<ArrowDef>`；
+  overlay 函数签名收成基类 `SudokuRules` + 内部 `is Type` 收窄；
+  `full.height` 改 `_type.height`)；
+- **+24 修了 4 个 +20~+22 漏掉的编译错**
+  (路路词典的 `_DictPageState` 写重了 `initState`，删一个；
+  `DictBook.size` 改 mutable（手动加词条要 `size++`）；
+  词库 chip 从 `ChoiceChip` 换成 `InputChip`（前者没 `onDeleted`）；
+  工具红边 `Border.all(...)` 改成 `BorderSide`，给 `RoundedRectangleBorder.side` 喂类型；
+  数独 `_SudokuGrid.build` 里 `(rules).arrows` 去掉括号让 Dart 类型 promote 生效)。
+  从 +23 到 +24，CI 终于跑过出 release。
+
 ---
 
 ## 十二、数据来源（license & 怎么更新）
