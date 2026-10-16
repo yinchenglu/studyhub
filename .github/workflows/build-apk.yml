@@ -499,12 +499,21 @@ jobs:
 
       # ---------- 11. 发布 Release ----------
       # Release 里是直接的 .apk 文件，点一下就能下载，不用先下 zip 再解压。
+      # v1.9.0：版本号从 pubspec.yaml 动态提取（`version: 1.9.0+16`），
+      # 不再 hardcode 1.8.0，否则发包忘改会一直显示旧版本号。
+      - name: 提取版本号
+        id: get_ver
+        run: |
+          VER=$(grep -E "^version:" pubspec.yaml | head -1 | sed -E "s/^version:\s*([0-9.]+).*/\1/")
+          echo "APP_VER=$VER" >> $GITHUB_ENV
+          echo "extracted: $VER"
       - name: 发布 Release
         if: success()
+        needs: get_ver
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: 学聚 APK v${{ github.run_number }}（1.8.0）
+          name: 学聚 APK v${{ github.run_number }}（${{ env.APP_VER }}）
           body: |
             ${{ env.SIGN_NOTE }}
 
@@ -513,7 +522,7 @@ jobs:
             - `app-arm64-v8a-release.apk` —— 64 位 ARM，**近几年的手机基本都是这个，优先装它**
             - `app-armeabi-v7a-release.apk` —— 32 位 ARM，老机型（约 2016 年前）才需要
 
-            **v1.8.0 更新**
+            **${{ env.APP_VER }} 更新**
 
             笔记（这一版改动最多的一块）
             - 列表页：去掉右上角「刷新」（往下拉就能刷新，两个入口反而容易误点），
