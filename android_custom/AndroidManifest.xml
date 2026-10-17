@@ -54,10 +54,15 @@
 
       所以用 tools:ignore 关掉 lint 的「受保护权限」提示 —— 这行是故意写的。
       装上新包后**重新进一次开发者选项**就能看到（列表在打开那一页时重新查）。
+
+      ⚠️ v2.0.0+34 补：release 构建会跑 `lintVitalRelease`，Lint 的 MockLocation
+      检查认为这条权限只该出现在 debug 清单里，检查到就直接判死构建
+      （上一次 CI 就是这样挂的，报错指向本文件第 59 行）。
+      所以豁免列表里必须同时写 ProtectedPermissions 和 MockLocation 两项。
     -->
     <uses-permission
         android:name="android.permission.ACCESS_MOCK_LOCATION"
-        tools:ignore="ProtectedPermissions" />
+        tools:ignore="ProtectedPermissions,MockLocation" />
 
     <!--
       后台录音（录音录像工具）。
