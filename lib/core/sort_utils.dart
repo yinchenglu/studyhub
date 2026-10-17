@@ -65,8 +65,16 @@ List<DavEntry> sortEntries(List<DavEntry> list, SortPref pref) {
     //   1 = index / 目录 / 首页 / README / Home 类 → 次顶
     //   0 = 其它
     // 无论哪一级，都**排在文件夹前面**（用户明确要求）。
-    final aPin = _pinRank(a.name);
-    final bPin = _pinRank(b.name);
+    //
+    // v2.0.0+38：用户反馈「笔记库里的子文件夹本身也叫 01. / 02.」，
+    // 于是文件夹也算进了 2 档，同档比较时 isDir 又把文件夹顶回去，
+    // 置顶 md 白置顶了。改成：**只有「文件」参与置顶判定，目录一律记 0 档**。
+    // 于是最终顺序变成：
+    //   置顶文件（2 档） → 索引文件（1 档） → 文件夹 → 普通文件
+    // 文件夹内部排序不受影响（都是 0 档，照旧按 isDir 分不出高低，
+    // 靠名称/时间/大小排）。
+    final aPin = a.isDir ? 0 : _pinRank(a.name);
+    final bPin = b.isDir ? 0 : _pinRank(b.name);
     if (aPin != bPin) return bPin - aPin;
     if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
     int c;
