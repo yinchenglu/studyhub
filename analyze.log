@@ -1,0 +1,82 @@
+Analyzing studyhub...                                           
+
+   info • Use 'isNotEmpty' rather than negating the result of 'isEmpty'. Try rewriting the expression to use 'isNotEmpty' • lib/core/epub.dart:334:7 • prefer_is_not_empty
+   info • Use a function declaration rather than a variable assignment to bind a function to a name. Try rewriting the closure assignment as a function declaration • lib/core/utils.dart:25:9 • prefer_function_declarations_over_variables
+   info • Use interpolation to compose strings and values. Try using string interpolation to build the composite string • lib/data/dav/webdav_client.dart:71:18 • prefer_interpolation_to_compose_strings
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:210:20 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:211:19 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:213:17 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:214:24 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:220:24 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:230:26 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:233:22 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:234:21 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/data/local/db.dart:237:26 • unnecessary_string_interpolations
+   info • The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/services.dart'. Try removing the import directive • lib/data/local/video_thumb.dart:3:8 • unnecessary_import
+warning • Unnecessary cast. Try removing the cast • lib/data/repositories/quiz_repo.dart:171:57 • unnecessary_cast
+   info • Use the 'is!' operator rather than negating the value of the 'is' operator. Try rewriting the condition to use the 'is!' operator • lib/data/repositories/quiz_repo.dart:252:20 • prefer_is_not_operator
+   info • Use 'const' literals as arguments to constructors of '@immutable' classes. Try adding 'const' before the literal • lib/ui/home/server_guide_page.dart:119:19 • prefer_const_literals_to_create_immutables
+   info • Use interpolation to compose strings and values. Try using string interpolation to build the composite string • lib/ui/home/settings_page.dart:139:29 • prefer_interpolation_to_compose_strings
+   info • Unnecessary braces in a string interpolation. Try removing the braces • lib/ui/home/settings_page.dart:233:71 • unnecessary_brace_in_string_interps
+   info • 'groupValue' is deprecated and shouldn't be used. Use a RadioGroup ancestor to manage group value instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:462:19 • deprecated_member_use
+   info • 'onChanged' is deprecated and shouldn't be used. Use RadioGroup to handle value change instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:464:19 • deprecated_member_use
+   info • 'groupValue' is deprecated and shouldn't be used. Use a RadioGroup ancestor to manage group value instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:468:19 • deprecated_member_use
+   info • 'onChanged' is deprecated and shouldn't be used. Use RadioGroup to handle value change instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:470:19 • deprecated_member_use
+   info • 'groupValue' is deprecated and shouldn't be used. Use a RadioGroup ancestor to manage group value instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:474:19 • deprecated_member_use
+   info • 'onChanged' is deprecated and shouldn't be used. Use RadioGroup to handle value change instead. This feature was deprecated after v3.32.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • lib/ui/home/settings_page.dart:476:19 • deprecated_member_use
+   info • Use 'const' literals as arguments to constructors of '@immutable' classes. Try adding 'const' before the literal • lib/ui/home/settings_page.dart:574:33 • prefer_const_literals_to_create_immutables
+   info • Use 'const' for final variables initialized to a constant value. Try replacing 'final' with 'const' • lib/ui/media/player_page.dart:771:5 • prefer_const_declarations
+warning • Unused import: '../../data/dav/webdav_client.dart'. Try removing the import directive • lib/ui/notes/note_export.dart:13:8 • unused_import
+   info • The import of 'package:flutter/gestures.dart' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'. Try removing the import directive • lib/ui/notes/note_read_page.dart:2:8 • unnecessary_import
+   info • The import of 'package:flutter/services.dart' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'. Try removing the import directive • lib/ui/notes/note_read_page.dart:4:8 • unnecessary_import
+warning • Unused import: '../../data/dav/webdav_client.dart'. Try removing the import directive • lib/ui/notes/note_read_page.dart:11:8 • unused_import
+warning • Unused import: '../../data/repositories/note_repo.dart'. Try removing the import directive • lib/ui/notes/note_read_page.dart:14:8 • unused_import
+warning • Unused import: '../common/pdf_view_page.dart'. Try removing the import directive • lib/ui/notes/note_read_page.dart:16:8 • unused_import
+warning • Unused import: '../media/player_page.dart'. Try removing the import directive • lib/ui/notes/note_read_page.dart:18:8 • unused_import
+   info • 'imageBuilder' is deprecated and shouldn't be used. Use sizedImageBuilder instead. Try replacing the use of the deprecated member with the replacement • lib/ui/notes/note_read_page.dart:641:27 • deprecated_member_use
+warning • The value of the field '_loading' isn't used. Try removing the field, or using it • lib/ui/notes/note_read_page.dart:758:8 • unused_field
+warning • Unused import: '../../data/dav/webdav_client.dart'. Try removing the import directive • lib/ui/notes/notes_page.dart:10:8 • unused_import
+warning • The '!' will have no effect because the receiver can't be null. Try removing the '!' operator • lib/ui/notes/notes_page.dart:208:73 • unnecessary_non_null_assertion
+warning • The declaration '_hasSibs' isn't referenced. Try removing the declaration of '_hasSibs' • lib/ui/notes/reading_page.dart:164:12 • unused_element
+   info • Unnecessary braces in a string interpolation. Try removing the braces • lib/ui/notes/reading_page.dart:555:34 • unnecessary_brace_in_string_interps
+   info • Unnecessary braces in a string interpolation. Try removing the braces • lib/ui/notes/reading_page.dart:674:62 • unnecessary_brace_in_string_interps
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/ui/notes/reading_page.dart:921:26 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/ui/notes/reading_page.dart:930:26 • unnecessary_string_interpolations
+warning • The value of the local variable 'scheme' isn't used. Try removing the variable or using it • lib/ui/quiz/wrong_book_page.dart:122:11 • unused_local_variable
+warning • Unused import: '../../data/dav/webdav_client.dart'. Try removing the import directive • lib/ui/tools/server_files_page.dart:8:8 • unused_import
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/ui/tools/server_files_page.dart:144:42 • unnecessary_string_interpolations
+  error • Undefined name 'padding'. Try correcting the name to one that is defined, or defining the name • lib/ui/tools/server_html_tools.dart:258:11 • undefined_identifier
+  error • Expected to find ']' • lib/ui/tools/server_html_tools.dart:258:18 • expected_token
+warning • The declaration '_tile' isn't referenced. Try removing the declaration of '_tile' • lib/ui/tools/server_html_tools.dart:277:10 • unused_element
+   info • The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/services.dart'. Try removing the import directive • lib/ui/tools/tool_pages.dart:4:8 • unnecessary_import
+warning • Unused import: 'package:torch_light/torch_light.dart'. Try removing the import directive • lib/ui/tools/tool_pages.dart:27:8 • unused_import
+warning • Unused import: '../../data/local/db.dart'. Try removing the import directive • lib/ui/tools/tool_pages.dart:34:8 • unused_import
+warning • The value of the field '_denied' isn't used. Try removing the field, or using it • lib/ui/tools/tool_pages.dart:2472:8 • unused_field
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/ui/tools/tool_pages.dart:2568:32 • unnecessary_string_interpolations
+   info • Unnecessary braces in a string interpolation. Try removing the braces • lib/ui/tools/tool_pages.dart:2628:21 • unnecessary_brace_in_string_interps
+   info • 'scale' is deprecated and shouldn't be used. Use scaleByVector3, scaleByVector4, or scaleByDouble instead. Try replacing the use of the deprecated member with the replacement • lib/ui/tools/tool_pages.dart:3360:27 • deprecated_member_use
+   info • The import of 'dart:ui' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'. Try removing the import directive • lib/ui/tools/tool_pages_compass.dart:7:8 • unnecessary_import
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/ui/tools/tool_pages_compass.dart:536:30 • unnecessary_string_interpolations
+   info • Unnecessary use of string interpolation. Try replacing the string literal with the variable name • lib/ui/tools/tool_pages_compass.dart:537:30 • unnecessary_string_interpolations
+   info • Use the '??' operator rather than '?:' when testing for 'null'. Try rewriting the code to use '??' • lib/ui/tools/tool_pages_convert.dart:191:36 • prefer_if_null_operators
+   info • The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/services.dart'. Try removing the import directive • lib/ui/tools/tool_pages_ext.dart:8:8 • unnecessary_import
+   info • Use interpolation to compose strings and values. Try using string interpolation to build the composite string • lib/ui/tools/tool_pages_ext.dart:1488:7 • prefer_interpolation_to_compose_strings
+   info • The private field _carrier could be 'final'. Try making the field 'final' • lib/ui/tools/tool_pages_ext.dart:2571:10 • prefer_final_fields
+warning • The value of the field '_carrier' isn't used. Try removing the field, or using it • lib/ui/tools/tool_pages_ext.dart:2571:10 • unused_field
+   info • Invalid use of a private type in a public API. Try making the private type public, or making the API that uses the private type also be private • lib/ui/tools/tool_pages_ph.dart:306:6 • library_private_types_in_public_api
+   info • Use 'const' for final variables initialized to a constant value. Try replacing 'final' with 'const' • lib/ui/tools/tool_pages_ph.dart:399:5 • prefer_const_declarations
+warning • The value of the local variable 'restProt' isn't used. Try removing the variable or using it • lib/ui/tools/tool_pages_ph2.dart:944:9 • unused_local_variable
+   info • The import of 'dart:ui' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'. Try removing the import directive • lib/ui/tools/tool_pages_recorder.dart:5:8 • unnecessary_import
+   info • Statements in an if should be enclosed in a block. Try wrapping the statement in a block • lib/ui/tools/tool_pages_recorder.dart:297:22 • curly_braces_in_flow_control_structures
+   info • Invalid use of a private type in a public API. Try making the private type public, or making the API that uses the private type also be private • lib/ui/tools/tool_pages_sudoku.dart:97:12 • library_private_types_in_public_api
+   info • Unnecessary braces in a string interpolation. Try removing the braces • lib/ui/tools/tool_pages_sudoku.dart:1114:23 • unnecessary_brace_in_string_interps
+   info • Use interpolation to compose strings and values. Try using string interpolation to build the composite string • lib/ui/tools/tool_pages_sudoku.dart:1148:17 • prefer_interpolation_to_compose_strings
+   info • Use 'const' for final variables initialized to a constant value. Try replacing 'final' with 'const' • lib/ui/tools/tool_pages_sudoku.dart:1451:5 • prefer_const_declarations
+   info • The local variable '_isIllegal' starts with an underscore. Try renaming the variable to not start with an underscore • lib/ui/tools/tool_pages_sudoku.dart:1530:10 • no_leading_underscores_for_local_identifiers
+warning • The value of the local variable 'n' isn't used. Try removing the variable or using it • lib/ui/tools/tool_pages_sudoku.dart:1624:11 • unused_local_variable
+   info • Use a function declaration rather than a variable assignment to bind a function to a name. Try rewriting the closure assignment as a function declaration • lib/ui/tools/tool_pages_sudoku.dart:1907:11 • prefer_function_declarations_over_variables
+   info • Use a function declaration rather than a variable assignment to bind a function to a name. Try rewriting the closure assignment as a function declaration • lib/ui/tools/tool_pages_sudoku.dart:1979:11 • prefer_function_declarations_over_variables
+   info • The import of 'dart:ui' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/material.dart'. Try removing the import directive • lib/ui/tools/tool_pages_v15.dart:4:8 • unnecessary_import
+   info • Unnecessary braces in a string interpolation. Try removing the braces • lib/ui/tools/tool_pages_v15.dart:816:34 • unnecessary_brace_in_string_interps
+
+78 issues found. (ran in 13.1s)
