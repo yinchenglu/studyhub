@@ -90,10 +90,18 @@ List<DavEntry> sortEntries(List<DavEntry> list, SortPref pref) {
   return out;
 }
 
-/// v1.9.0：检测文件名是否以「数字. 」或「数字.」开头 —— 「1.首页.md」/「01. 索引.md」都中。
+/// v1.9.0：检测文件名是否以「数字.」开头 —— 「1.首页.md」/「01. 索引.md」都中。
 /// 用于笔记列表里把索引/首页类 md 顶到第一位。
+///
+/// v2.0.0+35：用户反馈「没有实现」。排查发现标准半角「数字.」是能中的，
+/// 失效的是这些变体命名：
+///   * 全角点「１．首页.md」/「1．首页.md」
+///   * 顿号「1、首页.md」
+///   * 「数字 + 空格」开头（01 前言.md）—— 这个不加，误伤太大（「2024 报告.md」）
+/// 现在全角点 / 顿号也认。半角/全角数字都支持。
 bool _isPinnedName(String name) {
-  final m = RegExp(r'^\d+\.\s?').firstMatch(name);
+  // [.．、] = 半角点 / 全角点 / 顿号；\s? 允许点后带一个空格
+  final m = RegExp(r'^[\d０-９]+\s?[.．、]\s?').firstMatch(name);
   return m != null;
 }
 

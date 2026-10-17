@@ -400,6 +400,10 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
               final list = _sortedTools(c);
               final cellW = (cons.maxWidth - 12) / 3;
               return GridView.builder(
+                // v2.0.0+35：不写 padding 时 GridView 会吃 MediaQuery 的
+                // 导航栏底部安全区（三键导航约 48px），把分类之间的空白撑大。
+                // 与 server_html_tools.dart 同一天修的同一个坑。
+                padding: EdgeInsets.zero,
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 itemCount: list.length,
@@ -630,25 +634,25 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
 /// 工具名 → 页面。放在一处，加新工具只要改这里。
 Widget toolPageOf(String name) {
   switch (name) {
-    case '直尺':
+    case '直尺测量':
       return const RulerPage();
-    case '量角器':
+    case '角度测量':
       return const ProtractorPage();
     case '噪声测量':
       return const NoiseMeterPage();
-    case '屏幕坏点检测':
+    case '屏幕检测':
       return const DeadPixelPage();
     case '番茄时钟':
       return const PomodoroPage();
     case '日期计算':
       return const DateCalcPage();
-    case '时间戳转换':
+    case '时间戳转':
       return const TimestampPage();
-    case '提词器':
+    case '提词工具':
       return const TeleprompterPage();
     case '配色助手':
       return const ColorSchemeHelperPage();
-    case '颜色码转换':
+    case '颜色转换':
       return const ColorConvertPage();
     case '挂画助手':
       return const LevelHelperPage();
@@ -656,63 +660,63 @@ Widget toolPageOf(String name) {
       return const MorsePage();
     case '加密编码':
       return const CipherPage();
-    case '二维码生成':
+    case '二维码生':
       return const QrToolPage();
     case '应用管理':
       return const AppManagerPage();
-    case 'LED 屏幕':
+    case 'LED屏幕':
       return const LedMarqueePage();
-    case 'SOS 手电筒':
+    case '急救手电':
       return const SosTorchPage();
-    case '抛硬币':
+    case '抛掷硬币':
       return const CoinFlipPage();
     case '简易画板':
       return const SketchPadPage();
     case '快递查询':
       return const ExpressQueryPage();
-    case '消杀计算器':
+    case '消杀计算':
       return const DisinfectCalcPage();
-    case '翻译':
+    case '翻译查词':
       return const TranslatePage();
     // ---- v1.5.0 ----
-    case '高级计算器':
+    case '高级计算':
       return const AdvCalcPage();
-    case 'CIDR 子网计算':
+    case '子网计算':
       return const CidrCalcPage();
-    case '地图坐标转换':
+    case '坐标转换':
       return const CoordinateConvertPage();
-    case '公共卫生统计':
+    case '卫生统计':
       return const EpiStatsPage();
-    case '病例对照研究':
+    case '对照研究':
       return const CaseControlPage();
     case '队列研究':
       return const CohortPage();
-    case '食物中毒分析':
+    case '食物中毒':
       return const FoodPoisoningPage();
-    case 'Logistic 回归':
+    case '回归分析':
       return const LogisticPage();
     case '营养配餐':
       return const NutritionPage();
     // ---- v1.6.0 新增的四个公卫工具 ----
-    case '杀虫剂流量计算':
+    case '流量计算':
       return const SprayFlowPage();
-    case '实时再生指数 Rt':
+    case '再生指数':
       return const RtPage();
     case '分层分析':
       return const StratifiedPage();
     case '交互作用':
       return const InteractionPage();
-    case '条码生成器':
+    case '条码生成':
       return const BarcodePage();
-    case '身份证查户籍':
+    case '身份户籍':
       return const IdCardPage();
-    case '文件夹同步':
+    case '文件同步':
       return const FolderSyncPage();
     case '翻页时钟':
       return const FlipClockPage();
-    case '指南针':
+    case '指南海拔':
       return const CompassPage();
-    case '后台录音录像':
+    case '后台录像':
       return const AudioRecorderPage();
     // ---- v1.9.0+28 数独练习（原「数独」改名；路路词典已下架改网页版） ----
     case '数独练习':
@@ -724,7 +728,18 @@ Widget toolPageOf(String name) {
     case '单位换算':
       return const UnitConvertPage();
     default:
-      return const Scaffold(body: Center(child: Text('这个工具还没做好')));
+      // v2.0.0+35 防呆：走到这里 = _ToolDef 的名字和 case 对不上
+      // （改名只改了一处）。把名字显示出来，一眼看出是哪个漏配了。
+      return Scaffold(
+        body: Center(
+          child: Text(
+            '「$name」还没有绑定页面\n'
+            '（tools_page.dart 的 switch 里少了 case \'$name\'）',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.red),
+          ),
+        ),
+      );
   }
 }
 

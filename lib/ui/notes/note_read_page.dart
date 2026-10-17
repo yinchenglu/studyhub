@@ -322,12 +322,16 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
     final dx = e.position.dx - s.dx;
     final dy = e.position.dy - s.dy;
     final ms = DateTime.now().difference(t0).inMilliseconds;
-    // 长按（选字/放大镜）不算翻篇
-    if (ms > 600) return;
-    // 位移太小当点击
-    if (dx.abs() < 80) return;
-    // 斜得厉害当纵向滚动
-    if (dx.abs() < dy.abs() * 2) return;
+    // v2.0.0+35 放宽判定（用户反馈单屏 md 还是滑不动）：
+    //   原来 600ms 上限把「慢速拖动」全杀了 —— 用户单指慢慢划过 80px
+    //   往往要 700~1200ms，被当成「长按选字」排除掉。
+    //   真正的长按选字一般 > 1.5s 且位移小，1500ms 足够区分。
+    if (ms > 1500) return;
+    // 位移太小当点击（80 → 60：短屏快甩也容易够到）
+    if (dx.abs() < 60) return;
+    // 斜得厉害当纵向滚动（原来要求横向位移 > 2×纵向，太严；
+    // 现在只要横向比纵向大就算翻篇意图）
+    if (dx.abs() <= dy.abs()) return;
     // 右划（dx>0）= 上一篇，左划 = 下一篇（与原 onHorizontalDragEnd 方向一致）
     _siblingStep(dx > 0 ? -1 : 1);
   }

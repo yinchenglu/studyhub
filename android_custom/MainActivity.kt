@@ -422,6 +422,44 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "pickFiles" -> pickAnyFiles(result)
+                    // v2.0.0+35：精准跳转本 App 的「所有文件访问」系统设置页。
+                    // permission_handler 的 manageExternalStorage.request() 在很多
+                    // ROM 上只返回 denied 并不跳转，用户根本没机会授权 →
+                    // 「设置 → 下载目录」永远探针失败。这里直接发 Intent：
+                    // Android 11+ 用 ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION
+                    // （带 package uri，直达本 App 的开关）；
+                    // 更低版本没有这个页面，退到应用详情页让用户自己找权限。
+                    "openAllFilesAccess" -> {
+                        try {
+                            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    Uri.parse("package:$packageName")
+                                )
+                            } else {
+                                Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:$packageName")
+                                )
+                            }
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (t: Throwable) {
+                            // 个别定制 ROM 不认这个 action，退到应用详情
+                            try {
+                                startActivity(
+                                    Intent(
+                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.parse("package:$packageName")
+                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                                result.success(true)
+                            } catch (t2: Throwable) {
+                                result.success(false)
+                            }
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }

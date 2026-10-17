@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/constants.dart';
+import '../../core/permissions.dart';
 import '../../core/utils.dart';
 import '../../data/local/db.dart';
 import '../../data/local/settings_store.dart';
@@ -787,28 +788,103 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     );
     if (result == null || result == '__cancel__') return;
 
-    // 试建目录并写一个探针文件，确认真的可写
+    // 试建目录并写一个探针文件，确认真的可写。
+    // v2.0.0+35：写公共目录（下载等）前**先申请权限** —— 以前是探针失败
+    // 直接报「写不进去」，用户根本没机会授权（Android 11+ 的
+    // 「所有文件访问」得跳系统设置页，permission_handler 的 request()
+    // 在很多 ROM 上不跳）。现在的流程：
+    //   探针失败 → 弹说明框 → 原生跳「所有文件访问」页 → 用户开好回来
+    //   点「我已开启」→ 复查 → 授权了再探针保存。
     final target = result.isEmpty ? sysPath : result;
-    try {
-      final d = Directory(target);
-      if (!await d.exists()) await d.create(recursive: true);
-      final probe = File(p.join(d.path, '.studyhub_write_test'));
-      await probe.writeAsString('ok');
-      if (await probe.exists()) await probe.delete();
-    } catch (e) {
+    // 应用专属目录不需要任何权限，跳过申请
+    final isAppPrivate = target.startsWith(appPath);
+    var probed = false;
+    String? savedTarget; // 「改用应用专属目录」时被设为 appPath
+    for (var attempt = 0; attempt < 2 && !probed; attempt++) {
+      try {
+        final d = Directory(target);
+        if (!await d.exists()) await d.create(recursive: true);
+        final probe = File(p.join(d.path, '.studyhub_write_test'));
+        await probe.writeAsString('ok');
+        if (await probe.exists()) await probe.delete();
+        probed = true;
+        break;
+      } catch (_) {
+        // 写不进去：第一次失败时先走权限申请，第二次仍失败才报错
+        if (attempt == 1 || isAppPrivate) break;
+        if (!mounted) return;
+        final go = await showDialog<String>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('需要「所有文件访问」权限'),
+            content: Text(
+              '「$target」在公共存储里，Android 11 以后写入它需要给学聚开启'
+              '「所有文件访问」权限。\n\n'
+              '点「去开启」会跳到系统设置页，把开关打开后回来，'
+              '再点「我已开启」就能保存。\n\n'
+              '不想给权限的话，可以改用「应用专属目录」（不需要任何权限）。'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, '__cancel__'), child: const Text('取消')),
+              TextButton(onPressed: () => Navigator.pop(ctx, '__app__'), child: const Text('改用应用专属目录')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, '__go__'), child: const Text('去开启')),
+            ],
+          ),
+        );
+        if (!mounted) return;
+        if (go == '__app__') {
+          // 直接换到应用专属目录，重新探针（一定写得进）
+          final d2 = Directory(appPath);
+          if (!await d2.exists()) await d2.create(recursive: true);
+          final probe2 = File(p.join(d2.path, '.studyhub_write_test'));
+          await probe2.writeAsString('ok');
+          if (await probe2.exists()) await probe2.delete();
+          savedTarget = appPath;
+          probed = true;
+          break;
+        }
+        if (go != '__go__') return;
+        // 跳系统授权页
+        await ensureAllFilesAccessWithUi();
+        if (!mounted) return;
+        // 用户回来后确认再复查 —— 不确认就查不到（页面刚打开还没开）
+        final recheck = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('开启好了吗？'),
+            content: const Text('在系统设置里把「所有文件访问」开关打开后，点「我已开启」。'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('还没')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('我已开启')),
+            ],
+          ),
+        );
+        if (recheck != true || !mounted) return;
+        final granted = await ensureStoragePermission();
+        if (!granted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('还没拿到「所有文件访问」权限。'
+                '可以再试一次，或改用「应用专属目录」（不需要权限）。')),
+          );
+          return;
+        }
+      }
+    }
+    if (!probed) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('这个目录写不进去，换一个试试：$e')),
+          SnackBar(content: Text('这个目录写不进去（权限或路径有问题），换一个试试：$target')),
         );
       }
       return;
     }
+    // 「改用应用专属目录」路径下 target 已被换成 appPath
+    final finalTarget = savedTarget ?? target;
 
-    await SettingsStore.instance.setDownloadDirPath(result.isEmpty ? null : result);
+    await SettingsStore.instance.setDownloadDirPath(savedTarget != null ? appPath : (result.isEmpty ? null : result));
     CacheManager.instance.resetDownloadDirCache();
     await _load();
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载目录已改为 $target')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载目录已改为 $finalTarget')));
     }
   }
 

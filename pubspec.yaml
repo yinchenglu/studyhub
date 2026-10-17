@@ -44,7 +44,9 @@ publish_to: 'none'
 #                                 README 加第十六章「位置速查」
 #   v2.0.0+34 → 1034 / 2034   ← 修 CI 挂：ACCESS_MOCK_LOCATION 触发 Lint MockLocation 检查（lintVitalRelease 判死），
 #                                 清单豁免列表补 MockLocation
-version: 2.0.0+34
+#   v2.0.0+35 → 1035 / 2035   ← 修「下载目录改不了」：保存时主动申请「所有文件访问」+ 原生跳授权页（studyhub/files.openAllFilesAccess）；
+#                                 修工具改名后 case 分发对不上（44 个 case 对齐 + default 防呆显示漏配名字）
+version: 2.0.0+35
 environment:
   # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps
   # 要 >=3.12，取最大值。

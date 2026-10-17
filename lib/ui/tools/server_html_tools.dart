@@ -249,20 +249,25 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
           // 一行 3 个、图标与文字同一排、格子高度用 mainAxisExtent 钉死 34。
           // 之前用的是 childAspectRatio，高度会随屏幕宽度变，「压缩行距」看运气。
           // v1.8.0：行间距 6 → 5，配合上面的留白一起收紧。
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _groups[k]!.length,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                mainAxisExtent: 34,
-                mainAxisSpacing: 5,
-                crossAxisSpacing: 6,
-              ),
-              itemBuilder: (_, i) => _tile(_groups[k]![i], scheme),
+          // v2.0.0+35 修「类别之间留一大段空白」的真根因：
+          // GridView 不写 padding 时默认吃 **MediaQuery.paddingOf** ——
+          // Scaffold body 里的 MediaQuery 带着系统导航栏的底部安全区
+          //（三键导航约 48px），**每个分类的格子底部都被垫了 48px**，
+          // 五个分类就是 200 多px 的空白，看起来像类别之间特意留白。
+          // 显式给 EdgeInsets.zero 掐掉。v1.8.0 砍标题留白没砍对地方。
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+          child: GridView.builder(
+            padding: EdgeInsets.zero,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _groups[k]!.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              mainAxisExtent: 34,
+              mainAxisSpacing: 5,
+              crossAxisSpacing: 6,
             ),
+            itemBuilder: (_, i) => _tile(_groups[k]![i], scheme),
           ),
         ],
       ],

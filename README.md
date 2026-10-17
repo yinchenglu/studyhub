@@ -426,13 +426,30 @@ quiz/单词/英语四级核心词.json
     压不到居中的数字，改成直接全画。
 - 文件 `lib/ui/tools/tool_pages_sudoku.dart`（~2100 行）
 
-### 路路词典（v1.9.0+20 建 → v1.9.0+28 移出 App）
+### 路路词典（v1.9.0+20 建 → v1.9.0+28 移出 App → v2.0.0+35 重写成真词典）
 - **已从 App 内下架**，改为**网页版小工具**：`网页版小工具/路路词典.html`
   （同时登记在 `网页版小工具/index.html` 的「生活与娱乐」分类）
-- 功能（网页版与原来一致，数据存浏览器 `localStorage`）：
-  多词库（内置常用英文 500 词 + 导入 `.txt` / `.csv` + 手动加词）、
-  模糊查词（exact → prefix → substring）、生词本（可导出 .txt）、历史 100 条、
-  词库启停 / 改名 / 删除、剪贴板导入
+- **v2.0.0+35 整个重写**：不再内置小词库，改成查**自己导入的词典文件**，
+  纯本地、不联网：
+  - ✅ 支持 `.mdx`（MDX v1.2 / v2.0，zlib / lzo / 无压缩三种块压缩全支持）、
+    `.mdd`（释义里的 css / 图片 / 发音音频按需解压）、
+    `.tar.gz / .tgz / .gz`（自动解包取出里面的 mdx / mdd）
+  - ❌ `.eudic` / `.ld2` / `.bgl` 是欧路等软件的**闭源格式、无公开文档**，
+    浏览器解析不了（页面里也写明了）；同名词典几乎都有 mdx 版
+  - 词典文件存浏览器 **IndexedDB**（几百 MB 也放得下），导入一次以后直接用；
+    换浏览器 / 清数据需要重新导入
+  - 功能：精确查词（同词多条全出）、输入联想（前缀二分）、生词本、查词历史
+    （localStorage）、多词典同查、释义用 iframe 隔离渲染（词典 css 不污染页面）
+  - 实现要点（改它之前先看）：
+    * 全部整数字段是 **big-endian**；v2.0 用 8 字节整数、v1.2 用 4 字节；
+      key index 在 v2.0 有 `"2000"` 魔数 + adler + zlib 包装，v1.2 不压缩
+    * 块压缩类型：0=无 1=lzo 2=zlib；lzo 是裸 LZO1X 流（无 0xF0 文件头）
+    * LZO 解压内嵌 **MIT 许可的 clean-room 纯 JS 实现**（npm `lzo1x@1.0.1`，
+      只取解压部分）；zlib / gzip 用浏览器原生 `DecompressionStream`
+      （`'deflate'` 就是 zlib 包装）
+    * ⚠️ 内嵌解压器把原包 `extra > 262144` 的长度防护放宽到了 64MB ——
+      原值太保守，大块连续重复数据（mdd 里的全零填充）会被误杀
+    * key block 里的词条：`[u64 recordOffset][keyText][\0]`，UTF-16 词典按 2 字节对齐切
 - App 侧删除文件：`lib/ui/tools/tool_pages_dict.dart`（约 990 行），
   并从 `tools_page.dart` 移除入口与分发分支
 - 注意：`lib/ui/tools/dict_view.dart` **不是**这个词典，它是「翻译」工具的一部分，保留
@@ -796,6 +813,25 @@ studyhub_app/
     - 数独一次 1700 行没跑 analyze，导致 5 个 commit 连续编译失败
     - 本地没有 Flutter SDK 时，至少 `grep` 复核：重复的 `initState`、final 字段被赋值、
       `Border.all` 喂给 `side`、`List<int>.fill(0)` 这类不存在的 API
+
+15. **写公共目录（下载等）必须主动带用户走权限**（v2.0.0+35）
+    - `permission_handler` 的 `Permission.manageExternalStorage.request()` 在很多
+      ROM 上**只返回 denied、不跳任何页面** —— 用户根本没机会授权，
+      表现就是「下载目录改不了 / 下载失败」
+    - 修法：原生 Intent 直达本 App 的开关页
+      （`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` + `package:` uri，
+      见 `MainActivity.kt` 的 `studyhub/files` 通道 `openAllFilesAccess`），
+      跳完弹「我已开启」确认框再复查权限
+    - 授权时机放在**用户主动保存下载目录**时（探针失败 → 申请 → 复查 → 再探针），
+      不要放进下载热路径（突然跳系统页太打断）
+
+16. **改内置工具名必须同步改 `case`**（v2.0.0+35 修）
+    - `tools_page.dart` 里 `_ToolDef('名字', …)` 和底部 `switch (name)` 的
+      `case '名字':` 是**两处独立的名字**，只改一处 → 落进 default，
+      点开提示「还没做好」
+    - 现在 default 会直接显示对不上的名字，一眼定位漏配了哪个
+    - 验证方法：`grep -oE "_ToolDef\\('([^']+)'" tools_page.dart` 和
+      `grep -oE "case '([^']+)'"` 的名单 diff 一下必须为空
 
 ---
 
