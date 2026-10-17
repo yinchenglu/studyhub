@@ -254,10 +254,9 @@ class _ServerHtmlToolsPageState extends ConsumerState<ServerHtmlToolsPage> {
           // Scaffold body 里的 MediaQuery 带着系统导航栏的底部安全区
           //（三键导航约 48px），**每个分类的格子底部都被垫了 48px**，
           // 五个分类就是 200 多px 的空白，看起来像类别之间特意留白。
-          // 显式给 EdgeInsets.zero 掐掉。v1.8.0 砍标题留白没砍对地方。
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-          child: GridView.builder(
-            padding: EdgeInsets.zero,
+          // 显式给 padding 掐掉安全区（水平 16 交给 GridView 自己的 padding）。
+          GridView.builder(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: _groups[k]!.length,
