@@ -1,10 +1,12 @@
 package __PACKAGE__
 
+import android.annotation.SuppressLint
 import android.app.AppOpsManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -18,6 +20,7 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.location.Criteria
+import android.location.Geocoder
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -33,8 +36,12 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.CallLog
+import android.provider.ContactsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.telephony.SubscriptionManager
 import android.util.DisplayMetrics
 import android.util.Size
 import android.view.Surface
@@ -463,6 +470,71 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // ============================================================ 通话记录
+        // v2.0.0+37：批量写入通话记录（「通话记录生成」工具）。
+        //
+        // 为什么放原生：CallLog 是系统 ContentProvider，Dart 没有对等能力。
+        // 权限：WRITE_CALL_LOG（危险权限，普通应用可申请）；
+        //       读通讯录走 READ_CONTACTS。
+        // 注意：Android 并不校验号码是否真实存在，只按字段写库；
+        //       部分 ROM 上 phone_account_id / simid 会被忽略，卡号标记可能不生效
+        //       （不影响记录写入，只影响「卡1/卡2」那个小标签）。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CALLLOG_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "status" -> result.success(callLogStatus())
+                    "requestPermissions" -> {
+                        requestCallLogPermissions()
+                        result.success(callLogStatus())
+                    }
+                    "contacts" -> readContacts(result)
+                    "sims" -> result.success(simInfos())
+                    "insert" -> {
+                        val raw = call.argument<List<Any?>>("items") ?: emptyList()
+                        val items = ArrayList<Map<String, Any?>>()
+                        for (x in raw) {
+                            @Suppress("UNCHECKED_CAST")
+                            if (x is Map<*, *>) items.add(x as Map<String, Any?>)
+                        }
+                        insertCallLogs(items, result)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // ============================================================ 水印相机辅助
+        // v2.0.0+37：给「水印相机」工具提供三件事
+        //   1) saveImage：把 Dart 用 RepaintBoundary 合成好的 JPEG 存进相册
+        //      （Android 10+ 走 MediaStore + RELATIVE_PATH，不需要存储权限）
+        //   2) location：取一次当前定位（含海拔/精度），室内拿不到时给失败文案
+        //   3) geocode：经纬度 → 中文地址（Geocoder，需要网络；失败返回空串）
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CAMERA_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "saveImage" -> {
+                        val bytes = call.argument<ByteArray>("bytes")
+                        val name = call.argument<String>("name") ?: "watermark.jpg"
+                        val mime = call.argument<String>("mime") ?: "image/jpeg"
+                        if (bytes == null || bytes.isEmpty()) {
+                            result.error("bad_args", "缺少图片数据", null)
+                        } else {
+                            saveImageToGallery(bytes, name, mime, result)
+                        }
+                    }
+                    "location" -> currentLocationOnce(result)
+                    "geocode" -> {
+                        val lat = (call.argument<Any>("lat") as? Number)?.toDouble()
+                        val lng = (call.argument<Any>("lng") as? Number)?.toDouble()
+                        if (lat == null || lng == null) {
+                            result.success("")
+                        } else {
+                            reverseGeocode(lat, lng, result)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     override fun onDestroy() {
@@ -470,6 +542,283 @@ class MainActivity : FlutterActivity() {
         // 选择器还开着就被销毁了，把回调清掉，别拿着一个死掉的 result
         pendingPick = null
         super.onDestroy()
+    }
+
+    // ---------------------------------------------------------- 通话记录生成
+
+    private fun hasCallLogWrite(): Boolean =
+        checkSelfPermission(android.Manifest.permission.WRITE_CALL_LOG) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun hasReadContacts(): Boolean =
+        checkSelfPermission(android.Manifest.permission.READ_CONTACTS) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun callLogStatus(): Map<String, Any?> = mapOf(
+        "writeCallLog" to hasCallLogWrite(),
+        "readContacts" to hasReadContacts(),
+        "sims" to simInfos()
+    )
+
+    private fun requestCallLogPermissions() {
+        val need = ArrayList<String>()
+        if (!hasCallLogWrite()) need.add(android.Manifest.permission.WRITE_CALL_LOG)
+        if (!hasReadContacts()) need.add(android.Manifest.permission.READ_CONTACTS)
+        if (need.isEmpty()) return
+        requestPermissions(need.toTypedArray(), CALLLOG_PERM_CODE)
+    }
+
+    /// 双卡信息。activeSubscriptionInfoList 在部分 ROM / 未授权时直接抛
+    /// SecurityException，所以整段 try 住，拿不到就返回空（Dart 侧只有「默认卡」）。
+    @SuppressLint("MissingPermission")
+    private fun simInfos(): List<Map<String, Any?>> {
+        val out = ArrayList<Map<String, Any?>>()
+        try {
+            val sm = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE)
+                as? SubscriptionManager ?: return out
+            val list = sm.activeSubscriptionInfoList ?: return out
+            for (si in list) {
+                out.add(
+                    mapOf(
+                        "id" to si.subscriptionId,
+                        "label" to (si.displayName?.toString() ?: "卡${out.size + 1}"),
+                        "slot" to (si.simSlotIndex + 1)
+                    )
+                )
+            }
+        } catch (_: Throwable) {
+        }
+        return out
+    }
+
+    /// 读通讯录（姓名 + 号码）。最多 3000 条，够批量选号用；
+    /// 号码里除数字和 + 以外的字符（空格、横线、括号）全部剥掉，
+    /// 否则写进 CallLog 会显示成「138-1234-5678」这种。
+    private fun readContacts(result: MethodChannel.Result) {
+        if (!hasReadContacts()) {
+            result.error("no_perm", "还没给通讯录权限", null)
+            return
+        }
+        Thread {
+            val out = ArrayList<Map<String, Any?>>()
+            try {
+                val proj = arrayOf(
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                    ContactsContract.CommonDataKinds.Phone.NUMBER
+                )
+                contentResolver.query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    proj,
+                    null,
+                    null,
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+                )?.use { c ->
+                    while (c.moveToNext() && out.size < 3000) {
+                        val n = c.getString(0) ?: ""
+                        val p = c.getString(1) ?: ""
+                        if (p.isBlank()) continue
+                        out.add(mapOf("name" to n, "number" to p.replace(Regex("[^0-9+]"), "")))
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+            Handler(Looper.getMainLooper()).post { result.success(out) }
+        }.start()
+    }
+
+    /// 批量写通话记录。
+    ///
+    /// items 每项：number / type（1 呼入, 2 呼出, 3 未接）/ date(ms) /
+    ///            duration(秒) / name / simId（-1 = 不标卡）
+    ///
+    /// 起子线程：ContentResolver 批量 insert 是 IO，几十条在主线程会明显卡顿。
+    @SuppressLint("MissingPermission")
+    private fun insertCallLogs(items: List<Map<String, Any?>>, result: MethodChannel.Result) {
+        if (!hasCallLogWrite()) {
+            result.error("no_perm", "还没给「写入通话记录」权限", null)
+            return
+        }
+        Thread {
+            var ok = 0
+            var fail = 0
+            val errs = ArrayList<String>()
+            val cr = contentResolver
+            for (a in items) {
+                try {
+                    val number = a["number"]?.toString()?.trim() ?: ""
+                    if (number.isEmpty()) {
+                        fail++
+                        continue
+                    }
+                    val type = (a["type"] as? Number)?.toInt() ?: CallLog.Calls.OUTGOING_TYPE
+                    val date = (a["date"] as? Number)?.toLong() ?: System.currentTimeMillis()
+                    val duration = (a["duration"] as? Number)?.toLong() ?: 0L
+                    val name = a["name"]?.toString()
+                    val simId = (a["simId"] as? Number)?.toInt() ?: -1
+
+                    val values = ContentValues()
+                    values.put(CallLog.Calls.NUMBER, number)
+                    values.put(CallLog.Calls.TYPE, type)
+                    values.put(CallLog.Calls.DATE, date)
+                    values.put(CallLog.Calls.DURATION, duration)
+                    values.put(CallLog.Calls.NEW, if (type == CallLog.Calls.MISSED_TYPE) 1 else 0)
+                    values.put(CallLog.Calls.IS_READ, 1)
+                    if (!name.isNullOrBlank()) values.put(CallLog.Calls.CACHED_NAME, name)
+                    if (simId >= 0) {
+                        // AOSP 的 simid 列 + 部分 ROM 的 phone_account_id；
+                        // 都不是公开 API，写不进去会被忽略，不影响整条记录。
+                        try {
+                            values.put("simid", simId)
+                        } catch (_: Throwable) {
+                        }
+                        try {
+                            values.put("phone_account_id", simId.toString())
+                        } catch (_: Throwable) {
+                        }
+                    }
+                    val uri = cr.insert(CallLog.Calls.CONTENT_URI, values)
+                    if (uri != null) ok++ else fail++
+                } catch (t: Throwable) {
+                    fail++
+                    if (errs.size < 3) errs.add(t.message ?: t.toString())
+                }
+            }
+            val out = mapOf("ok" to ok, "fail" to fail, "errors" to errs)
+            Handler(Looper.getMainLooper()).post { result.success(out) }
+        }.start()
+    }
+
+    // ---------------------------------------------------------- 水印相机辅助
+
+    /// 存一张 JPEG 到相册。
+    ///
+    /// Android 10+ 用 MediaStore + RELATIVE_PATH（Pictures/学聚水印），
+    /// **不需要任何存储权限**；9 及以下走老的 external 目录（清单里已有
+    /// WRITE_EXTERNAL_STORAGE）。
+    private fun saveImageToGallery(
+        bytes: ByteArray,
+        name: String,
+        mime: String,
+        result: MethodChannel.Result
+    ) {
+        Thread {
+            try {
+                val cr = contentResolver
+                val values = ContentValues()
+                values.put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                values.put(MediaStore.Images.Media.MIME_TYPE, mime)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    values.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/学聚水印")
+                    values.put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = cr.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: throw RuntimeException("相册里创建条目失败（存储不可用？）")
+                val os = cr.openOutputStream(uri)
+                    ?: throw RuntimeException("打开相册条目失败")
+                os.use { it.write(bytes) }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val done = ContentValues()
+                    done.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    cr.update(uri, done, null, null)
+                }
+                Handler(Looper.getMainLooper()).post { result.success(uri.toString()) }
+            } catch (t: Throwable) {
+                Handler(Looper.getMainLooper())
+                    .post { result.error("save_failed", t.message ?: "保存失败", null) }
+            }
+        }.start()
+    }
+
+    /// 取一次当前定位。
+    ///
+    /// 先看缓存（getLastKnownLocation，秒回）；没有就注册一次更新，
+    /// 拿到第一条立即返回，10 秒还没拿到就报失败（室内 GPS 弱时很正常，
+    /// 让用户手输地点比一直转圈强）。
+    @SuppressLint("MissingPermission")
+    private fun currentLocationOnce(result: MethodChannel.Result) {
+        if (!hasLocationPermission()) {
+            result.error("no_perm", "还没给定位权限", null)
+            return
+        }
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val last = lastKnown(lm)
+        if (last != null) {
+            result.success(locToMap(last))
+            return
+        }
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        val listener = object : LocationListener {
+            override fun onLocationChanged(l: Location) {
+                if (done.compareAndSet(false, true)) {
+                    try {
+                        lm.removeUpdates(this)
+                    } catch (_: Throwable) {
+                    }
+                    result.success(locToMap(l))
+                }
+            }
+
+            override fun onProviderEnabled(provider: String) {}
+            override fun onProviderDisabled(provider: String) {}
+
+            @Deprecated("Deprecated in API 29")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+        }
+        try {
+            lm.requestLocationUpdates(
+                LocationManager.NETWORK_PROVIDER, 0L, 0f, listener, Looper.getMainLooper()
+            )
+            if (lm.allProviders.contains(LocationManager.GPS_PROVIDER)) {
+                lm.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER, 0L, 0f, listener, Looper.getMainLooper()
+                )
+            }
+        } catch (t: Throwable) {
+            if (done.compareAndSet(false, true)) {
+                result.success(mapOf("ok" to false, "msg" to (t.message ?: "定位不可用")))
+            }
+            return
+        }
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (done.compareAndSet(false, true)) {
+                try {
+                    lm.removeUpdates(listener)
+                } catch (_: Throwable) {
+                }
+                result.success(mapOf("ok" to false, "msg" to "10 秒内没拿到定位，可以手动输入地点"))
+            }
+        }, 10000L)
+    }
+
+    private fun locToMap(l: Location): Map<String, Any?> = mapOf(
+        "ok" to true,
+        "lat" to l.latitude,
+        "lng" to l.longitude,
+        "alt" to if (l.hasAltitude()) l.altitude else null,
+        "acc" to if (l.hasAccuracy()) l.accuracy.toDouble() else null
+    )
+
+    /// 经纬度 → 中文地址。Geocoder 要联网，且是阻塞调用，放子线程；
+    /// 失败 / 没网统一返回空串，Dart 侧就当用户没填地址。
+    private fun reverseGeocode(lat: Double, lng: Double, result: MethodChannel.Result) {
+        Thread {
+            var addr = ""
+            try {
+                val g = Geocoder(this, java.util.Locale.CHINA)
+                val list = g.getFromLocation(lat, lng, 1)
+                val a = list?.firstOrNull()
+                if (a != null) {
+                    val sb = StringBuilder()
+                    for (p in listOf(a.adminArea, a.locality, a.subLocality, a.thoroughfare)) {
+                        if (!p.isNullOrBlank() && !sb.contains(p)) sb.append(p)
+                    }
+                    addr = sb.toString()
+                }
+            } catch (_: Throwable) {
+            }
+            val out = addr
+            Handler(Looper.getMainLooper()).post { result.success(out) }
+        }.start()
     }
 
     // ---------------------------------------------------------- 视频缩略图
@@ -1914,7 +2263,10 @@ class MainActivity : FlutterActivity() {
         private const val MOCKLOC_CHANNEL = "studyhub/mockloc"
         private const val THUMB_CHANNEL = "studyhub/thumb"
         private const val FILES_CHANNEL = "studyhub/files"
+        private const val CALLLOG_CHANNEL = "studyhub/calllog"
+        private const val CAMERA_CHANNEL = "studyhub/camera"
         private const val MOCKLOC_PERM_CODE = 5201
+        private const val CALLLOG_PERM_CODE = 5202
         private const val REQ_PICK_FILES = 5301
     }
 }

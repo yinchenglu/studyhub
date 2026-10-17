@@ -40,6 +40,18 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!--
+      通话记录生成（v2.0.0+37 新增工具「通话记录生成」）：
+        · WRITE_CALL_LOG —— 往系统通话记录库里批量写条目（危险权限，普通应用可申请，
+          用户会在运行时看到授权弹窗；本工具只在用户点「生成」时写）
+        · READ_CALL_LOG —— 部分 ROM 在 insert 时会顺带回查，声明上避免被拦
+        · READ_CONTACTS —— 「从通讯录导入号码」要读联系人与号码
+      这三个都是 dangerous 级别，没声明的话 requestPermissions 会直接永久拒绝。
+    -->
+    <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <!--
       虚拟定位工具（v1.9.0+32 新增）：让「学聚」出现在
       「开发者选项 → 选择模拟位置信息应用」的候选列表里。
 

@@ -18,12 +18,14 @@ import 'tool_pages_mockloc.dart';
 import 'tool_pages_ph.dart';
 import 'tool_pages_ph2.dart';
 import 'tool_pages_ph3.dart';
+import 'tool_pages_calllog.dart';
 import 'tool_pages_recorder.dart';
 import 'tool_pages_sudoku.dart';
 import 'tool_pages_sync.dart';
 import 'tool_pages_translate.dart';
 import 'tool_pages_v15.dart';
 import 'tool_pages_v15b.dart';
+import 'tool_pages_watermark.dart';
 
 /// 工具页
 ///
@@ -142,6 +144,9 @@ class ToolsPage extends ConsumerStatefulWidget {
       _ToolDef('数独练习', Icons.grid_3x3, Color(0xFF534AB7)),
       // 快递查询要访问快递 100 的接口，是联网工具
       _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
+      // v2.0.0+37：通话记录生成 + 水印相机（用户点名放生活与娱乐）
+      _ToolDef('通话记录', Icons.call_outlined, Color(0xFF34A853)),
+      _ToolDef('水印相机', Icons.camera_alt_outlined, Color(0xFFD4537E)),
     ]),
 
     // ⑤ 公卫小工具 —— 原「公卫数据」，v1.6.0 改名并扩容。
@@ -724,6 +729,11 @@ Widget toolPageOf(String name) {
     // ---- v1.9.0+28 虚拟定位 ----
     case '虚拟定位':
       return const MockLocPage();
+    // ---- v2.0.0+37 通话记录生成 / 水印相机 ----
+    case '通话记录':
+      return const CallLogToolPage();
+    case '水印相机':
+      return const WatermarkPage();
     // ---- v1.8.0 ----
     case '单位换算':
       return const UnitConvertPage();

@@ -486,6 +486,47 @@ quiz/单词/英语四级核心词.json
 - 说明：部分 App 用高德 / 腾讯定位 SDK 且做校验，可能不受影响（正常现象）；
   重启手机后模拟自动失效
 
+### 通话记录生成（v2.0.0+37 新增）
+- 归类：**生活与娱乐**；文件 `lib/ui/tools/tool_pages_calllog.dart`
+- 原生通道 `studyhub/calllog`（`android_custom/MainActivity.kt`）：
+  - `status` → 是否有 `WRITE_CALL_LOG` / `READ_CONTACTS` + 双卡信息
+  - `requestPermissions` → 一次性申请上面两个 dangerous 权限
+  - `contacts` → 读通讯录（姓名 + 号码，最多 3000 条，号码里非数字字符已剥掉）
+  - `sims` → `SubscriptionManager.activeSubscriptionInfoList`（拿不到就返回空）
+  - `insert` → 批量写 `CallLog.Calls`（子线程 + `Handler` 回主线程）
+- 界面参数：
+  - 呼出（默认）/ 呼入；接通（默认）/ 未接
+  - **号码**：文本框一行一个（逗号/分号也认，自动去重）+ 「从通讯录导入」（带搜索的多选）
+  - **通话时间**：第一条的时间，点日期按钮选（默认当前时间）
+  - **通话间隔**：区间随机，默认 1~3 分钟
+  - **通话时长**：区间随机，默认 30~60 秒（未接固定 0 秒）
+  - **拨号卡**：检测到 ≥2 张卡才出现，可选卡1/卡2/默认卡
+- 类型映射（Android 只有三种：1 呼入 / 2 呼出 / 3 未接）：
+  - 呼出+接通 → 2，呼入+接通 → 1，呼入+未接 → 3
+  - **呼出+未接 → 2 且时长 0**（Android 没有「呼出未接」这个类型，界面上写明了）
+- 注意：`phone_account_id` / `simid` 不是公开 API，部分 ROM 会忽略 →
+  记录能写进去，只是卡1/卡2 的标签可能不显示
+
+### 水印相机（v2.0.0+37 新增）
+- 归类：**生活与娱乐**；文件 `lib/ui/tools/tool_pages_watermark.dart`
+- 原生通道 `studyhub/camera`：
+  - `location` → 取一次定位（先 `getLastKnownLocation`，没有就注册更新，10 秒超时）
+  - `geocode` → `Geocoder` 逆地理编码（子线程，失败返回空串）
+  - `saveImage` → 存相册（Android 10+ 走 `MediaStore` + `RELATIVE_PATH=Pictures/学聚水印`，
+    **不需要存储权限**；9 及以下用老的 external 目录）
+- 模板（配色 / 标题条不同）：工作、生活、安全生产（白底红条）、培训、自定义
+- 水印字段（可勾选）：时间（默认当前，可改）、地点（定位 / 手输）、经纬度、海拔、备注
+- 地图小图：勾选后**右上角**出现 220×220 小图，底图用 OpenStreetMap 单张瓦片（z=15），
+  中间叠定位针；没网自动降级成坐标网格（不会白块）
+- 位置：左下（默认）/ 左上 / 右下 / 右上
+- 入口：**拍照**（系统相机，拍完直接进编辑页）/ **选照片**（可多选，批量盖同一套水印）
+- 合成方式：编辑页里 `FittedBox` 内放 **1080 逻辑宽**的固定画布，
+  外面套 `RepaintBoundary`；保存时 `toImage(pixelRatio: 1.5)` → PNG → 原生存相册。
+  这样预览和成片是同一套布局，所见即所得；输出约 1620px 宽
+- 批量保存：逐张切图 → 等 `endOfFrame` + 120ms（让图片解码和地图瓦片就位）→ 截图保存，
+  底部显示「正在处理 i / n」
+- 编辑页底部六个 chip 可随时改：时间 / 地点 / 备注 / 位置 / 模板 / 字段开关
+
 ### 视频 / 图片浏览（v1.9.0+27 建，+28 / +30 扩展）
 - **自动缓存缩略图**：列表 + 平铺缩略图都走 `CachedNetworkImage`
   （项目已有的 `cached_network_image`），内存 + 磁盘双层缓存，第二次进目录瞬间出
@@ -683,6 +724,8 @@ studyhub_app/
 | `studyhub/mockloc` | **v1.9.0+28 新增**：定位权限、模拟位置注入、真实定位、打开开发者选项 |
 | `studyhub/thumb` | **v1.9.0+30 新增**：视频封面抽帧（`MediaMetadataRetriever`，支持 http(s) + 请求头，子线程） |
 | `studyhub/files` | **v1.9.0+31 新增**：系统文件选择器（SAF，`ACTION_OPEN_DOCUMENT`）选任意类型文件、可多选；把 `content://` 内容复制到 App 缓存后返回真实路径给 Dart |
+| `studyhub/calllog` | **v2.0.0+37 新增**：通话记录（权限 / 通讯录 / 双卡 / 批量写 `CallLog.Calls`） |
+| `studyhub/camera` | **v2.0.0+37 新增**：水印相机辅助（存相册 / 取一次定位 / 逆地理编码） |
 
 **修改内置工具的位置**（按你的图重排时改这里）：
 - 工具分类 + 顺序 + 名称：见 `lib/ui/tools/tools_page.dart`（`_Category` 列表）
