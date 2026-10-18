@@ -19,8 +19,15 @@ jobs:
 
     steps:
       # ---------- 1. 拉取源码 ----------
+      # v2.0.0+40：fetch-depth 改成 0（完整历史）。
+      # 原因：后面「同步到 Gitee」那步要往另一个远端 push，
+      # 浅克隆（默认 depth=1）推送时 git 缺父提交对象，
+      # 经常直接以 `shallow update not allowed` 被远端拒绝。
+      # 本仓库完整历史只有 3 MB，全量拉取几秒钟的事。
       - name: 拉取代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # ---------- 2. JDK 17（Gradle 编译安卓必须 17）----------
       - name: 安装 JDK 17
@@ -793,6 +800,109 @@ jobs:
             build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
             build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
           fail_on_unmatched_files: false
+
+      # ---------- 11.5 同步发行版到 Gitee 镜像仓库（v2.0.0+40 新增）----------
+      # 需求：GitHub 出包之后，自动把「源码 + 本次 tag + 发行版 + 两个 APK」同步到 Gitee。
+      #
+      # 认证：Actions secret **GITEE_TOKEN**（Gitee → 设置 → 私人令牌；
+      #       权限至少要有 projects，否则 push 会被 403）。
+      #       git 走 HTTPS，用户名随便填（这里用 Gitee 用户名 yin-cheng-lu），
+      #       密码位置放私人令牌 —— 这是 Gitee 官方支持的用法。
+      #
+      # 顺序为什么是「先推代码 → 再打 tag → 再建发行版」：
+      #   Gitee 的发行版必须挂在一个 tag 上，tag 又必须指向某个提交。
+      #   空仓库直接调 /releases 会失败，所以先把 main / master 和 tag 推过去，
+      #   让 Gitee 那边先有提交可指。
+      #
+      # 容错：这一步**任何失败都只打 warning，不让整条流水线挂掉** ——
+      #       Gitee 挂了不该影响 GitHub 上的正常发布（用户主要从 GitHub 下载）。
+      - name: 同步发行版到 Gitee
+        if: success()
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          # 仓库路径（不是完整网址）：https://gitee.com/yin-cheng-lu/StudyHub
+          GITEE_REPO: yin-cheng-lu/StudyHub
+        run: |
+          set +e
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo "::warning::没配 GITEE_TOKEN，跳过 Gitee 同步"
+            exit 0
+          fi
+
+          TAG="v${{ github.run_number }}"
+          GIT_URL="https://yin-cheng-lu:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
+          API="https://gitee.com/api/v5/repos/${GITEE_REPO}"
+          echo "目标仓库：${GITEE_REPO}    tag：${TAG}"
+
+          # ---- 1. 推源码：推到 Gitee 仓库自己的默认分支 ----
+          # 不写死 main/master —— 先问一句 API 它默认分支叫什么，
+          # 否则会在 Gitee 上多长出一条重复的 master 分支。
+          DEF=$(curl -s "${API}" | grep -o '"default_branch":"[^"]*"' | head -1 | cut -d'"' -f4)
+          if [ -z "$DEF" ]; then
+            DEF=main
+            echo "::warning::读不到 Gitee 默认分支（私有仓库需要 token），按 main 处理"
+          fi
+          echo "Gitee 默认分支：${DEF}"
+          git config user.name "ci-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git push --force "$GIT_URL" "HEAD:refs/heads/${DEF}"; then
+            echo "源码已推送到 ${DEF}"
+          else
+            echo "::warning::源码推送失败（多半是 GITEE_TOKEN 权限不足或仓库路径不对）"
+          fi
+
+          # ---- 2. 打 tag 并推过去 ----
+          git tag -f "$TAG" >/dev/null 2>&1
+          git push -f "$GIT_URL" "refs/tags/$TAG" || echo "::warning::tag $TAG 推送失败"
+
+          # ---- 3. 建发行版 ----
+          # 已存在同名 tag 的发行版时，POST 会失败，回退成「查出来复用」。
+          BODY="自动构建产出，APK 见下方附件。
+          - \`app-arm64-v8a-release.apk\` —— 64 位 ARM，近年手机优先装这个
+          - \`app-armeabi-v7a-release.apk\` —— 32 位 ARM，老机型（约 2016 年前）才需要
+
+          ${SIGN_NOTE:-}
+
+          版本 ${APP_VER}，构建编号 ${{ github.run_number }}，源码提交 ${{ github.sha }}。"
+
+          RESP=$(curl -s -X POST "${API}/releases" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "access_token=${GITEE_TOKEN}" \
+            --data-urlencode "tag_name=${TAG}" \
+            --data-urlencode "name=学聚 APK ${TAG}（${APP_VER}）" \
+            --data-urlencode "body=${BODY}" \
+            --data-urlencode "prerelease=false" \
+            --data-urlencode "target_commitish=${DEF}")
+          REL_ID=$(printf '%s' "$RESP" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+          if [ -z "$REL_ID" ]; then
+            echo "::warning::新建发行版失败，尝试读取已有发行版：$RESP"
+            RESP=$(curl -s "${API}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}")
+            REL_ID=$(printf '%s' "$RESP" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+          fi
+          if [ -z "$REL_ID" ]; then
+            echo "::warning::Gitee 发行版没建起来，本次只推了源码和 tag"
+            exit 0
+          fi
+          echo "发行版 id：${REL_ID}"
+
+          # ---- 4. 上传 APK 附件（Gitee 接口一次只能传一个文件）----
+          OK=0
+          for f in build/app/outputs/flutter-apk/*-release.apk; do
+            [ -f "$f" ] || continue
+            SIZE=$(stat -c%s "$f")
+            echo "上传 $(basename "$f")（$((SIZE/1024/1024)) MB）..."
+            R=$(curl -s -X POST "${API}/releases/${REL_ID}/attach_files" \
+              -F "access_token=${GITEE_TOKEN}" \
+              -F "file=@${f}")
+            if printf '%s' "$R" | grep -q '"browser_download_url"'; then
+              echo "  完成"
+              OK=$((OK+1))
+            else
+              echo "::warning::附件上传失败：$R"
+            fi
+          done
+          echo "本次成功上传 ${OK} 个附件"
+          echo "Gitee 发行版地址：https://gitee.com/${GITEE_REPO}/releases/tag/${TAG}"
 
       # ---------- 12. 失败时：把日志推送到 ci-logs 分支 ----------
       # 这样即使不登录 GitHub、不提供 token，也能直接读到完整的构建报错。

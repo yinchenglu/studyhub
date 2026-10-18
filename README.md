@@ -882,6 +882,23 @@ studyhub_app/
     - 验证方法：`grep -oE "_ToolDef\\('([^']+)'" tools_page.dart` 和
       `grep -oE "case '([^']+)'"` 的名单 diff 一下必须为空
 
+17. **发版自动同步到 Gitee**（v2.0.0+40 新增）
+    - 位置：`.github/workflows/build-apk.yml` 第 11.5 步「同步发行版到 Gitee」
+    - 目标仓库写死在 workflow 的 `GITEE_REPO`（当前 `yin-cheng-lu/StudyHub`），
+      改仓库要改这一处
+    - 令牌放 Actions secret **`GITEE_TOKEN`**（Gitee → 设置 → 私人令牌，
+      权限勾 `projects`）。**没配不会让构建失败**，只会打一条 warning 跳过
+    - 做四件事：① 把源码强推到 Gitee 的默认分支（分支名现查 API，
+      不写死 main/master，免得长出一条重复分支）② 打 `v<run_number>` tag 推过去
+      ③ 调 v5 API 建发行版 ④ 逐个上传两个 APK 附件（Gitee 接口一次只能传一个）
+    - 三个易踩的坑：
+      * **checkout 必须 `fetch-depth: 0`** —— 浅克隆往另一个远端 push 会被
+        `shallow update not allowed` 拒绝（本仓库历史才 3 MB，全量拉没负担）
+      * **发行版必须挂在 tag 上，tag 必须指向已有提交** —— 所以顺序是
+        「先推代码 → 再推 tag → 再建发行版」，空仓库直接建 release 一定失败
+      * **附件上传成功才回 `browser_download_url`**，判成功只看这个字段；
+        建 release 失败时回退成按 tag 查已有发行版，不重复建
+
 ---
 
 ## 十六、想自己改 App 里的东西？位置速查
