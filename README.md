@@ -882,22 +882,32 @@ studyhub_app/
     - 验证方法：`grep -oE "_ToolDef\\('([^']+)'" tools_page.dart` 和
       `grep -oE "case '([^']+)'"` 的名单 diff 一下必须为空
 
-17. **发版自动同步到 Gitee**（v2.0.0+40 新增）
-    - 位置：`.github/workflows/build-apk.yml` 第 11.5 步「同步发行版到 Gitee」
+17. **发版自动同步到 Gitee**（v2.0.0+40 新增，v2.0.0+45 改掉上传方式）
+    - 位置：`.github/workflows/build-apk.yml` 第 12 步「同步到 Gitee 镜像」
     - 目标仓库写死在 workflow 的 `GITEE_REPO`（当前 `yin-cheng-lu/StudyHub`），
       改仓库要改这一处
     - 令牌放 Actions secret **`GITEE_TOKEN`**（Gitee → 设置 → 私人令牌，
       权限勾 `projects`）。**没配不会让构建失败**，只会打一条 warning 跳过
-    - 做四件事：① 把源码强推到 Gitee 的默认分支（分支名现查 API，
-      不写死 main/master，免得长出一条重复分支）② 打 `v<run_number>` tag 推过去
-      ③ 调 v5 API 建发行版 ④ 逐个上传两个 APK 附件（Gitee 接口一次只能传一个）
+    - 做四件事：① 把源码强推到 Gitee 的默认分支（分支名用 `git ls-remote`
+      现查，**不调 API**）② 打 `v<run_number>` tag 推过去
+      ③ **把两个 APK 当普通文件强推到一条叫 `apk` 的孤儿分支**
+      ④ （可选）调 v5 API 建发行版，正文里放下载链接
+    - **APK 的下载地址是固定的**（`apk` 分支每次被整体覆盖，只留最新一版）：
+      * 64 位：`https://gitee.com/yin-cheng-lu/StudyHub/raw/apk/app-arm64-v8a-release.apk`
+      * 32 位：`https://gitee.com/yin-cheng-lu/StudyHub/raw/apk/app-armeabi-v7a-release.apk`
+      * 版本信息：同分支下的 `latest.json`
     - 三个易踩的坑：
       * **checkout 必须 `fetch-depth: 0`** —— 浅克隆往另一个远端 push 会被
         `shallow update not allowed` 拒绝（本仓库历史才 3 MB，全量拉没负担）
-      * **发行版必须挂在 tag 上，tag 必须指向已有提交** —— 所以顺序是
-        「先推代码 → 再推 tag → 再建发行版」，空仓库直接建 release 一定失败
-      * **附件上传成功才回 `browser_download_url`**，判成功只看这个字段；
-        建 release 失败时回退成按 tag 查已有发行版，不重复建
+      * **不要用发行的「附件上传」接口**（`POST /releases/{id}/attach_files`）：
+        GitHub 的海外 runner 上去连 Gitee，这个接口**长期无响应**，
+        连接建起来就不回、一直挂到超时（v71~v75 连试五版，发行版都建出来了、
+        附件表永远是空的）。所以 APK 改走 git push，同一个令牌、稳得多
+      * **Gitee 的匿名 API 限流很凶**（构建机 IP 直接 `403 Rate Limit Exceeded`），
+        凡是能不用 API 的地方都别用 —— 分支名用 `ls-remote`，
+        建发行版只是锦上添花，失败只打 warning
+    - 仓库体积：每次构建会往 Gitee 推约 43 MB 对象（旧版本变成不可达对象），
+      免费仓库 1 GB 上限，大约能撑 20 次左右；攒够了可以让我清一次
 
 ---
 

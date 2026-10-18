@@ -809,17 +809,20 @@ jobs:
       #       git 走 HTTPS，用户名随便填（这里用 Gitee 用户名 yin-cheng-lu），
       #       密码位置放私人令牌 —— 这是 Gitee 官方支持的用法。
       #
-      # 顺序为什么是「先推代码 → 再打 tag → 再建发行版」：
-      #   Gitee 的发行版必须挂在一个 tag 上，tag 又必须指向某个提交。
-      #   空仓库直接调 /releases 会失败，所以先把 main / master 和 tag 推过去，
-      #   让 Gitee 那边先有提交可指。
+      # ---------- 12. 同步到 Gitee 镜像 ----------
+      # APK 为什么走「git 分支」而不是「发行版附件」：
+      #   Gitee 的 POST /releases/{id}/attach_files 在 GitHub 的海外 runner 上
+      #   长期无响应（连接建起来了就是不回，一直挂到超时）。v71~v75 连试五版，
+      #   发行版都建出来了、附件表永远是空的，所以这条路放弃。
+      #   而 git push 每一次都稳，于是把 APK 当普通大文件推到一条叫 apk 的
+      #   孤儿分支上 —— 下载地址固定、不依赖任何 API：
+      #     https://gitee.com/<repo>/raw/apk/app-arm64-v8a-release.apk
       #
-      # 容错：这一步**任何失败都只打 warning，不让整条流水线挂掉** ——
-      #       Gitee 挂了不该影响 GitHub 上的正常发布（用户主要从 GitHub 下载）。
-      - name: 同步发行版到 Gitee
+      # 容错：Gitee 挂了只打 warning，不让 GitHub 这边的正常发布失败。
+      - name: 同步到 Gitee 镜像
         if: success()
-        # 跨境往 Gitee 传两个 21 MB 的包，慢起来能到十几分钟，别让默认超时打断
-        timeout-minutes: 40
+        # 跨境推两个 21 MB 的包，慢起来要几分钟，别让默认超时打断
+        timeout-minutes: 30
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           # 仓库路径（不是完整网址）：https://gitee.com/yin-cheng-lu/StudyHub
@@ -831,22 +834,29 @@ jobs:
             exit 0
           fi
 
+          WS=$(pwd)
           TAG="v${{ github.run_number }}"
+          BUILD="${{ github.run_number }}"
+          SHA="${{ github.sha }}"
           GIT_URL="https://yin-cheng-lu:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
           API="https://gitee.com/api/v5/repos/${GITEE_REPO}"
+          WEB="https://gitee.com/${GITEE_REPO}"
           echo "目标仓库：${GITEE_REPO}    tag：${TAG}"
-          echo "----- 待上传 APK -----"
-          ls -l build/app/outputs/flutter-apk/ || true
 
-          # ---- 1. 推源码：推到 Gitee 仓库自己的默认分支 ----
-          # 不写死 main/master —— 先问一句 API 它默认分支叫什么，
-          # 否则会在 Gitee 上多长出一条重复的 master 分支。
-          DEF=$(curl -s "${API}" | grep -o '"default_branch":"[^"]*"' | head -1 | cut -d'"' -f4)
-          if [ -z "$DEF" ]; then
-            DEF=main
-            echo "::warning::读不到 Gitee 默认分支（私有仓库需要 token），按 main 处理"
-          fi
+          # 20 MB 以上的包走 http 推送，缓冲区不够会 "RPC failed" 或 411
+          git config --global http.postBuffer 524288000
+          git config --global http.lowSpeedLimit 0
+          git config --global http.lowSpeedTime 600
+
+          # ---- 1. 源码：推到 Gitee 仓库自己的默认分支 ----
+          # 分支名用 ls-remote 现查、不调 API —— Gitee 的匿名 API 限流很凶
+          # （构建机 IP 直接 403 Rate Limit Exceeded），ls-remote 稳定得多。
+          HEADS=$(git ls-remote --heads "$GIT_URL" 2>/dev/null | awk '{print $2}' | sed 's#refs/heads/##')
+          DEF=$(printf '%s\n' "$HEADS" | grep -x -e main -e master | head -1)
+          [ -z "$DEF" ] && DEF=$(printf '%s\n' "$HEADS" | grep -vx 'apk' | head -1)
+          [ -z "$DEF" ] && DEF=main
           echo "Gitee 默认分支：${DEF}"
+
           git config user.name "ci-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git push --force "$GIT_URL" "HEAD:refs/heads/${DEF}"; then
@@ -855,21 +865,70 @@ jobs:
             echo "::warning::源码推送失败（多半是 GITEE_TOKEN 权限不足或仓库路径不对）"
           fi
 
-          # ---- 2. 打 tag 并推过去 ----
+          # ---- 2. tag ----
           git tag -f "$TAG" >/dev/null 2>&1
-          git push -f "$GIT_URL" "refs/tags/$TAG" || echo "::warning::tag $TAG 推送失败"
+          git push -f "$GIT_URL" "refs/tags/${TAG}" && echo "tag ${TAG} 已推送"
 
-          # ---- 3. 建发行版 ----
-          # 已存在同名 tag 的发行版时，POST 会失败，回退成「查出来复用」。
-          BODY="自动构建产出，APK 见下方附件。
-          - \`app-arm64-v8a-release.apk\` —— 64 位 ARM，近年手机优先装这个
-          - \`app-armeabi-v7a-release.apk\` —— 32 位 ARM，老机型（约 2016 年前）才需要
+          # ---- 3. APK → apk 分支（每次都是一个全新的孤儿提交，只留最新一版）----
+          APK_LIST=$(ls -1 "$WS"/build/app/outputs/flutter-apk/*-release.apk 2>/dev/null)
+          if [ -z "$APK_LIST" ]; then
+            APK_LIST=$(find "$WS" -type f -name "*-release.apk" -not -path "*/.git/*" 2>/dev/null)
+          fi
+          if [ -z "$APK_LIST" ]; then
+            echo "::warning::一个 APK 都没找到，本次只推了源码和 tag"
+            exit 0
+          fi
+          echo "----- 要推的 APK -----"
+          printf '%s\n' "$APK_LIST"
+
+          rm -rf /tmp/apkpush && mkdir -p /tmp/apkpush
+          cd /tmp/apkpush
+          git init -q -b apk
+          git config user.name "ci-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for f in $APK_LIST; do cp "$f" .; done
+
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          cat > latest.json <<EOF
+          {"version":"${APP_VER}","build":${BUILD},"tag":"${TAG}",
+           "commit":"${SHA}","built_at":"${NOW}","repo":"${GITEE_REPO}"}
+          EOF
+
+          cat > README.md <<EOF
+          # 学聚 APK（自动发布，勿手改）
+
+          当前版本 **${APP_VER}**，构建编号 **${BUILD}**，tag \`${TAG}\`，提交 \`${SHA}\`。
+
+          - 64 位（绝大多数手机）：[app-arm64-v8a-release.apk](${WEB}/raw/apk/app-arm64-v8a-release.apk)
+          - 32 位（老机型）：[app-armeabi-v7a-release.apk](${WEB}/raw/apk/app-armeabi-v7a-release.apk)
+
+          本分支每次构建都会被整体覆盖（force push），只保留最新一版。
+          历史版本见 GitHub Releases 或本仓库对应的 tag。
+          EOF
+
+          ls -lh
+          git add -A
+          git commit -q -m "APK ${TAG}（${APP_VER}）build ${BUILD}"
+          if git push -f "$GIT_URL" HEAD:refs/heads/apk; then
+            echo "APK 已推到 apk 分支"
+          else
+            echo "::warning::APK 分支推送失败"
+          fi
+          cd "$WS"
+
+          # ---- 4. 发行版（可选，只做版本页；不再上传附件）----
+          BODY="APK 直接点下面两个链接下载：
+
+          - [app-arm64-v8a-release.apk](${WEB}/raw/apk/app-arm64-v8a-release.apk) —— 64 位，近年手机优先装这个
+          - [app-armeabi-v7a-release.apk](${WEB}/raw/apk/app-armeabi-v7a-release.apk) —— 32 位，老机型才需要
 
           ${SIGN_NOTE:-}
 
-          版本 ${APP_VER}，构建编号 ${{ github.run_number }}，源码提交 ${{ github.sha }}。"
+          版本 ${APP_VER}，构建编号 ${BUILD}，源码提交 ${SHA}。"
 
-          RESP=$(curl -s -w "\n__HTTP__%{http_code}" -X POST "${API}/releases" \
+          HTTP=$(curl -s -o /tmp/rel.json -w "%{http_code}" \
+            --connect-timeout 20 --max-time 90 \
+            -X POST "${API}/releases" \
             -H "Content-Type: application/x-www-form-urlencoded" \
             --data-urlencode "access_token=${GITEE_TOKEN}" \
             --data-urlencode "tag_name=${TAG}" \
@@ -877,125 +936,12 @@ jobs:
             --data-urlencode "body=${BODY}" \
             --data-urlencode "prerelease=false" \
             --data-urlencode "target_commitish=${DEF}")
-          echo "建发行版返回：$(printf '%s' "$RESP" | head -c 400)"
-          REL_ID=$(printf '%s' "$RESP" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-          if [ -z "$REL_ID" ]; then
-            echo "::warning::新建发行版失败，尝试读取已有发行版：$RESP"
-            RESP=$(curl -s "${API}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}")
-            REL_ID=$(printf '%s' "$RESP" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-          fi
-          if [ -z "$REL_ID" ]; then
-            echo "::warning::Gitee 发行版没建起来，本次只推了源码和 tag"
-            exit 0
-          fi
-          echo "发行版 id：${REL_ID}"
+          echo "建发行版 HTTP ${HTTP}：$(head -c 200 /tmp/rel.json)"
 
-          # ---- 4. 上传 APK 附件（Gitee 接口一次只能传一个文件）----
-          # 两个坑都踩过：
-          #   * curl 默认对大文件发 `Expect: 100-continue`，Gitee 那边不接，
-          #     会出现「连接建立了但一直没响应」→ 用 `-H "Expect:"` 关掉；
-          #   * 上传失败时 HTTP 可能是 4xx，但 curl 退出码仍是 0，
-          #     所以必须自己看返回体和 http_code，不能只看 curl 是否成功。
-          #
-          # 找文件用「先按约定路径、找不到再全仓库 find」：
-          #   构建产物路径随 Flutter 版本变过一次，硬写路径会出现
-          #   「release 上传成功、Gitee 一个附件都没有，还不报错」这种哑失败。
-          APK_LIST=$(ls -1 build/app/outputs/flutter-apk/*-release.apk 2>/dev/null)
-          if [ -z "$APK_LIST" ]; then
-            echo "::warning::flutter-apk 目录里没找到 APK，退回到全仓库 find"
-            APK_LIST=$(find . -type f -name "*-release.apk" -not -path "./.git/*" 2>/dev/null)
-          fi
-          echo "----- 找到的 APK -----"
-          echo "${APK_LIST:-（一个都没有）}"
-          APK_N=$(printf '%s\n' "$APK_LIST" | grep -c . )
-
-          OK=0
-          FAIL=0
-          DIAG=""
-          DETAIL=""
-          if [ -z "$APK_LIST" ]; then
-            DIAG="一个 APK 文件都没找到（pwd=$(pwd)）"
-            FAIL=1
-          fi
-          for f in $APK_LIST; do
-            [ -f "$f" ] || continue
-            SIZE=$(stat -c%s "$f")
-            echo "上传 $(basename "$f")（$((SIZE/1024/1024)) MB）..."
-            # Gitee 在国外 runner 上上传 20 MB 级别的包很慢，给到 15 分钟。
-            HTTP=$(curl -s -o /tmp/att.json -w "%{http_code}" \
-              --connect-timeout 30 --max-time 900 \
-              -H "Expect:" \
-              -X POST "${API}/releases/${REL_ID}/attach_files?access_token=${GITEE_TOKEN}" \
-              -F "file=@${f}")
-            RC=$?
-            echo "  HTTP ${HTTP}  curl_rc=${RC}"
-            echo "  返回：$(head -c 400 /tmp/att.json)"
-            if grep -q '"browser_download_url"' /tmp/att.json; then
-              echo "  完成"
-              OK=$((OK+1))
-              DETAIL="${DETAIL}$(basename "$f") OK HTTP ${HTTP}；"
-            else
-              echo "::warning::附件 $(basename "$f") 上传失败"
-              FAIL=$((FAIL+1))
-              DIAG="${DIAG}${DIAG:+；}$(basename "$f") HTTP ${HTTP} rc=${RC} $(head -c 300 /tmp/att.json)"
-              DETAIL="${DETAIL}$(basename "$f") 失败 HTTP ${HTTP} rc=${RC} $(head -c 200 /tmp/att.json)；"
-            fi
-          done
-          echo "本次成功上传 ${OK} 个附件，失败 ${FAIL} 个"
-          echo "Gitee 发行版地址：https://gitee.com/${GITEE_REPO}/releases/tag/${TAG}"
-
-          # ---- 5. 诊断落盘 ----
-          # Actions 的日志要登录才能看；Gitee 那边写回去也不一定成功。
-          # 落成文件，由下一步用 GITHUB_TOKEN 写进 GitHub 发行版正文 ——
-          # 那个正文是匿名可读的，出问题时能直接把原因取出来。
-          {
-            echo "pwd=$(pwd)"
-            echo "TAG=${TAG}  REL_ID=${REL_ID}"
-            echo "APK 数量=${APK_N}"
-            echo "APK 列表："
-            echo "${APK_LIST:-（空）}"
-            echo "成功=${OK} 失败=${FAIL}"
-            echo "每个文件：${DETAIL:-无}"
-            echo "失败详情：${DIAG:-无}"
-          } > gitee-diag.txt
-          cat gitee-diag.txt
-
-          if [ "$FAIL" != "0" ]; then
-            echo "::error::Gitee 附件没传全（${FAIL} 个失败），原因见下一步写回的发行版正文"
-            exit 1
-          fi
-
-      # 把上一步的诊断写进 GitHub 发行版正文（只在 Gitee 那步失败时跑）。
-      # 目的：匿名也能读到失败原因，不用登 GitHub 翻日志。
-      - name: 诊断回写到 GitHub 发行版
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          TAG: v${{ github.run_number }}
-        run: |
-          set +e
-          [ -f gitee-diag.txt ] || { echo "没有 gitee-diag.txt，跳过"; exit 0; }
-          python3 - <<'PY'
-          import json, os, urllib.request
-          tok = os.environ["GH_TOKEN"]; repo = os.environ["REPO"]; tag = os.environ["TAG"]
-          base = f"https://api.github.com/repos/{repo}"
-          hdr = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json",
-                 "Content-Type": "application/json", "User-Agent": "studyhub-ci"}
-          def call(url, method="GET", payload=None):
-              data = json.dumps(payload).encode() if payload is not None else None
-              req = urllib.request.Request(url, method=method, data=data, headers=hdr)
-              with urllib.request.urlopen(req) as r:
-                  return json.load(r)
-          try:
-              rel = call(f"{base}/releases/tags/{tag}")
-              diag = open("gitee-diag.txt", encoding="utf-8", errors="replace").read()[:1800]
-              body = (rel.get("body") or "") + "\n\n---\n**Gitee 同步诊断**\n\n```\n" + diag + "\n```\n"
-              call(f"{base}/releases/{rel['id']}", "PATCH", {"body": body})
-              print("诊断已写回发行版正文")
-          except Exception as e:
-              print("写回失败：", e)
-          PY
+          echo "----- Gitee 镜像 -----"
+          echo "  源码：${WEB}/tree/${DEF}"
+          echo "  64 位：${WEB}/raw/apk/app-arm64-v8a-release.apk"
+          echo "  32 位：${WEB}/raw/apk/app-armeabi-v7a-release.apk"
 
       # ---------- 12. 失败时：把日志推送到 ci-logs 分支 ----------
       # 这样即使不登录 GitHub、不提供 token，也能直接读到完整的构建报错。
