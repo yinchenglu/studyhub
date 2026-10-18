@@ -933,6 +933,30 @@ studyhub_app/
     - 仓库体积：每次构建会往 Gitee 推约 42 MB 对象（旧版本变成不可达对象），
       免费仓库 1 GB 上限，大约能撑 20 次左右；攒够了可以让我清一次
 
+18. **`shared_preferences` 插件已从项目移除，不要再加回来**（v2.0.0+49 修）
+    - 症状：装完打开**纯白屏**（release 版看不到任何报错）。装诊断版后能看到：
+      ```
+      Bad state: 【卡在/出错于 本地设置】
+      PlatformException(NoSuchMethodError: no non-static method
+        Lio/flutter/plugins/sharedpreferences/SharedPreferencesApiRegistrar;
+        .getAll(Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;)
+      ```
+    - 原因：这个插件是「Dart 侧 pigeon 绑定 + Android 侧 Kotlin 实现」两半，
+      **两半方法签名必须严格一致**。本仓库 `pubspec.lock` **不入库**，
+      CI 每次 `flutter pub get` 都重新解析 `^2.3.2`；一旦解析成
+      「Dart 是新版、原生侧还是旧版」的组合，运行期调用就对不上号。
+      而 `SettingsStore.init()` 是启动第三步，所以表现是**启动即白屏**。
+      这类问题本地 `flutter analyze` 完全查不出来（能编译、不能跑）。
+    - 现状：改用自家实现 **`lib/data/local/pref_store.dart`**
+      - 对外**类名和 API 与插件完全一样**（`SharedPreferences.getInstance()`、
+        `getString/setString/getInt/...`），所以业务代码一行没改，只换了 import
+      - 底层走原生通道 **`studyhub/prefs`**（`android_custom/MainActivity.kt`），
+        直接读写系统 `SharedPreferences` 文件 `FlutterSharedPreferences`，
+        键名沿用 **`flutter.` 前缀** → **老用户数据原样还在，不需要迁移**
+      - getter 同步（读内存缓存），setter 异步落盘；通道不可用时降级为内存存储，
+        绝不抛异常中断启动
+    - 以后要存新的本地偏好：直接 `import 'pref_store.dart'`，别引第三方插件
+
 ---
 
 ## 十六、想自己改 App 里的东西？位置速查

@@ -19,7 +19,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../data/local/pref_store.dart';
 
 import 'tool_pages.dart'; // ToolScaffold / toast / copyText / keepScreenOn
 

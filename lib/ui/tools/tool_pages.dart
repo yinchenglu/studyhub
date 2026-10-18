@@ -23,7 +23,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:share_plus/share_plus.dart';
 // 番茄时钟用 SharedPreferences 记住铃声选择
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../data/local/pref_store.dart';
 import 'package:torch_light/torch_light.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 

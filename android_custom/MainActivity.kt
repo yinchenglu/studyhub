@@ -166,6 +166,40 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        // ---- 本地偏好存储（v2.0.0+49 新增，替代 shared_preferences 插件）----
+        //
+        // 背景：插件的 Dart 侧与 Android 侧 Pigeon 绑定必须严格同版本。
+        // 本仓库 pubspec.lock 没入库，CI 每次 flutter pub get 都重新解析，
+        // 一旦解析出「Dart 新 / 原生旧」的组合，运行期就抛
+        //   NoSuchMethodError: no non-static method
+        //   SharedPreferencesApiRegistrar.getAll(String, List, Continuation)
+        // 启动直接白屏（v69 那次的真正原因）。
+        //
+        // 这里直接用系统 SharedPreferences，键名沿用插件的 "flutter." 前缀，
+        // 所以老用户存的数据原样还在，不需要迁移、也不会丢。
+        // 通道名刻意用 studyhub/prefs，和插件的插件注册完全无关。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PREFS_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                try {
+                    when (call.method) {
+                        "getAll" -> result.success(prefsGetAll())
+                        "set" -> {
+                            val k = call.argument<String>("key")
+                            if (k == null) {
+                                result.error("bad_args", "key 不能为空", null)
+                            } else {
+                                result.success(prefsSet(k, call.argument<Any>("value")))
+                            }
+                        }
+                        "remove" -> result.success(prefsRemove(call.argument<String>("key") ?: ""))
+                        "clear" -> result.success(prefsClear())
+                        else -> result.notImplemented()
+                    }
+                } catch (t: Throwable) {
+                    result.error("prefs_failed", t.message ?: t.toString(), null)
+                }
+            }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -2239,6 +2273,49 @@ class MainActivity : FlutterActivity() {
         )
     }
 
+    // ---- 本地偏好存储实现（v2.0.0+49 新增）----
+    //
+    // 用系统 SharedPreferences 直接读写。文件名 "FlutterSharedPreferences"
+    // 和键前缀 "flutter." 都是 shared_preferences 插件当年的约定，照抄下来
+    // 就能直接接管老数据 —— 用户升级后设置、阅读进度、数独存档全在。
+    private fun prefFile() =
+        getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+
+    private fun prefsGetAll(): Map<String, Any?> {
+        val out = HashMap<String, Any?>()
+        for ((k, v) in prefFile().all) {
+            val key = if (k.startsWith("flutter.")) k.substring(8) else k
+            // StandardMessageCodec 不认 Set，插件的字符串列表存的就是 Set，
+            // 这里统一摊成 List 再回给 Dart。
+            out[key] = if (v is Set<*>) v.map { it.toString() } else v
+        }
+        return out
+    }
+
+    private fun prefsSet(key: String, value: Any?): Boolean {
+        val e = prefFile().edit()
+        val full = "flutter.$key"
+        when (value) {
+            null -> e.remove(full)
+            is String -> e.putString(full, value)
+            is Boolean -> e.putBoolean(full, value)
+            is Int -> e.putInt(full, value)
+            is Long -> e.putLong(full, value)
+            // 和官方插件一致：double 落盘是 float（插件历史行为就是这样，
+            // 本 App 里 double 只用于字号/进度这类值，精度足够）。
+            is Double -> e.putFloat(full, value.toFloat())
+            is Float -> e.putFloat(full, value)
+            is List<*> -> e.putStringSet(full, value.map { it.toString() }.toSet())
+            else -> e.putString(full, value.toString())
+        }
+        return e.commit()
+    }
+
+    private fun prefsRemove(key: String): Boolean =
+        prefFile().edit().remove("flutter.$key").commit()
+
+    private fun prefsClear(): Boolean = prefFile().edit().clear().commit()
+
     private fun openDevOptions() {
         try {
             val i = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
@@ -2265,6 +2342,7 @@ class MainActivity : FlutterActivity() {
         private const val FILES_CHANNEL = "studyhub/files"
         private const val CALLLOG_CHANNEL = "studyhub/calllog"
         private const val CAMERA_CHANNEL = "studyhub/camera"
+        private const val PREFS_CHANNEL = "studyhub/prefs"
         private const val MOCKLOC_PERM_CODE = 5201
         private const val CALLLOG_PERM_CODE = 5202
         private const val REQ_PICK_FILES = 5301

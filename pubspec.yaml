@@ -51,7 +51,7 @@ publish_to: 'none'
 #   v2.0.0+36 → 1036 / 2036   ← 修 +35 的编译错（server_html_tools.dart 漏了 Padding( 外壳）
 #   v2.0.0+37 → 1037 / 2037   ← 新工具「通话记录」（原生 studyhub/calllog：批量写 CallLog）+
 #                                 「水印相机」（原生 studyhub/camera：存相册/定位/逆编码；5 套模板 + 地图小图 + 批量）
-version: 2.0.0+48
+version: 2.0.0+49
 environment:
   # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps
   # 要 >=3.12，取最大值。
@@ -89,7 +89,16 @@ dependencies:
   xml: ^7.0.1
 
   # 本地存储
-  shared_preferences: ^2.3.2
+  #
+  # 注意：**不要**再把 shared_preferences 加回来。
+  # 它由「Dart 侧 pigeon 绑定 + Android 侧 Kotlin 实现」两半组成，两半版本
+  # 必须严格对应；本仓库 pubspec.lock 不入库，CI 每次重新解析 ^2.x，
+  # 解析出「Dart 新 / 原生旧」时运行期会抛
+  #   NoSuchMethodError: SharedPreferencesApiRegistrar.getAll(...)
+  # 而这句正好在启动最早的 SettingsStore.init() 里 → 白屏（v69 就是这么挂的）。
+  # 现在改用自家实现 lib/data/local/pref_store.dart，
+  # 走原生通道 studyhub/prefs 写同一份 FlutterSharedPreferences，
+  # 对外 API 与插件同名同签名，业务代码一行不用改。
   flutter_secure_storage: ^9.2.2
   sqflite: ^2.3.3+1
   path_provider: ^2.1.4

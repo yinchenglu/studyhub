@@ -24,7 +24,7 @@ import 'package:intl/intl.dart' hide TextDirection;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:sensors_plus/sensors_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../../data/local/pref_store.dart';
 import 'package:torch_light/torch_light.dart';
 import 'package:url_launcher/url_launcher.dart';
 
