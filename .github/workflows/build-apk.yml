@@ -823,6 +823,9 @@ jobs:
           # 仓库路径（不是完整网址）：https://gitee.com/yin-cheng-lu/StudyHub
           GITEE_REPO: yin-cheng-lu/StudyHub
         run: |
+          # 全程留一份日志：附件上传失败是「静默」的（API 返回错误但 curl 退出码是 0），
+          # 不落盘就完全没法查。失败时这份日志会被推到 ci-logs 分支。
+          exec > >(tee -a gitee-sync.log) 2>&1
           set +e
           if [ -z "$GITEE_TOKEN" ]; then
             echo "::warning::没配 GITEE_TOKEN，跳过 Gitee 同步"
@@ -833,6 +836,8 @@ jobs:
           GIT_URL="https://yin-cheng-lu:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
           API="https://gitee.com/api/v5/repos/${GITEE_REPO}"
           echo "目标仓库：${GITEE_REPO}    tag：${TAG}"
+          echo "----- 待上传 APK -----"
+          ls -l build/app/outputs/flutter-apk/ || true
 
           # ---- 1. 推源码：推到 Gitee 仓库自己的默认分支 ----
           # 不写死 main/master —— 先问一句 API 它默认分支叫什么，
@@ -865,7 +870,7 @@ jobs:
 
           版本 ${APP_VER}，构建编号 ${{ github.run_number }}，源码提交 ${{ github.sha }}。"
 
-          RESP=$(curl -s -X POST "${API}/releases" \
+          RESP=$(curl -s -w "\n__HTTP__%{http_code}" -X POST "${API}/releases" \
             -H "Content-Type: application/x-www-form-urlencoded" \
             --data-urlencode "access_token=${GITEE_TOKEN}" \
             --data-urlencode "tag_name=${TAG}" \
@@ -873,6 +878,7 @@ jobs:
             --data-urlencode "body=${BODY}" \
             --data-urlencode "prerelease=false" \
             --data-urlencode "target_commitish=${DEF}")
+          echo "建发行版返回：$(printf '%s' "$RESP" | head -c 400)"
           REL_ID=$(printf '%s' "$RESP" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
           if [ -z "$REL_ID" ]; then
             echo "::warning::新建发行版失败，尝试读取已有发行版：$RESP"
@@ -886,23 +892,39 @@ jobs:
           echo "发行版 id：${REL_ID}"
 
           # ---- 4. 上传 APK 附件（Gitee 接口一次只能传一个文件）----
+          # 两个坑都踩过：
+          #   * curl 默认对大文件发 `Expect: 100-continue`，Gitee 那边不接，
+          #     会出现「连接建立了但一直没响应」→ 用 `-H "Expect:"` 关掉；
+          #   * 上传失败时 HTTP 可能是 4xx，但 curl 退出码仍是 0，
+          #     所以必须自己看返回体和 http_code，不能只看 curl 是否成功。
           OK=0
+          FAIL=0
           for f in build/app/outputs/flutter-apk/*-release.apk; do
             [ -f "$f" ] || continue
             SIZE=$(stat -c%s "$f")
             echo "上传 $(basename "$f")（$((SIZE/1024/1024)) MB）..."
-            R=$(curl -s -X POST "${API}/releases/${REL_ID}/attach_files" \
+            HTTP=$(curl -s -o /tmp/att.json -w "%{http_code}" \
+              --max-time 300 \
+              -H "Expect:" \
+              -X POST "${API}/releases/${REL_ID}/attach_files" \
               -F "access_token=${GITEE_TOKEN}" \
-              -F "file=@${f}")
-            if printf '%s' "$R" | grep -q '"browser_download_url"'; then
+              -F "file=@${f};type=application/vnd.android.package-archive")
+            echo "  HTTP ${HTTP}"
+            echo "  返回：$(head -c 400 /tmp/att.json)"
+            if grep -q '"browser_download_url"' /tmp/att.json; then
               echo "  完成"
               OK=$((OK+1))
             else
-              echo "::warning::附件上传失败：$R"
+              echo "::warning::附件 $(basename "$f") 上传失败"
+              FAIL=$((FAIL+1))
             fi
           done
-          echo "本次成功上传 ${OK} 个附件"
+          echo "本次成功上传 ${OK} 个附件，失败 ${FAIL} 个"
           echo "Gitee 发行版地址：https://gitee.com/${GITEE_REPO}/releases/tag/${TAG}"
+          if [ "$FAIL" != "0" ]; then
+            echo "::error::有 ${FAIL} 个 APK 没传到 Gitee，日志见 ci-logs 分支的 gitee-sync.log"
+            exit 1
+          fi
 
       # ---------- 12. 失败时：把日志推送到 ci-logs 分支 ----------
       # 这样即使不登录 GitHub、不提供 token，也能直接读到完整的构建报错。
@@ -914,6 +936,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
 
           cp analyze.log build.log pub-get.log /tmp/logdump/ 2>/dev/null
+          cp gitee-sync.log /tmp/logdump/ 2>/dev/null
           cp pubspec.lock /tmp/logdump/ 2>/dev/null
 
           flutter doctor -v > /tmp/logdump/flutter-doctor.log 2>&1
