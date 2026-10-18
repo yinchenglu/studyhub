@@ -882,8 +882,12 @@ studyhub_app/
     - 验证方法：`grep -oE "_ToolDef\\('([^']+)'" tools_page.dart` 和
       `grep -oE "case '([^']+)'"` 的名单 diff 一下必须为空
 
-17. **发版自动同步到 Gitee**（v2.0.0+40 新增，v2.0.0+45 改掉上传方式）
-    - 位置：`.github/workflows/build-apk.yml` 第 12 步「同步到 Gitee 镜像」
+17. **发版自动同步到 Gitee**（v2.0.0+40 新增，+45/+46 改掉上传方式）
+    - 位置：`.github/workflows/build-apk.yml` 里**独立的 `gitee` job**
+      （不在 `build` 里 —— 跨境推 40 MB 要十几到几十分钟，
+      放 build 里会把这个包的上线时间一起拖住）
+    - 流程：`build` 先出包、建 GitHub Release（约 8 分钟，你马上能下），
+      `gitee` job 再去取 Artifact、慢慢追镜像，追多久都不影响 GitHub
     - 目标仓库写死在 workflow 的 `GITEE_REPO`（当前 `yin-cheng-lu/StudyHub`），
       改仓库要改这一处
     - 令牌放 Actions secret **`GITEE_TOKEN`**（Gitee → 设置 → 私人令牌，
@@ -896,7 +900,11 @@ studyhub_app/
       * 64 位：`https://gitee.com/yin-cheng-lu/StudyHub/raw/apk/app-arm64-v8a-release.apk`
       * 32 位：`https://gitee.com/yin-cheng-lu/StudyHub/raw/apk/app-armeabi-v7a-release.apk`
       * 版本信息：同分支下的 `latest.json`
-    - 三个易踩的坑：
+      * 这两个 `raw` 链接会 302 跳到 `raw.giteeusercontent.com`（CDN），能直连下载
+    - 排查通道：`gitee` job 的全量输出会被推到 **`ci-logs` 分支的 `gitee.log`**，
+      匿名可读（`raw.githubusercontent.com/<repo>/ci-logs/gitee.log`），
+      不用登 GitHub 翻 Actions
+    - 四个易踩的坑：
       * **checkout 必须 `fetch-depth: 0`** —— 浅克隆往另一个远端 push 会被
         `shallow update not allowed` 拒绝（本仓库历史才 3 MB，全量拉没负担）
       * **不要用发行的「附件上传」接口**（`POST /releases/{id}/attach_files`）：
@@ -906,6 +914,11 @@ studyhub_app/
       * **Gitee 的匿名 API 限流很凶**（构建机 IP 直接 `403 Rate Limit Exceeded`），
         凡是能不用 API 的地方都别用 —— 分支名用 `ls-remote`，
         建发行版只是锦上添花，失败只打 warning
+      * **Gitee 的 raw 有内容审核**：`README.md` 这类文本文件命中违禁词会回
+        `451 The content may contain violation information`（本仓库的 README 就中招了），
+        但 `pubspec.yaml` / APK 这类不受影响
+    - 仓库体积：每次构建会往 Gitee 推约 43 MB 对象（旧版本变成不可达对象），
+      免费仓库 1 GB 上限，大约能撑 20 次左右；攒够了可以让我清一次
     - 仓库体积：每次构建会往 Gitee 推约 43 MB 对象（旧版本变成不可达对象），
       免费仓库 1 GB 上限，大约能撑 20 次左右；攒够了可以让我清一次
 

@@ -801,148 +801,6 @@ jobs:
             build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
           fail_on_unmatched_files: false
 
-      # ---------- 11.5 同步发行版到 Gitee 镜像仓库（v2.0.0+40 新增）----------
-      # 需求：GitHub 出包之后，自动把「源码 + 本次 tag + 发行版 + 两个 APK」同步到 Gitee。
-      #
-      # 认证：Actions secret **GITEE_TOKEN**（Gitee → 设置 → 私人令牌；
-      #       权限至少要有 projects，否则 push 会被 403）。
-      #       git 走 HTTPS，用户名随便填（这里用 Gitee 用户名 yin-cheng-lu），
-      #       密码位置放私人令牌 —— 这是 Gitee 官方支持的用法。
-      #
-      # ---------- 12. 同步到 Gitee 镜像 ----------
-      # APK 为什么走「git 分支」而不是「发行版附件」：
-      #   Gitee 的 POST /releases/{id}/attach_files 在 GitHub 的海外 runner 上
-      #   长期无响应（连接建起来了就是不回，一直挂到超时）。v71~v75 连试五版，
-      #   发行版都建出来了、附件表永远是空的，所以这条路放弃。
-      #   而 git push 每一次都稳，于是把 APK 当普通大文件推到一条叫 apk 的
-      #   孤儿分支上 —— 下载地址固定、不依赖任何 API：
-      #     https://gitee.com/<repo>/raw/apk/app-arm64-v8a-release.apk
-      #
-      # 容错：Gitee 挂了只打 warning，不让 GitHub 这边的正常发布失败。
-      - name: 同步到 Gitee 镜像
-        if: success()
-        # 跨境推两个 21 MB 的包，慢起来要几分钟，别让默认超时打断
-        timeout-minutes: 30
-        env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-          # 仓库路径（不是完整网址）：https://gitee.com/yin-cheng-lu/StudyHub
-          GITEE_REPO: yin-cheng-lu/StudyHub
-        run: |
-          set +e
-          if [ -z "$GITEE_TOKEN" ]; then
-            echo "::warning::没配 GITEE_TOKEN，跳过 Gitee 同步"
-            exit 0
-          fi
-
-          WS=$(pwd)
-          TAG="v${{ github.run_number }}"
-          BUILD="${{ github.run_number }}"
-          SHA="${{ github.sha }}"
-          GIT_URL="https://yin-cheng-lu:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
-          API="https://gitee.com/api/v5/repos/${GITEE_REPO}"
-          WEB="https://gitee.com/${GITEE_REPO}"
-          echo "目标仓库：${GITEE_REPO}    tag：${TAG}"
-
-          # 20 MB 以上的包走 http 推送，缓冲区不够会 "RPC failed" 或 411
-          git config --global http.postBuffer 524288000
-          git config --global http.lowSpeedLimit 0
-          git config --global http.lowSpeedTime 600
-
-          # ---- 1. 源码：推到 Gitee 仓库自己的默认分支 ----
-          # 分支名用 ls-remote 现查、不调 API —— Gitee 的匿名 API 限流很凶
-          # （构建机 IP 直接 403 Rate Limit Exceeded），ls-remote 稳定得多。
-          HEADS=$(git ls-remote --heads "$GIT_URL" 2>/dev/null | awk '{print $2}' | sed 's#refs/heads/##')
-          DEF=$(printf '%s\n' "$HEADS" | grep -x -e main -e master | head -1)
-          [ -z "$DEF" ] && DEF=$(printf '%s\n' "$HEADS" | grep -vx 'apk' | head -1)
-          [ -z "$DEF" ] && DEF=main
-          echo "Gitee 默认分支：${DEF}"
-
-          git config user.name "ci-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git push --force "$GIT_URL" "HEAD:refs/heads/${DEF}"; then
-            echo "源码已推送到 ${DEF}"
-          else
-            echo "::warning::源码推送失败（多半是 GITEE_TOKEN 权限不足或仓库路径不对）"
-          fi
-
-          # ---- 2. tag ----
-          git tag -f "$TAG" >/dev/null 2>&1
-          git push -f "$GIT_URL" "refs/tags/${TAG}" && echo "tag ${TAG} 已推送"
-
-          # ---- 3. APK → apk 分支（每次都是一个全新的孤儿提交，只留最新一版）----
-          APK_LIST=$(ls -1 "$WS"/build/app/outputs/flutter-apk/*-release.apk 2>/dev/null)
-          if [ -z "$APK_LIST" ]; then
-            APK_LIST=$(find "$WS" -type f -name "*-release.apk" -not -path "*/.git/*" 2>/dev/null)
-          fi
-          if [ -z "$APK_LIST" ]; then
-            echo "::warning::一个 APK 都没找到，本次只推了源码和 tag"
-            exit 0
-          fi
-          echo "----- 要推的 APK -----"
-          printf '%s\n' "$APK_LIST"
-
-          rm -rf /tmp/apkpush && mkdir -p /tmp/apkpush
-          cd /tmp/apkpush
-          git init -q -b apk
-          git config user.name "ci-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          for f in $APK_LIST; do cp "$f" .; done
-
-          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          cat > latest.json <<EOF
-          {"version":"${APP_VER}","build":${BUILD},"tag":"${TAG}",
-           "commit":"${SHA}","built_at":"${NOW}","repo":"${GITEE_REPO}"}
-          EOF
-
-          cat > README.md <<EOF
-          # 学聚 APK（自动发布，勿手改）
-
-          当前版本 **${APP_VER}**，构建编号 **${BUILD}**，tag \`${TAG}\`，提交 \`${SHA}\`。
-
-          - 64 位（绝大多数手机）：[app-arm64-v8a-release.apk](${WEB}/raw/apk/app-arm64-v8a-release.apk)
-          - 32 位（老机型）：[app-armeabi-v7a-release.apk](${WEB}/raw/apk/app-armeabi-v7a-release.apk)
-
-          本分支每次构建都会被整体覆盖（force push），只保留最新一版。
-          历史版本见 GitHub Releases 或本仓库对应的 tag。
-          EOF
-
-          ls -lh
-          git add -A
-          git commit -q -m "APK ${TAG}（${APP_VER}）build ${BUILD}"
-          if git push -f "$GIT_URL" HEAD:refs/heads/apk; then
-            echo "APK 已推到 apk 分支"
-          else
-            echo "::warning::APK 分支推送失败"
-          fi
-          cd "$WS"
-
-          # ---- 4. 发行版（可选，只做版本页；不再上传附件）----
-          BODY="APK 直接点下面两个链接下载：
-
-          - [app-arm64-v8a-release.apk](${WEB}/raw/apk/app-arm64-v8a-release.apk) —— 64 位，近年手机优先装这个
-          - [app-armeabi-v7a-release.apk](${WEB}/raw/apk/app-armeabi-v7a-release.apk) —— 32 位，老机型才需要
-
-          ${SIGN_NOTE:-}
-
-          版本 ${APP_VER}，构建编号 ${BUILD}，源码提交 ${SHA}。"
-
-          HTTP=$(curl -s -o /tmp/rel.json -w "%{http_code}" \
-            --connect-timeout 20 --max-time 90 \
-            -X POST "${API}/releases" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "access_token=${GITEE_TOKEN}" \
-            --data-urlencode "tag_name=${TAG}" \
-            --data-urlencode "name=学聚 APK ${TAG}（${APP_VER}）" \
-            --data-urlencode "body=${BODY}" \
-            --data-urlencode "prerelease=false" \
-            --data-urlencode "target_commitish=${DEF}")
-          echo "建发行版 HTTP ${HTTP}：$(head -c 200 /tmp/rel.json)"
-
-          echo "----- Gitee 镜像 -----"
-          echo "  源码：${WEB}/tree/${DEF}"
-          echo "  64 位：${WEB}/raw/apk/app-arm64-v8a-release.apk"
-          echo "  32 位：${WEB}/raw/apk/app-armeabi-v7a-release.apk"
-
       # ---------- 12. 失败时：把日志推送到 ci-logs 分支 ----------
       # 这样即使不登录 GitHub、不提供 token，也能直接读到完整的构建报错。
       - name: 失败时导出日志到 ci-logs 分支
@@ -998,3 +856,181 @@ jobs:
             pub-get.log
           retention-days: 30
           if-no-files-found: ignore
+
+
+
+  # ============================================================
+  # 同步到 Gitee 镜像（独立 job）
+  # 为什么单独拆一个 job：
+  #   跨境从 Azure 往 Gitee 推 40 MB 的 APK，实测慢到 30 分钟都推不完
+  #   （第一次放进 build 里，直接被 step 超时掐死）。拆出来之后：
+  #     · build 8 分钟出包、立刻建 GitHub Release —— 你马上能下载
+  #     · Gitee 镜像在后台慢慢追，追多久都不影响 GitHub 上的发布
+  # ============================================================
+  gitee:
+    name: 同步到 Gitee 镜像
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 60
+    steps:
+      - name: 拉取代码（全量历史）
+        uses: actions/checkout@v4
+        with:
+          # 浅克隆往另一个远端 push 会被 "shallow update not allowed" 拒绝
+          fetch-depth: 0
+
+      - name: 取回构建好的 APK
+        uses: actions/download-artifact@v4
+        with:
+          name: studyhub-apk
+          path: /tmp/apk
+
+      - name: 推源码 / tag / APK 到 Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          # 仓库路径（不是完整网址）：https://gitee.com/yin-cheng-lu/StudyHub
+          GITEE_REPO: yin-cheng-lu/StudyHub
+        run: |
+          set +e
+          # 全程留日志，最后推到 ci-logs 分支 —— 不登录 GitHub 也能读：
+          #   https://raw.githubusercontent.com/<repo>/ci-logs/gitee.log
+          exec > >(tee -a "$GITHUB_WORKSPACE/gitee.log") 2>&1
+
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo "::warning::没配 GITEE_TOKEN，跳过 Gitee 同步"
+            exit 0
+          fi
+
+          T0=$(date +%s)
+          used() { echo "$(( $(date +%s) - T0 ))s"; }
+          TAG="v${GITHUB_RUN_NUMBER}"
+          BUILD="${GITHUB_RUN_NUMBER}"
+          SHA="${GITHUB_SHA}"
+          APP_VER=$(grep -E '^version:' pubspec.yaml | head -1 | sed -E 's/^version:\s*([0-9.]+).*/\1/')
+          GIT_URL="https://yin-cheng-lu:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
+          API="https://gitee.com/api/v5/repos/${GITEE_REPO}"
+          WEB="https://gitee.com/${GITEE_REPO}"
+          echo "目标仓库：${GITEE_REPO}    tag：${TAG}    版本：${APP_VER}"
+
+          # 40 MB 的 pack 走 http 推送，缓冲区不够会 "RPC failed" / 411
+          git config --global http.postBuffer 524288000
+          git config --global http.lowSpeedLimit 0
+          git config --global http.lowSpeedTime 2400
+          git config --global http.version HTTP/1.1
+          git config user.name "ci-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # ---- 1. 源码：推到 Gitee 仓库自己的默认分支 ----
+          # 分支名用 ls-remote 现查、不调 API —— Gitee 的匿名 API 限流很凶
+          # （构建机 IP 直接 403 Rate Limit Exceeded），ls-remote 稳得多。
+          HEADS=$(git ls-remote --heads "$GIT_URL" 2>/dev/null | awk '{print $2}' | sed 's#refs/heads/##')
+          DEF=$(printf '%s\n' "$HEADS" | grep -x -e main -e master | head -1)
+          [ -z "$DEF" ] && DEF=$(printf '%s\n' "$HEADS" | grep -vx 'apk' | head -1)
+          [ -z "$DEF" ] && DEF=main
+          echo "Gitee 默认分支：${DEF}"
+
+          echo "[1/4] 推源码 → ${DEF}"
+          git push --progress --force "$GIT_URL" "HEAD:refs/heads/${DEF}" \
+            && echo "  源码 OK（用掉 $(used)）" \
+            || echo "::warning::源码推送失败（多半是 GITEE_TOKEN 权限不足或仓库路径不对）"
+
+          # ---- 2. tag ----
+          echo "[2/4] 推 tag ${TAG}"
+          git tag -f "$TAG" >/dev/null 2>&1
+          git push --progress -f "$GIT_URL" "refs/tags/${TAG}" \
+            && echo "  tag OK（用掉 $(used)）"
+
+          # ---- 3. APK → apk 分支（每次全新的孤儿提交，只留最新一版）----
+          echo "[3/4] 推 APK"
+          rm -rf /tmp/apkpush && mkdir -p /tmp/apkpush
+          cp /tmp/apk/*.apk /tmp/apkpush/ 2>/dev/null
+          ls -lh /tmp/apkpush/
+          APK_N=$(ls -1 /tmp/apkpush/*.apk 2>/dev/null | wc -l)
+          if [ "$APK_N" = "0" ]; then
+            echo "::warning::没拿到 APK 产物，本次只推了源码和 tag"
+            exit 0
+          fi
+
+          cd /tmp/apkpush
+          git init -q -b apk
+          git config user.name "ci-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          cat > latest.json <<EOF
+          {"version":"${APP_VER}","build":${BUILD},"tag":"${TAG}",
+           "commit":"${SHA}","built_at":"${NOW}","repo":"${GITEE_REPO}"}
+          EOF
+
+          cat > README.md <<EOF
+          # 学聚 APK（自动发布，勿手改）
+
+          当前版本 **${APP_VER}**，构建编号 **${BUILD}**，tag \`${TAG}\`，提交 \`${SHA}\`。
+
+          - 64 位（绝大多数手机）：[app-arm64-v8a-release.apk](${WEB}/raw/apk/app-arm64-v8a-release.apk)
+          - 32 位（老机型）：[app-armeabi-v7a-release.apk](${WEB}/raw/apk/app-armeabi-v7a-release.apk)
+
+          本分支每次构建都会被整体覆盖（force push），只保留最新一版。
+          历史版本见 GitHub Releases 或本仓库对应的 tag。
+          EOF
+
+          git add -A
+          git commit -q -m "APK ${TAG}（${APP_VER}）build ${BUILD}"
+          git push --progress -f "$GIT_URL" HEAD:refs/heads/apk \
+            && echo "  APK OK（用掉 $(used)）" \
+            || echo "::warning::APK 分支推送失败"
+          cd "$GITHUB_WORKSPACE"
+
+          # ---- 4. 发行版（可选，只是给个版本页；不再上传附件）----
+          # 附件上传接口 POST /releases/{id}/attach_files 在外网 runner 上
+          # 长期无响应（一直挂到超时），v71~v75 连试五版全部失败，已弃用。
+          echo "[4/4] 建 Gitee 发行版（可选）"
+          BODY="APK 直接点下面两个链接下载：
+
+          - [app-arm64-v8a-release.apk](${WEB}/raw/apk/app-arm64-v8a-release.apk) —— 64 位，近年手机优先装这个
+          - [app-armeabi-v7a-release.apk](${WEB}/raw/apk/app-armeabi-v7a-release.apk) —— 32 位，老机型才需要
+
+          版本 ${APP_VER}，构建编号 ${BUILD}，源码提交 ${SHA}。"
+
+          HTTP=$(curl -s -o /tmp/rel.json -w "%{http_code}" \
+            --connect-timeout 20 --max-time 90 \
+            -X POST "${API}/releases" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "access_token=${GITEE_TOKEN}" \
+            --data-urlencode "tag_name=${TAG}" \
+            --data-urlencode "name=学聚 APK ${TAG}（${APP_VER}）" \
+            --data-urlencode "body=${BODY}" \
+            --data-urlencode "prerelease=false" \
+            --data-urlencode "target_commitish=${DEF}")
+          echo "  发行版 HTTP ${HTTP}：$(head -c 200 /tmp/rel.json)"
+
+          echo "----- Gitee 镜像就绪（总用时 $(used)）-----"
+          echo "  源码：${WEB}/tree/${DEF}"
+          echo "  64 位：${WEB}/raw/apk/app-arm64-v8a-release.apk"
+          echo "  32 位：${WEB}/raw/apk/app-armeabi-v7a-release.apk"
+          sleep 2
+
+      # 同步的完整日志推到 ci-logs 分支：anon 可读，出问题不用登 GitHub 翻 Actions
+      - name: 同步日志推到 ci-logs
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          [ -f gitee.log ] || { echo "没有 gitee.log"; exit 0; }
+          wc -l gitee.log
+          rm -rf /tmp/cilogs
+          if git clone -q --depth 1 --branch ci-logs \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" /tmp/cilogs 2>/dev/null; then
+            cp gitee.log /tmp/cilogs/gitee.log
+          else
+            mkdir -p /tmp/cilogs && cd /tmp/cilogs
+            git init -q -b ci-logs
+            cp "$GITHUB_WORKSPACE/gitee.log" .
+          fi
+          cd /tmp/cilogs
+          git config user.name "ci-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "gitee 同步日志 $(date -u +%Y%m%dT%H%M%SZ)" || echo "无变化"
+          git push -f origin HEAD:ci-logs && echo "日志已推送"
