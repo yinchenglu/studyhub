@@ -823,9 +823,6 @@ jobs:
           # 仓库路径（不是完整网址）：https://gitee.com/yin-cheng-lu/StudyHub
           GITEE_REPO: yin-cheng-lu/StudyHub
         run: |
-          # 全程留一份日志：附件上传失败是「静默」的（API 返回错误但 curl 退出码是 0），
-          # 不落盘就完全没法查。失败时这份日志会被推到 ci-logs 分支。
-          exec > >(tee -a gitee-sync.log) 2>&1
           set +e
           if [ -z "$GITEE_TOKEN" ]; then
             echo "::warning::没配 GITEE_TOKEN，跳过 Gitee 同步"
@@ -897,10 +894,27 @@ jobs:
           #     会出现「连接建立了但一直没响应」→ 用 `-H "Expect:"` 关掉；
           #   * 上传失败时 HTTP 可能是 4xx，但 curl 退出码仍是 0，
           #     所以必须自己看返回体和 http_code，不能只看 curl 是否成功。
+          #
+          # 找文件用「先按约定路径、找不到再全仓库 find」：
+          #   构建产物路径随 Flutter 版本变过一次，硬写路径会出现
+          #   「release 上传成功、Gitee 一个附件都没有，还不报错」这种哑失败。
+          APK_LIST=$(ls -1 build/app/outputs/flutter-apk/*-release.apk 2>/dev/null)
+          if [ -z "$APK_LIST" ]; then
+            echo "::warning::flutter-apk 目录里没找到 APK，退回到全仓库 find"
+            APK_LIST=$(find . -type f -name "*-release.apk" -not -path "./.git/*" 2>/dev/null)
+          fi
+          echo "----- 找到的 APK -----"
+          echo "${APK_LIST:-（一个都没有）}"
+          APK_N=$(printf '%s\n' "$APK_LIST" | grep -c . )
+
           OK=0
           FAIL=0
           DIAG=""
-          for f in build/app/outputs/flutter-apk/*-release.apk; do
+          if [ -z "$APK_LIST" ]; then
+            DIAG="一个 APK 文件都没找到（pwd=$(pwd)）"
+            FAIL=1
+          fi
+          for f in $APK_LIST; do
             [ -f "$f" ] || continue
             SIZE=$(stat -c%s "$f")
             echo "上传 $(basename "$f")（$((SIZE/1024/1024)) MB）..."
@@ -923,17 +937,22 @@ jobs:
           echo "本次成功上传 ${OK} 个附件，失败 ${FAIL} 个"
           echo "Gitee 发行版地址：https://gitee.com/${GITEE_REPO}/releases/tag/${TAG}"
 
-          # 失败时把真实响应写回发行版正文 —— CI 日志不方便取，
-          # Gitee 的发行版描述是匿名也能读到的，排查最省事。
-          if [ -n "$DIAG" ]; then
-            curl -s -X PATCH "${API}/releases/${REL_ID}" \
-              --data-urlencode "access_token=${GITEE_TOKEN}" \
-              --data-urlencode "name=学聚 APK ${TAG}（${APP_VER}）" \
-              --data-urlencode "body=${BODY}
+          # ---- 5. 把本次同步结果写回发行版正文 ----
+          # CI 日志在 Actions 里要登录才能看，Gitee 的发行版描述是匿名也能读的，
+          # 出问题时直接把「找到几个 APK、每个的 HTTP 与响应」摆在正文里，
+          # 排查成本最低。诊断期用，稳定后可以删掉这一段。
+          curl -s -X PATCH "${API}/releases/${REL_ID}" \
+            --data-urlencode "access_token=${GITEE_TOKEN}" \
+            --data-urlencode "name=学聚 APK ${TAG}（${APP_VER}）" \
+            --data-urlencode "body=${BODY}
 
-            ---
-            【附件上传诊断】${DIAG}" >/dev/null
-            echo "::error::有 ${FAIL} 个 APK 没传到 Gitee（诊断信息已写进发行版正文）"
+          ---
+          【同步诊断】pwd=$(pwd)  APK 数=${APK_N}  成功=${OK} 失败=${FAIL}
+          ${APK_LIST}
+          ${DIAG}" >/dev/null
+
+          if [ "$FAIL" != "0" ]; then
+            echo "::error::Gitee 附件同步失败 ${FAIL} 个（诊断已写进发行版正文）"
             exit 1
           fi
 
