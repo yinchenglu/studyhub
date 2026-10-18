@@ -899,6 +899,7 @@ jobs:
           #     所以必须自己看返回体和 http_code，不能只看 curl 是否成功。
           OK=0
           FAIL=0
+          DIAG=""
           for f in build/app/outputs/flutter-apk/*-release.apk; do
             [ -f "$f" ] || continue
             SIZE=$(stat -c%s "$f")
@@ -906,9 +907,8 @@ jobs:
             HTTP=$(curl -s -o /tmp/att.json -w "%{http_code}" \
               --max-time 300 \
               -H "Expect:" \
-              -X POST "${API}/releases/${REL_ID}/attach_files" \
-              -F "access_token=${GITEE_TOKEN}" \
-              -F "file=@${f};type=application/vnd.android.package-archive")
+              -X POST "${API}/releases/${REL_ID}/attach_files?access_token=${GITEE_TOKEN}" \
+              -F "file=@${f}")
             echo "  HTTP ${HTTP}"
             echo "  返回：$(head -c 400 /tmp/att.json)"
             if grep -q '"browser_download_url"' /tmp/att.json; then
@@ -917,12 +917,23 @@ jobs:
             else
               echo "::warning::附件 $(basename "$f") 上传失败"
               FAIL=$((FAIL+1))
+              DIAG="${DIAG}${DIAG:+；}$(basename "$f") HTTP ${HTTP} $(head -c 300 /tmp/att.json)"
             fi
           done
           echo "本次成功上传 ${OK} 个附件，失败 ${FAIL} 个"
           echo "Gitee 发行版地址：https://gitee.com/${GITEE_REPO}/releases/tag/${TAG}"
-          if [ "$FAIL" != "0" ]; then
-            echo "::error::有 ${FAIL} 个 APK 没传到 Gitee，日志见 ci-logs 分支的 gitee-sync.log"
+
+          # 失败时把真实响应写回发行版正文 —— CI 日志不方便取，
+          # Gitee 的发行版描述是匿名也能读到的，排查最省事。
+          if [ -n "$DIAG" ]; then
+            curl -s -X PATCH "${API}/releases/${REL_ID}" \
+              --data-urlencode "access_token=${GITEE_TOKEN}" \
+              --data-urlencode "name=学聚 APK ${TAG}（${APP_VER}）" \
+              --data-urlencode "body=${BODY}
+
+            ---
+            【附件上传诊断】${DIAG}" >/dev/null
+            echo "::error::有 ${FAIL} 个 APK 没传到 Gitee（诊断信息已写进发行版正文）"
             exit 1
           fi
 
