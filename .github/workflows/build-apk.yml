@@ -818,6 +818,8 @@ jobs:
       #       Gitee 挂了不该影响 GitHub 上的正常发布（用户主要从 GitHub 下载）。
       - name: 同步发行版到 Gitee
         if: success()
+        # 跨境往 Gitee 传两个 21 MB 的包，慢起来能到十几分钟，别让默认超时打断
+        timeout-minutes: 40
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           # 仓库路径（不是完整网址）：https://gitee.com/yin-cheng-lu/StudyHub
@@ -910,6 +912,7 @@ jobs:
           OK=0
           FAIL=0
           DIAG=""
+          DETAIL=""
           if [ -z "$APK_LIST" ]; then
             DIAG="一个 APK 文件都没找到（pwd=$(pwd)）"
             FAIL=1
@@ -918,43 +921,81 @@ jobs:
             [ -f "$f" ] || continue
             SIZE=$(stat -c%s "$f")
             echo "上传 $(basename "$f")（$((SIZE/1024/1024)) MB）..."
+            # Gitee 在国外 runner 上上传 20 MB 级别的包很慢，给到 15 分钟。
             HTTP=$(curl -s -o /tmp/att.json -w "%{http_code}" \
-              --max-time 300 \
+              --connect-timeout 30 --max-time 900 \
               -H "Expect:" \
               -X POST "${API}/releases/${REL_ID}/attach_files?access_token=${GITEE_TOKEN}" \
               -F "file=@${f}")
-            echo "  HTTP ${HTTP}"
+            RC=$?
+            echo "  HTTP ${HTTP}  curl_rc=${RC}"
             echo "  返回：$(head -c 400 /tmp/att.json)"
             if grep -q '"browser_download_url"' /tmp/att.json; then
               echo "  完成"
               OK=$((OK+1))
+              DETAIL="${DETAIL}$(basename "$f") OK HTTP ${HTTP}；"
             else
               echo "::warning::附件 $(basename "$f") 上传失败"
               FAIL=$((FAIL+1))
-              DIAG="${DIAG}${DIAG:+；}$(basename "$f") HTTP ${HTTP} $(head -c 300 /tmp/att.json)"
+              DIAG="${DIAG}${DIAG:+；}$(basename "$f") HTTP ${HTTP} rc=${RC} $(head -c 300 /tmp/att.json)"
+              DETAIL="${DETAIL}$(basename "$f") 失败 HTTP ${HTTP} rc=${RC} $(head -c 200 /tmp/att.json)；"
             fi
           done
           echo "本次成功上传 ${OK} 个附件，失败 ${FAIL} 个"
           echo "Gitee 发行版地址：https://gitee.com/${GITEE_REPO}/releases/tag/${TAG}"
 
-          # ---- 5. 把本次同步结果写回发行版正文 ----
-          # CI 日志在 Actions 里要登录才能看，Gitee 的发行版描述是匿名也能读的，
-          # 出问题时直接把「找到几个 APK、每个的 HTTP 与响应」摆在正文里，
-          # 排查成本最低。诊断期用，稳定后可以删掉这一段。
-          curl -s -X PATCH "${API}/releases/${REL_ID}" \
-            --data-urlencode "access_token=${GITEE_TOKEN}" \
-            --data-urlencode "name=学聚 APK ${TAG}（${APP_VER}）" \
-            --data-urlencode "body=${BODY}
-
-          ---
-          【同步诊断】pwd=$(pwd)  APK 数=${APK_N}  成功=${OK} 失败=${FAIL}
-          ${APK_LIST}
-          ${DIAG}" >/dev/null
+          # ---- 5. 诊断落盘 ----
+          # Actions 的日志要登录才能看；Gitee 那边写回去也不一定成功。
+          # 落成文件，由下一步用 GITHUB_TOKEN 写进 GitHub 发行版正文 ——
+          # 那个正文是匿名可读的，出问题时能直接把原因取出来。
+          {
+            echo "pwd=$(pwd)"
+            echo "TAG=${TAG}  REL_ID=${REL_ID}"
+            echo "APK 数量=${APK_N}"
+            echo "APK 列表："
+            echo "${APK_LIST:-（空）}"
+            echo "成功=${OK} 失败=${FAIL}"
+            echo "每个文件：${DETAIL:-无}"
+            echo "失败详情：${DIAG:-无}"
+          } > gitee-diag.txt
+          cat gitee-diag.txt
 
           if [ "$FAIL" != "0" ]; then
-            echo "::error::Gitee 附件同步失败 ${FAIL} 个（诊断已写进发行版正文）"
+            echo "::error::Gitee 附件没传全（${FAIL} 个失败），原因见下一步写回的发行版正文"
             exit 1
           fi
+
+      # 把上一步的诊断写进 GitHub 发行版正文（只在 Gitee 那步失败时跑）。
+      # 目的：匿名也能读到失败原因，不用登 GitHub 翻日志。
+      - name: 诊断回写到 GitHub 发行版
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: v${{ github.run_number }}
+        run: |
+          set +e
+          [ -f gitee-diag.txt ] || { echo "没有 gitee-diag.txt，跳过"; exit 0; }
+          python3 - <<'PY'
+          import json, os, urllib.request
+          tok = os.environ["GH_TOKEN"]; repo = os.environ["REPO"]; tag = os.environ["TAG"]
+          base = f"https://api.github.com/repos/{repo}"
+          hdr = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json",
+                 "Content-Type": "application/json", "User-Agent": "studyhub-ci"}
+          def call(url, method="GET", payload=None):
+              data = json.dumps(payload).encode() if payload is not None else None
+              req = urllib.request.Request(url, method=method, data=data, headers=hdr)
+              with urllib.request.urlopen(req) as r:
+                  return json.load(r)
+          try:
+              rel = call(f"{base}/releases/tags/{tag}")
+              diag = open("gitee-diag.txt", encoding="utf-8", errors="replace").read()[:1800]
+              body = (rel.get("body") or "") + "\n\n---\n**Gitee 同步诊断**\n\n```\n" + diag + "\n```\n"
+              call(f"{base}/releases/{rel['id']}", "PATCH", {"body": body})
+              print("诊断已写回发行版正文")
+          except Exception as e:
+              print("写回失败：", e)
+          PY
 
       # ---------- 12. 失败时：把日志推送到 ci-logs 分支 ----------
       # 这样即使不登录 GitHub、不提供 token，也能直接读到完整的构建报错。
@@ -966,7 +1007,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
 
           cp analyze.log build.log pub-get.log /tmp/logdump/ 2>/dev/null
-          cp gitee-sync.log /tmp/logdump/ 2>/dev/null
+          cp gitee-diag.txt /tmp/logdump/ 2>/dev/null
           cp pubspec.lock /tmp/logdump/ 2>/dev/null
 
           flutter doctor -v > /tmp/logdump/flutter-doctor.log 2>&1
