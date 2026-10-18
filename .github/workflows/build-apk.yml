@@ -912,10 +912,11 @@ jobs:
           WEB="https://gitee.com/${GITEE_REPO}"
           echo "目标仓库：${GITEE_REPO}    tag：${TAG}    版本：${APP_VER}"
 
-          # 40 MB 的 pack 走 http 推送，缓冲区不够会 "RPC failed" / 411
+          # 大包走 http 推送，缓冲区放开；同时**必须开启低速中断**：
+          # 不开的话连接一旦僵住，git 会一直等（第一版就是这样耗到 job 超时）。
           git config --global http.postBuffer 524288000
-          git config --global http.lowSpeedLimit 0
-          git config --global http.lowSpeedTime 2400
+          git config --global http.lowSpeedLimit 1024
+          git config --global http.lowSpeedTime 120
           git config --global http.version HTTP/1.1
           git config user.name "ci-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -940,17 +941,11 @@ jobs:
           git push --progress -f "$GIT_URL" "refs/tags/${TAG}" \
             && echo "  tag OK（用掉 $(used)）"
 
-          # ---- 3. APK → apk 分支（每次全新的孤儿提交，只留最新一版）----
           echo "[3/4] 推 APK"
+          # 只镜像手机真用得上的两个 ABI。
+          # 构建其实还会出一个 app-x86_64-release.apk（模拟器用，23 MB），
+          # 三个一起推 = 66 MB，跨境传到 Gitee 会直接僵死（第一版就是这么挂的）。
           rm -rf /tmp/apkpush && mkdir -p /tmp/apkpush
-          cp /tmp/apk/*.apk /tmp/apkpush/ 2>/dev/null
-          ls -lh /tmp/apkpush/
-          APK_N=$(ls -1 /tmp/apkpush/*.apk 2>/dev/null | wc -l)
-          if [ "$APK_N" = "0" ]; then
-            echo "::warning::没拿到 APK 产物，本次只推了源码和 tag"
-            exit 0
-          fi
-
           cd /tmp/apkpush
           git init -q -b apk
           git config user.name "ci-bot"
@@ -974,11 +969,40 @@ jobs:
           历史版本见 GitHub Releases 或本仓库对应的 tag。
           EOF
 
-          git add -A
-          git commit -q -m "APK ${TAG}（${APP_VER}）build ${BUILD}"
-          git push --progress -f "$GIT_URL" HEAD:refs/heads/apk \
-            && echo "  APK OK（用掉 $(used)）" \
-            || echo "::warning::APK 分支推送失败"
+          git add latest.json README.md
+          git commit -q -m "说明 ${TAG}（${APP_VER}）"
+
+          # 逐个包推、一个包一次请求：
+          #   · 单次 21 MB 比一次 66 MB 成功率高得多
+          #   · 后一个失败不影响已经推上去的前一个
+          #   · 每次尝试最多 25 分钟（timeout 兜底），低速 2 分钟即中断重试
+          push_one() {
+            F="$1"; TRIES="$2"; N=1
+            if [ ! -f "/tmp/apk/${F}" ]; then
+              echo "  ${F} 不在产物里，跳过"
+              return 1
+            fi
+            cp "/tmp/apk/${F}" .
+            git add -A
+            git commit -q -m "${F} ${TAG}（${APP_VER}）"
+            while [ "$N" -le "$TRIES" ]; do
+              echo "  第 ${N}/${TRIES} 次推 ${F}（已用 $(used)）..."
+              if timeout 1200 git push --progress -f "$GIT_URL" HEAD:refs/heads/apk; then
+                echo "  ${F} 完成（累计 $(used)）"
+                return 0
+              fi
+              echo "  ${F} 第 ${N} 次失败（累计 $(used)），10 秒后重试"
+              N=$((N + 1))
+              sleep 10
+            done
+            echo "::warning::${F} 推了 ${TRIES} 次都没上去"
+            return 1
+          }
+
+          OKN=0
+          push_one app-arm64-v8a-release.apk 3 && OKN=$((OKN + 1))
+          push_one app-armeabi-v7a-release.apk 2 && OKN=$((OKN + 1))
+          echo "本次成功推上去 ${OKN} 个 APK（共 $(used)）"
           cd "$GITHUB_WORKSPACE"
 
           # ---- 4. 发行版（可选，只是给个版本页；不再上传附件）----
