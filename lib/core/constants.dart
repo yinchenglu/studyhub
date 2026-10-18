@@ -207,4 +207,4 @@ const String kAppVersion = '2.0.0';
 ///
 /// v1.9.0+17 修：bump_version.py 之前**只改 kAppVersion 不改 kPubspecVersion**，
 /// 会让启动 assert 失败。这里把 bump_version.py 一起修了（见 bump_version.py）。
-const String kPubspecVersion = '2.0.0+47';
+const String kPubspecVersion = '2.0.0+48';

@@ -893,33 +893,44 @@ studyhub_app/
     - 令牌放 Actions secret **`GITEE_TOKEN`**（Gitee → 设置 → 私人令牌，
       权限勾 `projects`）。**没配不会让构建失败**，只会打一条 warning 跳过
     - 做四件事：① 把源码强推到 Gitee 的默认分支（分支名用 `git ls-remote`
-      现查，**不调 API**）② 打 `v<run_number>` tag 推过去
-      ③ **把两个 APK 当普通文件强推到一条叫 `apk` 的孤儿分支**
+      现查，**不调 API**，实测 5 秒）② 打 `v<run_number>` tag 推过去
+      ③ **把 APK 当普通文件推到一条叫 `apk` 的分支**（每次整体覆盖，只留最新一版）
       ④ （可选）调 v5 API 建发行版，正文里放下载链接
-    - **APK 的下载地址是固定的**（`apk` 分支每次被整体覆盖，只留最新一版）：
+    - **APK 的下载地址是固定的**：
       * 64 位：`https://gitee.com/yin-cheng-lu/StudyHub/raw/apk/app-arm64-v8a-release.apk`
       * 32 位：`https://gitee.com/yin-cheng-lu/StudyHub/raw/apk/app-armeabi-v7a-release.apk`
       * 版本信息：同分支下的 `latest.json`
-      * 这两个 `raw` 链接会 302 跳到 `raw.giteeusercontent.com`（CDN），能直连下载
+      * **这两个链接必须登录 Gitee 才能下**（未登录回 `403 large file require login`，
+        这是 Gitee 对大文件 raw 下载的限制，不是权限没配对）；
+        要发给别人下载，用 GitHub Release 的链接
+    - **速度**：实测每个 21 MB 的包要从海外 runner 推 **约 20 分钟**
+      （跑一次 `Writing objects` 之后就是纯等网络，不是卡死）。
+      所以先推 arm64，推完若总用时 ≤ 30 分钟再补 32 位，两个都推约 39 分钟
     - 排查通道：`gitee` job 的全量输出会被推到 **`ci-logs` 分支的 `gitee.log`**，
       匿名可读（`raw.githubusercontent.com/<repo>/ci-logs/gitee.log`），
       不用登 GitHub 翻 Actions
-    - 四个易踩的坑：
+    - 五个易踩的坑：
       * **checkout 必须 `fetch-depth: 0`** —— 浅克隆往另一个远端 push 会被
         `shallow update not allowed` 拒绝（本仓库历史才 3 MB，全量拉没负担）
       * **不要用发行的「附件上传」接口**（`POST /releases/{id}/attach_files`）：
         GitHub 的海外 runner 上去连 Gitee，这个接口**长期无响应**，
         连接建起来就不回、一直挂到超时（v71~v75 连试五版，发行版都建出来了、
         附件表永远是空的）。所以 APK 改走 git push，同一个令牌、稳得多
+      * **千万别把 3 个 ABI 一起推**：构建其实还会出一个 `app-x86_64-release.apk`
+        （模拟器用，23 MB），三包齐推 = 66 MB，git 打包完就僵在上传，
+        30 分钟都推不完（v77 就这么挂的）。只挑手机用得上的两个
+      * **必须开低速中断**：`http.lowSpeedLimit 1024` + `http.lowSpeedTime 120`。
+        不开（比如 `lowSpeedTime 2400`）一旦连接僵住，git 会一直等，
+        直接耗到 job 超时，日志里只看到 `Total 7 ... done` 就没了
       * **Gitee 的匿名 API 限流很凶**（构建机 IP 直接 `403 Rate Limit Exceeded`），
         凡是能不用 API 的地方都别用 —— 分支名用 `ls-remote`，
         建发行版只是锦上添花，失败只打 warning
       * **Gitee 的 raw 有内容审核**：`README.md` 这类文本文件命中违禁词会回
         `451 The content may contain violation information`（本仓库的 README 就中招了），
         但 `pubspec.yaml` / APK 这类不受影响
-    - 仓库体积：每次构建会往 Gitee 推约 43 MB 对象（旧版本变成不可达对象），
-      免费仓库 1 GB 上限，大约能撑 20 次左右；攒够了可以让我清一次
-    - 仓库体积：每次构建会往 Gitee 推约 43 MB 对象（旧版本变成不可达对象），
+      * **分支名 URL 会被 CDN 缓存**：`apk` 分支刚建好的头几分钟，
+        `raw/apk/xxx` 可能还是 404；换成提交号（`raw/<sha>/xxx`）立刻能取到
+    - 仓库体积：每次构建会往 Gitee 推约 42 MB 对象（旧版本变成不可达对象），
       免费仓库 1 GB 上限，大约能撑 20 次左右；攒够了可以让我清一次
 
 ---

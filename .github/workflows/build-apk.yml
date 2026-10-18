@@ -871,7 +871,8 @@ jobs:
     name: 同步到 Gitee 镜像
     runs-on: ubuntu-latest
     needs: build
-    timeout-minutes: 60
+    # 实测每个 21 MB 的包要推 ~20 分钟，两个包 ~39 分钟，留一次重试的余量
+    timeout-minutes: 55
     steps:
       - name: 拉取代码（全量历史）
         uses: actions/checkout@v4
@@ -965,6 +966,8 @@ jobs:
           - 64 位（绝大多数手机）：[app-arm64-v8a-release.apk](${WEB}/raw/apk/app-arm64-v8a-release.apk)
           - 32 位（老机型）：[app-armeabi-v7a-release.apk](${WEB}/raw/apk/app-armeabi-v7a-release.apk)
 
+          > 注：Gitee 对大文件 raw 下载要求登录，未登录访问这两个链接会被拒。
+
           本分支每次构建都会被整体覆盖（force push），只保留最新一版。
           历史版本见 GitHub Releases 或本仓库对应的 tag。
           EOF
@@ -999,9 +1002,17 @@ jobs:
             return 1
           }
 
+          # 实测：每个 21 MB 的包从海外 runner 推到 Gitee 要 ~20 分钟，
+          # 两个包约 39 分钟。所以先推 arm64（人人都用得上），
+          # 推完时间还富余再补 32 位，避免把 job 超时顶穿。
           OKN=0
           push_one app-arm64-v8a-release.apk 3 && OKN=$((OKN + 1))
-          push_one app-armeabi-v7a-release.apk 2 && OKN=$((OKN + 1))
+          ELAPSED=$(( $(date +%s) - T0 ))
+          if [ "$OKN" = "1" ] && [ "$ELAPSED" -le 1800 ]; then
+            push_one app-armeabi-v7a-release.apk 1 && OKN=$((OKN + 1))
+          else
+            echo "  已用 ${ELAPSED}s，32 位包这次不推"
+          fi
           echo "本次成功推上去 ${OKN} 个 APK（共 $(used)）"
           cd "$GITHUB_WORKSPACE"
 
@@ -1013,6 +1024,8 @@ jobs:
 
           - [app-arm64-v8a-release.apk](${WEB}/raw/apk/app-arm64-v8a-release.apk) —— 64 位，近年手机优先装这个
           - [app-armeabi-v7a-release.apk](${WEB}/raw/apk/app-armeabi-v7a-release.apk) —— 32 位，老机型才需要
+
+          > Gitee 大文件 raw 下载需要先登录 Gitee 账号。
 
           版本 ${APP_VER}，构建编号 ${BUILD}，源码提交 ${SHA}。"
 
