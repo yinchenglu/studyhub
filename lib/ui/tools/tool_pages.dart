@@ -108,8 +108,11 @@ class ToolScaffold extends StatelessWidget {
       // （Scaffold 只对 body 做避让）。不加 SafeArea 的话，页面底部那排
       // 「单个查询 / 批量查询」标签会被三键导航条压住一半，点不动
       // —— 用户报的「身份证查户下面按钮被挡住」就是它。
+      //
+      // `bottom` 是 public 字段，Dart 不会把它收窄成非空，
+      // 所以这里必须写 `bottom!`（跟 ArrowRules 那次是同一个坑）。
       bottomNavigationBar:
-          bottom == null ? null : SafeArea(top: false, child: bottom),
+          bottom == null ? null : SafeArea(top: false, child: bottom!),
     );
   }
 }
