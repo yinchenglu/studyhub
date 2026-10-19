@@ -13,6 +13,7 @@ import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../core/constants.dart';
+import '../../core/permissions.dart';
 import '../../core/recorder.dart';
 import '../../core/utils.dart';
 import '../../core/video_recorder.dart';
@@ -141,10 +142,12 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
     final am = await s.audioMaxMinutes();
     final vm = await s.videoMaxMinutes();
     final dir = await s.recorderDirPath();
-    // 默认目录（应用私有）也先算出来，好在界面上显示完整路径
+    // v2.2.0：默认目录优先显示「下载」目录（写得了的话），
+    // 没权限时 AudioRecorder.publicDir() 返回 null，落回私有目录
     String defDir = '';
     try {
-      final d = await AudioRecorder.defaultDir();
+      final pub = await AudioRecorder.publicDir();
+      final d = pub ?? await AudioRecorder.defaultDir();
       defDir = d.path;
     } catch (_) {}
     if (!mounted) return;
@@ -761,6 +764,12 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
 
   Widget _saveDirRow(ColorScheme scheme) {
     final custom = _saveDir != null && _saveDir!.isNotEmpty;
+    final inPublic = _effectiveDir.contains('/Download/');
+    final label = custom
+        ? '保存位置：自定义文件夹'
+        : inPublic
+            ? '保存位置：下载目录'
+            : '保存位置：应用私有目录';
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
@@ -772,7 +781,7 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(custom ? '保存位置：自定义文件夹' : '保存位置：应用私有目录',
+                  Text(label,
                       style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 2),
                   Text(
@@ -787,18 +796,66 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
               tooltip: '保存位置',
               icon: const Icon(Icons.more_vert, size: 20),
               onSelected: (v) {
+                if (v == 'download') _useDownloadDir();
                 if (v == 'browse') _pickSaveDir();
                 if (v == 'reset') _resetSaveDir();
               },
               itemBuilder: (_) => const <PopupMenuEntry<String>>[
+                PopupMenuItem<String>(value: 'download', child: Text('改存到手机「下载」目录')),
                 PopupMenuItem<String>(value: 'browse', child: Text('选择文件夹…')),
-                PopupMenuItem<String>(value: 'reset', child: Text('恢复成应用私有目录')),
+                PopupMenuItem<String>(value: 'reset', child: Text('恢复默认（下载目录）')),
               ],
             ),
           ],
         ),
       ),
     );
+  }
+
+  /// 一键改存到公共「下载」目录（v2.2.0）。
+  ///
+  /// 写公共目录要「所有文件访问」权限：申请不下来（Android 11+ 的常态）
+  /// 会跳到系统开关页，用户开完点「我已开启」再复查一次。
+  Future<void> _useDownloadDir() async {
+    var ok = await ensureStoragePermission();
+    if (!ok) {
+      // 走原生 Intent 跳系统开关页，回来后让用户手动确认
+      await ensureAllFilesAccessWithUi();
+      if (!mounted) return;
+      final again = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('需要「所有文件访问」权限'),
+          content: const Text('到系统设置里把「所有文件访问」打开，'
+              '再回来点「我已开启」。\n\n不开也行：文件会继续存在应用私有目录，'
+              '只是文件管理器里看不到。'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('我已开启')),
+          ],
+        ),
+      );
+      if (again != true) return;
+      ok = await ensureStoragePermission();
+    }
+    final pub = await AudioRecorder.publicDir(recheck: true);
+    if (!mounted) return;
+    if (pub == null) {
+      toast(context, '还是写不进「下载」目录（没有「所有文件访问」权限）');
+      return;
+    }
+    if (!ok) {
+      // 目录其实试写成功了（有的 ROM 不报权限），照样用
+      toast(context, '目录可以写，继续');
+    }
+    // 清掉自定义目录 = 回到默认逻辑（默认就是下载目录优先）
+    await SettingsStore.instance.setRecorderDirPath(null);
+    if (!mounted) return;
+    setState(() {
+      _saveDir = null;
+      _defaultSaveDir = pub.path;
+    });
+    toast(context, '已改为保存到：${pub.path}');
   }
 
   Future<void> _pickSaveDir() async {
@@ -833,7 +890,14 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
     await SettingsStore.instance.setRecorderDirPath(null);
     if (!mounted) return;
     setState(() => _saveDir = null);
-    toast(context, '已恢复成应用私有目录');
+    final pub = await AudioRecorder.publicDir();
+    if (!mounted) return;
+    if (pub != null) {
+      setState(() => _defaultSaveDir = pub.path);
+      toast(context, '已恢复默认：下载目录');
+    } else {
+      toast(context, '已恢复默认（暂存应用私有目录，下载目录写不了）');
+    }
   }
 
   /// 试写一个小文件，验证目录真的能写。
@@ -1399,9 +1463,12 @@ class _AudioRecorderPageState extends State<AudioRecorderPage> {
             _note(scheme, '**录像时可以去忙别的**：切到后台之后系统会用相机/麦克风指示灯'
                 '和那条常驻通知提醒你——这是 Android 的硬性规定，任何 App 都关不掉，'
                 '所以录之前想清楚合不合适。'),
-            _note(scheme, '文件默认存在**应用私有目录**（`文档/recordings/`），不需要存储权限；'
-                '页面顶部可以改成别的文件夹（比如系统「下载」目录，那种目录要先给「所有文件访问」权限）。'
-                '拿到别处还有两条路：行末菜单「导出到「下载」目录」，或者直接「分享」。'),
+            _note(scheme, '文件默认存在**下载目录**（`下载/StudyHub/录音录像/`，v2.2.0 起），'
+                '文件管理器里直接能看到。第一次写公共目录需要给「所有文件访问」权限 —— '
+                '没给权限会自动退回应用私有目录，录音照常，只是文件管理器看不到；'
+                '顶部菜单「改存到手机「下载」目录」可以重新授权。'
+                '页面顶部也可以改成别的文件夹。'
+                '私有目录里的历史文件仍会列在下面，不会消失。'),
             _note(scheme, '录音格式是 `m4a`（AAC 96 kbps 单声道 44.1 kHz），'
                 '一个小时约 43 MB，手机和电脑都能直接播；录像格式是 `mp4`（H.264，约 1080p，'
                 '一分钟 40~60 MB）。'),

@@ -1451,6 +1451,14 @@ class _SudokuGrid extends StatelessWidget {
     final hintColor = scheme.primary.withValues(alpha: 0.18);
     final errColor = const Color(0xFFB23A3A);
 
+    // v2.2.0 修「锯齿数独看不到锯齿」的另一半原因：
+    // _cellView 里写死了「每 3 格画一条粗宫界线」（标准 3×3 宫的位置），
+    // 锯齿模式下这些标准宫粗线照样在画，跟真正的锯齿宫界叠在一起，
+    // 视觉上就是一张标准九宫格。锯齿时必须把标准宫线压掉，
+    // 宫界全部交给 _JigsawPainter 画，同时给每个宫铺淡底色，一眼能看出锯齿。
+    final isJigsaw = rules is JigsawRules;
+    final regionOf = isJigsaw ? (rules as JigsawRules).regionOf : null;
+
     return Container(
       decoration: BoxDecoration(
         color: bg,
@@ -1488,6 +1496,8 @@ class _SudokuGrid extends StatelessWidget {
                     thickColor: thickColor,
                     hintColor: hintColor,
                     errColor: errColor,
+                    isJigsaw: isJigsaw,
+                    regionOf: regionOf,
                   );
                 },
               ),
@@ -1521,14 +1531,19 @@ class _SudokuGrid extends StatelessWidget {
     required Color thickColor,
     required Color hintColor,
     required Color errColor,
+    bool isJigsaw = false,
+    List<List<int>>? regionOf,
   }) {
     final v = board.cells[r][c];
     final isFixed = board.fixed[r][c];
     final n = board.size;
-    // 边框：3×3 宫 / 6×6 子宫需要粗线
-    final isRightThick = c == n - 1 || (n % 3 == 0 && (c + 1) % 3 == 0 && c != n - 1);
-    final isBottomThick = r == board.size - 1 ||
-        (n % 3 == 0 && (r + 1) % 3 == 0 && r != n - 1);
+    // 边框：3×3 宫 / 6×6 子宫需要粗线。锯齿模式例外 —— 标准宫线全部压掉，
+    // 只留细网格，宫界交给锯齿绘制层。
+    final isRightThick = !isJigsaw &&
+        (c == n - 1 || (n % 3 == 0 && (c + 1) % 3 == 0 && c != n - 1));
+    final isBottomThick = !isJigsaw &&
+        (r == board.size - 1 ||
+            (n % 3 == 0 && (r + 1) % 3 == 0 && r != n - 1));
 
     // 检查当前值是否违反规则（仅对**用户填入**的格提示，fixed 的略过）
     bool _isIllegal = false;
@@ -1542,7 +1557,25 @@ class _SudokuGrid extends StatelessWidget {
     // v1.9.0+28：点过「校验」后，错的格直接标红
     final checkedWrong = wrongCells.contains('$r-$c');
 
+    // v2.2.0：锯齿宫淡底色 —— 同一宫一个颜色，边界一眼能看出来。
+    // 4 色循环（透明 / 主色 / 三色 / 二色，都是极低透明度），保证相邻宫不同色。
     Color cellBg = Colors.transparent;
+    if (isJigsaw && regionOf != null) {
+      final scheme = Theme.of(context).colorScheme;
+      switch (regionOf[r][c] % 4) {
+        case 1:
+          cellBg = scheme.primary.withValues(alpha: 0.07);
+          break;
+        case 2:
+          cellBg = scheme.tertiary.withValues(alpha: 0.07);
+          break;
+        case 3:
+          cellBg = scheme.secondary.withValues(alpha: 0.07);
+          break;
+        default:
+          cellBg = Colors.transparent;
+      }
+    }
     if (showHint && solution != null && v == 0) {
       cellBg = hintColor;
     } else if (checkedWrong) {
@@ -1555,12 +1588,21 @@ class _SudokuGrid extends StatelessWidget {
         decoration: BoxDecoration(
           color: cellBg,
           border: Border(
+            // v2.2.0：锯齿模式下 top/left 的「每 3 格一条粗线」也一并压掉
             top: BorderSide(
-                color: r > 0 && (r % 3 == 0) && n % 3 == 0 ? thickColor : lineColor,
-                width: r > 0 && (r % 3 == 0) && n % 3 == 0 ? 1.5 : 0.5),
+                color: !isJigsaw && r > 0 && (r % 3 == 0) && n % 3 == 0
+                    ? thickColor
+                    : lineColor,
+                width: !isJigsaw && r > 0 && (r % 3 == 0) && n % 3 == 0
+                    ? 1.5
+                    : 0.5),
             left: BorderSide(
-                color: c > 0 && (c % 3 == 0) && n % 3 == 0 ? thickColor : lineColor,
-                width: c > 0 && (c % 3 == 0) && n % 3 == 0 ? 1.5 : 0.5),
+                color: !isJigsaw && c > 0 && (c % 3 == 0) && n % 3 == 0
+                    ? thickColor
+                    : lineColor,
+                width: !isJigsaw && c > 0 && (c % 3 == 0) && n % 3 == 0
+                    ? 1.5
+                    : 0.5),
             right: BorderSide(
                 color: isRightThick ? thickColor : lineColor, width: isRightThick ? 1.5 : 0.5),
             bottom: BorderSide(
@@ -1857,7 +1899,9 @@ class _JigsawPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = lineColor
-      ..strokeWidth = 1.5
+      // v2.2.0：标准宫粗线被压掉之后，锯齿宫界就是唯一的「宫」边界，
+      // 加粗到 2.0 让它比细网格明显一截（细网格 0.5）。
+      ..strokeWidth = 2.0
       ..style = PaintingStyle.stroke;
     // v1.9.0+28 修「锯齿数独看不到锯齿」：
     // 原来每段宫界线都套了 `if (!filledMask[r][c])` —— 只要这格**有提示数字**

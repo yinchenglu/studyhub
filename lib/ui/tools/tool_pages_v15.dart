@@ -1006,11 +1006,52 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
   int _src = 0;
   String? _error;
 
+  /// 正在取当前位置（按钮转圈用）。
+  ///
+  /// v2.2.0：用户要求加一个「当前地址」按钮，直接把 GPS 定位填进输入框，
+  /// 省得对着地图 App 挨个抄坐标。
+  bool _locating = false;
+
   /// 输入格式：false = 十进制度（39.908692），true = 度分秒（39°54′31.3″N）。
   ///
   /// v2.1.0 新增：以前只能填小数度，可现场拿到的坐标条、纸质记录
   /// 大多是「39°54′31.3″N」这种写法，还得自己拿计算器换算。
   bool _dmsIn = false;
+
+  /// 取当前定位并填入。走 `studyhub/camera` 原生通道的 `location` 方法
+  /// （和指南针、水印相机同一个），拿回来的是 GPS 原始坐标 —— 也就是 WGS84，
+  /// 所以顺手把「输入坐标系」切到 WGS84，用户不用再手动选一遍。
+  Future<void> _useMyLocation() async {
+    if (_locating) return;
+    setState(() => _locating = true);
+    try {
+      final r = await const MethodChannel('studyhub/camera')
+          .invokeMapMethod<String, dynamic>('location');
+      if (!mounted) return;
+      if (r == null || r['ok'] != true) {
+        toast(context, '${r?['msg'] ?? '定位失败'}（可以手动输入坐标）');
+        return;
+      }
+      final lat = (r['lat'] as num?)?.toDouble();
+      final lon = (r['lng'] as num?)?.toDouble();
+      if (lat == null || lon == null) {
+        toast(context, '定位结果里没有经纬度');
+        return;
+      }
+      setState(() {
+        _src = 0; // GPS 原始 = WGS84
+        _lat.text = _dmsIn ? _dms(lat, true) : lat.toStringAsFixed(6);
+        _lon.text = _dmsIn ? _dms(lon, false) : lon.toStringAsFixed(6);
+        _pick();
+      });
+      toast(context, '已填入当前位置（WGS84）');
+    } catch (e) {
+      if (!mounted) return;
+      toast(context, '定位失败：$e（检查定位权限）');
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
+  }
 
   static const _srcLabels = <String>['WGS84', 'GCJ02', 'BD09'];
   static const _srcHints = <String>[
@@ -1155,6 +1196,28 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
                     isDense: true,
                   ),
                 ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // ---- 当前位置（v2.2.0）：一键把 GPS 定位填进来 ----
+          Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: _locating ? null : _useMyLocation,
+                icon: _locating
+                    ? const SizedBox(
+                        width: 14, height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.my_location, size: 17),
+                label: Text(_locating ? '定位中…' : '当前位置',
+                    style: const TextStyle(fontSize: 13)),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text('取 GPS 原始坐标（WGS84），自动填入',
+                    style: TextStyle(
+                        fontSize: 11, color: scheme.onSurfaceVariant)),
               ),
             ],
           ),

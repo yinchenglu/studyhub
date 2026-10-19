@@ -140,13 +140,14 @@ class ToolsPage extends ConsumerStatefulWidget {
       _ToolDef('应用管理', Icons.apps_outlined, Color(0xFF34C759)),
       // v1.9.0+28 新增：虚拟定位（改本机定位坐标，需开发者选项里选为模拟位置应用）
       _ToolDef('虚拟定位', Icons.my_location, Color(0xFF0F7B6C)),
-      // v1.9.0+28：改名「数独练习」；路路词典下架（改成网页版小工具，不再内嵌）
-      _ToolDef('数独练习', Icons.grid_3x3, Color(0xFF534AB7)),
-      // 快递查询要访问快递 100 的接口，是联网工具
-      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
       // v2.0.0+37：通话记录生成 + 水印相机（用户点名放生活与娱乐）
       _ToolDef('通话记录', Icons.call_outlined, Color(0xFF34A853)),
       _ToolDef('水印相机', Icons.camera_alt_outlined, Color(0xFFD4537E)),
+      // v2.2.0：数独练习、快递查询排到本类最后（用户点名）
+      // 数独练习：v1.9.0+28 改名；路路词典下架（改成网页版小工具，不再内嵌）
+      _ToolDef('数独练习', Icons.grid_3x3, Color(0xFF534AB7)),
+      // 快递查询要访问快递 100 的接口，是联网工具
+      _ToolDef('快递查询', Icons.local_shipping_outlined, Color(0xFF185FA5), online: true),
     ]),
 
     // ⑤ 公卫小工具 —— 原「公卫数据」，v1.6.0 改名并扩容。

@@ -45,12 +45,12 @@ class RecorderStatus {
 /// 服务详情见 `MainActivity.kt` 里的 `RecorderService`。
 ///
 /// ── 文件落在哪儿 ────────────────────────────────────────
-/// 应用私有目录 `文档/recordings/`。故意**不**直接写系统「下载」目录：
-///   * 前台服务运行在 App 进程里，写公共目录要「所有文件访问权限」，
-///     而那个权限在录音这个场景里要额外弹窗、用户很容易懵；
-///   * 私有目录一定能写，服务启动时不用先申请权限，
-///     少一步就少一处「点开始没反应」的可能。
-/// 需要拿出来的话，页面上有「导出到下载目录」和「分享」两条路。
+/// v2.2.0 起默认改成手机「下载」目录的 `Download/StudyHub/录音录像/`：
+/// 用户点名要直接在文件管理器里看到录音录像，不想再走「导出」一步。
+/// 写公共目录需要「所有文件访问」权限 —— 没给权限时**静默退回**
+/// 应用私有目录 `文档/recordings/`，保证「点开始就录上」永远成立。
+/// v1.6.0 起也可以在页面上改成别的文件夹（自定义目录优先级最高）。
+/// 列表会把私有目录里的历史文件一起列出来，旧录音不会「消失」。
 ///
 /// 本类**不抛异常**给调用方（除了明确要感知失败的 [start]）：
 /// 录音这件事失败的原因往往是环境（麦克风被别的应用占着），
@@ -66,9 +66,9 @@ class AudioRecorder {
 
   /// 录音 / 录像输出目录，不存在就建。
   ///
-  /// v1.6.0：可以在设置里指定一个自定义目录（见「设置 → 录音录像保存位置」）。
-  /// 自定目录建不出来（路径没权限、外置卡拔了）就**静默退回**应用私有目录 ——
-  /// 录音这种「点一下就该开始」的东西，不能因为目录问题直接失败。
+  /// 优先级：自定义目录（设置里选过）→ 公共「下载」目录（写得了就用）
+  /// → 应用私有目录兜底。每一级失败都静默落到下一级 —— 录音这种
+  /// 「点一下就该开始」的东西，不能因为目录问题直接失败。
   static Future<Directory> outputDir() async {
     final custom = await SettingsStore.instance.recorderDirPath();
     if (custom != null && custom.isNotEmpty) {
@@ -80,7 +80,46 @@ class AudioRecorder {
         // 落回默认目录
       }
     }
+    final pub = await publicDir();
+    if (pub != null) return pub;
     return defaultDir();
+  }
+
+  /// 公共「下载」目录：`<外部存储根>/Download/StudyHub/录音录像/`。
+  ///
+  /// 写得了（有「所有文件访问」权限）就返回目录，写不了返回 null。
+  /// 判定方式是真的试写一个小探针文件再删掉 —— 权限状态光问
+  /// permission_handler 在一些 ROM 上不准，写一次最踏实。
+  /// 结果缓存在本会话内（[_publicCache]），权限中途变了用
+  /// [recheck] 强制重验一次。
+  static Directory? _publicCache;
+
+  static Future<Directory?> publicDir({bool recheck = false}) async {
+    if (!Platform.isAndroid) return null;
+    if (!recheck && _publicCache != null) return _publicCache;
+    Directory? out;
+    try {
+      var root = '';
+      final base = await getExternalStorageDirectory();
+      if (base != null) {
+        // path_provider 给的是 …/Android/data/包名/files，截掉 /Android/
+        // 得到外部存储根（跟 CacheManager.defaultDownloadPath 同一套算法）
+        const mark = '/Android/';
+        final i = base.path.indexOf(mark);
+        root = i > 0 ? base.path.substring(0, i) : base.path;
+      }
+      if (root.isEmpty) root = '/storage/emulated/0';
+      final d = Directory(p.join(root, 'Download', 'StudyHub', '录音录像'));
+      if (!await d.exists()) await d.create(recursive: true);
+      final probe = File(p.join(d.path, '.studyhub_probe'));
+      await probe.writeAsString('ok');
+      await probe.delete();
+      out = d;
+    } catch (_) {
+      out = null;
+    }
+    _publicCache = out;
+    return out;
   }
 
   /// 应用私有目录下的默认输出目录 `文档/recordings/`。
@@ -165,30 +204,44 @@ class AudioRecorder {
   ///
   /// 只认 `录音_*` 和 `录像_*` 两个前缀，避免把用户手动丢进来的
   /// 其它音频也算成「我录的」。
+  ///
+  /// v2.2.0：默认目录从私有挪到了「下载」，但私有目录里的历史文件
+  /// 不能就此看不见 —— 这里把当前目录和私有目录**都扫一遍**、按路径
+  /// 去重后合并，旧录音照样能播、能删。
   static Future<List<File>> listAll() async {
+    final dirs = <String>{};
     try {
-      final dir = await outputDir();
-      final out = <File>[];
-      await for (final e in dir.list(followLinks: false)) {
-        if (e is! File) continue;
-        final name = p.basename(e.path);
-        if (!name.startsWith('录音_') && !name.startsWith('录像_')) continue;
-        out.add(e);
-      }
-      final withTime = <MapEntry<File, int>>[];
-      for (final f in out) {
-        try {
-          withTime.add(MapEntry(f, (await f.stat()).modified.millisecondsSinceEpoch));
-        } catch (_) {
-          // 读不到时间就当作 0，排在最后
-          withTime.add(MapEntry(f, 0));
+      dirs.add((await outputDir()).path);
+    } catch (_) {}
+    try {
+      dirs.add((await defaultDir()).path);
+    } catch (_) {}
+
+    final out = <File>[];
+    final seen = <String>{};
+    for (final dirPath in dirs) {
+      try {
+        await for (final e in Directory(dirPath).list(followLinks: false)) {
+          if (e is! File) continue;
+          final name = p.basename(e.path);
+          if (!name.startsWith('录音_') && !name.startsWith('录像_')) continue;
+          if (seen.add(e.path)) out.add(e);
         }
+      } catch (_) {
+        // 单个目录扫不了（权限被收回之类）就跳过，别拖垮整个列表
       }
-      withTime.sort((a, b) => b.value.compareTo(a.value));
-      return withTime.map((e) => e.key).toList();
-    } catch (_) {
-      return const <File>[];
     }
+    final withTime = <MapEntry<File, int>>[];
+    for (final f in out) {
+      try {
+        withTime.add(MapEntry(f, (await f.stat()).modified.millisecondsSinceEpoch));
+      } catch (_) {
+        // 读不到时间就当作 0，排在最后
+        withTime.add(MapEntry(f, 0));
+      }
+    }
+    withTime.sort((a, b) => b.value.compareTo(a.value));
+    return withTime.map((e) => e.key).toList();
   }
 
   /// 把毫秒数写成 `MM:SS` / `H:MM:SS`。

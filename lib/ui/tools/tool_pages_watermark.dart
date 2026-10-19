@@ -1,43 +1,52 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-/// 水印相机（v2.0.0+37）
+/// 水印相机（v2.2.0 按「今日水印相机」重做）
 ///
 /// 归类：生活与娱乐。
 ///
-/// 两部分：
-///   1. 设置页（[WatermarkPage]）：选模板、勾字段、填内容、定位置，
-///      然后「拍照」或「从相册选」（支持批量）
-///   2. 编辑页（[WatermarkEditorPage]）：所见即所得预览，
-///      保存时用 RepaintBoundary 把 1080 逻辑宽的画布按 1.5 倍截成 PNG
+/// 三个界面，跟「今日水印相机」一一对应（用户给了三张截图）：
+///   1. 取景页（[WatermarkCameraPage]）：打开就是拍照画面，当前水印
+///      **实时叠在画面左下角**——大字时间 + 日期星期天气 + 地点 + 经纬度。
+///      底部三个键：本地照片 / 快门 / 水印；右侧「定位」。
+///   2. 水印选择面板：底部弹出的模板卡片墙（⊘ 不加水印 + 各模板），
+///      点卡片即时换水印，✕ 关闭。
+///   3. 水印内容编辑面板：一排开关（真实时间 / 地点 / 经纬度 / 海拔 /
+///      地图 / 快速备注），跟截图第三张一致，「完成」收起。
+///
+/// 快门 → [WatermarkEditorPage]（自动保存）：用 RepaintBoundary 把
+/// 1080 逻辑宽的画布按 1.5 倍截成 PNG 存相册。
 ///
 /// 原生通道 `studyhub/camera`：
 ///   location（取一次定位，含海拔）/ geocode（逆地理编码）/ saveImage（存相册）
 ///
+/// 天气：定位成功后调 Open-Meteo 免费接口（不要 key）拿一句「阴 17°C」，
+/// 拿不到就只显示星期几，不报错。
+///
 /// 地图小图：没有地图 SDK，用 OpenStreetMap 的单张瓦片（z=15）当底图，
-/// 中间叠一个定位针 —— 误差在一条街以内，做水印足够，且不需要任何 key。
-/// 没网时自动降级成「坐标网格 + 定位针」，不会白块。
+/// 中间叠一个定位针。没网时自动降级成「坐标网格 + 定位针」。
 
 // ----------------------------------------------------------------- 数据模型
 
-enum WmScene { work, life, safety, training, custom }
-
-enum WmCorner { bottomLeft, topLeft, bottomRight, topRight }
+/// 水印模板。第一项「时间地点天气」是今日水印相机的默认款。
+enum WmScene { clock, punch, work, safety, training, custom }
 
 class WmStyle {
   final String name;
   final String title; // 空串 = 不显示标题条
-  final Color bg;
-  final Color accent;
+  final Color bg; // 底板色（alpha 0 = 透明底，时间地点天气就是透明）
+  final Color accent; // 竖色条 / 标题色
   final Color fg;
 
   const WmStyle({
@@ -49,18 +58,25 @@ class WmStyle {
   });
 
   static const Map<WmScene, WmStyle> all = {
+    WmScene.clock: WmStyle(
+      name: '时间地点天气',
+      title: '',
+      bg: Colors.transparent,
+      accent: Color(0xFFFFC53D),
+      fg: Colors.white,
+    ),
+    WmScene.punch: WmStyle(
+      name: '考勤打卡',
+      title: '考勤打卡',
+      bg: Color(0xB3000000),
+      accent: Color(0xFF34C759),
+      fg: Colors.white,
+    ),
     WmScene.work: WmStyle(
-      name: '工作',
+      name: '工作记录',
       title: '工作记录',
       bg: Color(0xE60A2D4D),
       accent: Color(0xFF2F9BE0),
-      fg: Colors.white,
-    ),
-    WmScene.life: WmStyle(
-      name: '生活',
-      title: '生活记录',
-      bg: Color(0x99000000),
-      accent: Color(0xFFFFB300),
       fg: Colors.white,
     ),
     WmScene.safety: WmStyle(
@@ -71,7 +87,7 @@ class WmStyle {
       fg: Color(0xFF1A1A1A),
     ),
     WmScene.training: WmStyle(
-      name: '培训',
+      name: '培训记录',
       title: '培训记录',
       bg: Color(0xE6123D2A),
       accent: Color(0xFF34C759),
@@ -87,13 +103,19 @@ class WmStyle {
   };
 }
 
-/// 水印的全部可变量。编辑页拿的是同一个对象，改完立刻反映到预览。
+enum WmCorner { bottomLeft, topLeft, bottomRight, topRight }
+
+/// 水印的全部可变量。取景页、选择面板、编辑面板改的都是同一个对象，
+/// 改完立刻反映到取景画面。
 class WatermarkSettings {
-  WmScene scene = WmScene.work;
+  WmScene scene = WmScene.clock;
+
+  /// ⊘ 不加水印（选择面板左上角那个圆圈斜杠）
+  bool enabled = true;
 
   bool showTime = true;
   bool showPlace = true;
-  bool showLatLng = false;
+  bool showLatLng = true;
   bool showAlt = false;
   bool showMap = false;
   bool showNote = false;
@@ -105,22 +127,40 @@ class WatermarkSettings {
   double? alt;
   String note = '';
 
+  /// 「阴 17°C」这一句，定位成功后从 Open-Meteo 拿，拿不到就空着。
+  String weather = '';
+
   WmCorner corner = WmCorner.bottomLeft;
 
-  WmStyle get style => WmStyle.all[scene] ?? WmStyle.all[WmScene.work]!;
+  WmStyle get style => WmStyle.all[scene] ?? WmStyle.all[WmScene.clock]!;
 
-  String get timeText {
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${time.year}-${two(time.month)}-${two(time.day)} '
-        '${two(time.hour)}:${two(time.minute)}:${two(time.second)}';
-  }
+  static String _two(int v) => v.toString().padLeft(2, '0');
 
+  /// 大字时间「17:11」
+  String get clockText => '${_two(time.hour)}:${_two(time.minute)}';
+
+  /// 「2026-10-19」
+  String get dateText => '${time.year}-${_two(time.month)}-${_two(time.day)}';
+
+  static const _weekCn = [
+    '星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日',
+  ];
+
+  String get weekdayText => _weekCn[time.weekday - 1];
+
+  /// 「星期一  阴 17°C」（天气拿不到就只剩星期几）
+  String get weekdayWeatherText => [
+        weekdayText,
+        if (weather.isNotEmpty) weather,
+      ].join('  ');
+
+  /// 「30.828295°N,110.976382°E」—— 纬度在前，跟今日水印相机一致
   String get latLngText {
     if (lat == null || lng == null) return '';
     final ns = lat! >= 0 ? 'N' : 'S';
     final ew = lng! >= 0 ? 'E' : 'W';
-    return '${lng!.abs().toStringAsFixed(6)}°$ew  '
-        '${lat!.abs().toStringAsFixed(6)}°$ns';
+    return '${lat!.abs().toStringAsFixed(6)}°$ns,'
+        '${lng!.abs().toStringAsFixed(6)}°$ew';
   }
 
   String get altText => alt == null ? '' : '海拔 ${alt!.toStringAsFixed(1)} m';
@@ -128,6 +168,7 @@ class WatermarkSettings {
   WatermarkSettings copy() {
     final c = WatermarkSettings()
       ..scene = scene
+      ..enabled = enabled
       ..showTime = showTime
       ..showPlace = showPlace
       ..showLatLng = showLatLng
@@ -140,494 +181,178 @@ class WatermarkSettings {
       ..lng = lng
       ..alt = alt
       ..note = note
+      ..weather = weather
       ..corner = corner;
     return c;
   }
 }
 
-// ----------------------------------------------------------------- 设置页
+// ----------------------------------------------------------------- 水印渲染
 
-class WatermarkPage extends StatefulWidget {
-  /// 从相机页进来时传**同一个** settings 对象：改完返回，取景画面的水印立刻变。
-  final WatermarkSettings? settings;
+/// 水印渲染的**唯一**实现：取景页实时叠层、模板卡片小预览、编辑页成片
+/// 用的都是它，靠 [scale] 缩放（1.0 = 手机屏幕基准，编辑页画布用大倍数）。
+///
+/// 版式对齐「今日水印相机」：
+///   17:11 │ 2026-10-19
+///         │ 星期一  阴 17°C
+///   秭归县 · 秭归县疾病预防控制中心
+///   经纬度：30.828295°N,110.976382°E
+class WmView extends StatelessWidget {
+  final WatermarkSettings s;
+  final double scale;
 
-  /// 直接进设置页时叫「水印相机」，从相机里点「水印」进来时叫「水印样式」。
-  final String title;
+  const WmView({super.key, required this.s, this.scale = 1.0});
 
-  const WatermarkPage({super.key, this.settings, this.title = '水印相机'});
-
-  @override
-  State<WatermarkPage> createState() => _WatermarkPageState();
-}
-
-class _WatermarkPageState extends State<WatermarkPage> {
-  static const MethodChannel _ch = MethodChannel('studyhub/camera');
-
-  late final WatermarkSettings _s = widget.settings ?? WatermarkSettings();
-
-  final TextEditingController _place = TextEditingController();
-  final TextEditingController _note = TextEditingController();
-
-  bool _locating = false;
-  bool _locatingError = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _place.text = _s.place;
-    _note.text = _s.note;
-    _place.addListener(() => _s.place = _place.text);
-    _note.addListener(() => _s.note = _note.text);
-  }
-
-  @override
-  void dispose() {
-    _place.dispose();
-    _note.dispose();
-    super.dispose();
-  }
-
-  // ---------------------------------------------------------------- 定位
-
-  Future<void> _locate() async {
-    if (_locating) return;
-    setState(() {
-      _locating = true;
-      _locatingError = false;
-    });
-    try {
-      final r = await _ch.invokeMapMethod<String, dynamic>('location');
-      if (!mounted) return;
-      if (r == null || r['ok'] != true) {
-        setState(() {
-          _locating = false;
-          _locatingError = true;
-        });
-        _toast('${r?['msg'] ?? '定位失败'}（可以手动输入地点）');
-        return;
-      }
-      final lat = (r['lat'] as num?)?.toDouble();
-      final lng = (r['lng'] as num?)?.toDouble();
-      final alt = (r['alt'] as num?)?.toDouble();
-      // 逆地理编码：失败就留空，用户自己填
-      String addr = '';
-      if (lat != null && lng != null) {
-        try {
-          addr = await _ch.invokeMethod<String>('geocode', {'lat': lat, 'lng': lng}) ?? '';
-        } catch (_) {}
-      }
-      if (!mounted) return;
-      setState(() {
-        _s.lat = lat;
-        _s.lng = lng;
-        _s.alt = alt;
-        if (addr.isNotEmpty) {
-          _s.place = addr;
-          _place.text = addr;
-        }
-        _s.showLatLng = true;
-        if (alt != null) _s.showAlt = true;
-        _locating = false;
-      });
-      if (addr.isEmpty) _toast('拿到坐标了，但没解析出地址（没网？）可以手动填地点');
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _locating = false;
-        _locatingError = true;
-      });
-      _toast('定位失败：$e');
-    }
-  }
-
-  // ---------------------------------------------------------------- 时间
-
-  String get _timeText => _s.timeText;
-
-  Future<void> _pickTime() async {
-    final d = await showDatePicker(
-      context: context,
-      initialDate: _s.time,
-      firstDate: DateTime(2000),
-      lastDate: DateTime(2100),
-    );
-    if (d == null || !mounted) return;
-    final t = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay(hour: _s.time.hour, minute: _s.time.minute),
-    );
-    if (!mounted) return;
-    setState(() {
-      _s.time = DateTime(
-        d.year,
-        d.month,
-        d.day,
-        t?.hour ?? _s.time.hour,
-        t?.minute ?? _s.time.minute,
-        _s.time.second,
-      );
-    });
-  }
-
-  // ---------------------------------------------------------------- 拍照 / 选图
-
-  Future<void> _shoot() async {
-    try {
-      final f = await ImagePicker().pickImage(
-        source: ImageSource.camera,
-        imageQuality: 95,
-        maxWidth: 4096,
-      );
-      if (f == null || !mounted) return;
-      _openEditor([f.path]);
-    } catch (e) {
-      _toast('打开相机失败：$e');
-    }
-  }
-
-  Future<void> _pickPhotos() async {
-    try {
-      final list = await ImagePicker().pickMultiImage(imageQuality: 95, maxWidth: 4096);
-      if (list.isEmpty || !mounted) return;
-      _openEditor(list.map((e) => e.path).toList());
-    } catch (e) {
-      _toast('选择照片失败：$e');
-    }
-  }
-
-  void _openEditor(List<String> paths) {
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => WatermarkEditorPage(paths: paths, settings: _s.copy()),
-    ));
-  }
-
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  // ---------------------------------------------------------------- UI
+  double f(double v) => v * scale;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final st = s.style;
+    // 亮字配黑影、暗字配亮影，透明底也压得住各种照片
+    final shadows = <Shadow>[
+      if (st.fg.computeLuminance() > 0.6)
+        Shadow(color: const Color(0x99000000), blurRadius: f(6), offset: Offset(0, f(1)))
+      else
+        Shadow(color: const Color(0x88FFFFFF), blurRadius: f(6), offset: Offset(0, f(1))),
+    ];
+    final textStyle = (double size, {FontWeight w = FontWeight.w500}) =>
+        TextStyle(
+          // 注意：字号由调用点自己套 f(...)，这里别再乘一次，否则 scale² 变大
+          fontSize: size,
+          height: 1.3,
+          fontWeight: w,
+          color: st.fg,
+          shadows: shadows,
+        );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-        actions: [
-          IconButton(
-            tooltip: '预览效果',
-            onPressed: _previewOnly,
-            icon: const Icon(Icons.visibility_outlined),
-          ),
-        ],
+    final hasTime = s.enabled && s.showTime;
+    final hasPlace = s.showPlace && s.place.trim().isNotEmpty;
+    final hasLatLng = s.showLatLng && s.latLngText.isNotEmpty;
+    final hasAlt = s.showAlt && s.altText.isNotEmpty;
+    final hasNote = s.showNote && s.note.trim().isNotEmpty;
+    final hasAny = st.title.isNotEmpty ||
+        hasTime ||
+        hasPlace ||
+        hasLatLng ||
+        hasAlt ||
+        hasNote;
+
+    return Container(
+      // 用值相等判断透明底（新 Flutter 的 Color.alpha 访问器已被弃用/移除，
+      // 别拿它判 alpha；clock 模板的 bg 就是 Colors.transparent）
+      padding: st.bg == Colors.transparent
+          ? EdgeInsets.zero
+          : EdgeInsets.symmetric(horizontal: f(14), vertical: f(9)),
+      decoration: BoxDecoration(
+        color: st.bg,
+        borderRadius: BorderRadius.circular(f(8)),
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
-        children: [
-          // ---------- 模板 ----------
-          const _Title('水印模板'),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final e in WmStyle.all.entries)
-                ChoiceChip(
-                  label: Text(e.value.name, style: const TextStyle(fontSize: 12.5)),
-                  selected: _s.scene == e.key,
-                  selectedColor: e.value.accent.withValues(alpha: 0.22),
-                  onSelected: (_) => setState(() => _s.scene = e.key),
-                ),
-            ],
-          ),
-          if (_s.scene == WmScene.safety)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                '安全生产模板：白底 + 红色标题条，适合检查、巡检留证。',
-                style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
-              ),
-            ),
-
-          const SizedBox(height: 16),
-
-          // ---------- 字段 ----------
-          Row(
-            children: [
-              const _Title('水印内容'),
-              const Spacer(),
-              TextButton(
-                onPressed: () => setState(() {
-                  final allOn = _s.showTime &&
-                      _s.showPlace &&
-                      _s.showLatLng &&
-                      _s.showAlt &&
-                      _s.showMap &&
-                      _s.showNote;
-                  _s.showTime = !allOn;
-                  _s.showPlace = !allOn;
-                  _s.showLatLng = !allOn;
-                  _s.showAlt = !allOn;
-                  _s.showMap = !allOn;
-                  _s.showNote = !allOn;
-                }),
-                child: const Text('全选 / 清空', style: TextStyle(fontSize: 12.5)),
-              ),
-            ],
-          ),
-
-          _fieldRow(
-            label: '时间',
-            value: _timeText,
-            on: _s.showTime,
-            onToggle: (v) => setState(() => _s.showTime = v),
-            trailing: IconButton(
-              tooltip: '修改时间',
-              onPressed: _pickTime,
-              icon: const Icon(Icons.edit_calendar_outlined, size: 19),
-            ),
-          ),
-          _fieldRow(
-            label: '地点',
-            on: _s.showPlace,
-            onToggle: (v) => setState(() => _s.showPlace = v),
-            trailing: TextButton.icon(
-              onPressed: _locating ? null : _locate,
-              icon: _locating
-                  ? const SizedBox(
-                      width: 13, height: 13, child: CircularProgressIndicator(strokeWidth: 2))
-                  : Icon(
-                      _locatingError ? Icons.location_off_outlined : Icons.my_location,
-                      size: 16),
-              label: Text(_locating ? '定位中' : '定位', style: const TextStyle(fontSize: 12)),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: TextField(
-                controller: _place,
-                enabled: _s.showPlace,
-                style: const TextStyle(fontSize: 13),
-                decoration: const InputDecoration(
-                  hintText: '自动定位或手动输入，如：杭州市西湖区文三路 90 号',
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-          ),
-          _fieldRow(
-            label: '经纬度',
-            value: _s.latLngText.isEmpty ? '（先点上面的「定位」）' : _s.latLngText,
-            on: _s.showLatLng,
-            onToggle: (v) => setState(() => _s.showLatLng = v),
-          ),
-          _fieldRow(
-            label: '海拔',
-            value: _s.altText.isEmpty ? '（定位后自动填入）' : _s.altText,
-            on: _s.showAlt,
-            onToggle: (v) => setState(() => _s.showAlt = v),
-          ),
-          _fieldRow(
-            label: '地图小图',
-            value: '勾选后右上角显示位置小图',
-            on: _s.showMap,
-            onToggle: (v) => setState(() => _s.showMap = v),
-          ),
-          _fieldRow(
-            label: '备注',
-            on: _s.showNote,
-            onToggle: (v) => setState(() => _s.showNote = v),
-            child: Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: TextField(
-                controller: _note,
-                enabled: _s.showNote,
-                maxLines: 3,
-                minLines: 1,
-                style: const TextStyle(fontSize: 13),
-                decoration: const InputDecoration(
-                  hintText: '如：三号车间设备巡检，现场已确认',
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          // ---------- 位置 ----------
-          const _Title('水印位置'),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              _cornerBtn('左上', WmCorner.topLeft),
-              const SizedBox(width: 8),
-              _cornerBtn('右上', WmCorner.topRight),
-              const SizedBox(width: 8),
-              _cornerBtn('左下', WmCorner.bottomLeft),
-              const SizedBox(width: 8),
-              _cornerBtn('右下', WmCorner.bottomRight),
-            ],
-          ),
-
-          const SizedBox(height: 20),
-
-          // ---------- 入口 ----------
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: _shoot,
-                  icon: const Icon(Icons.photo_camera_outlined, size: 19),
-                  label: const Text('拍照加水印'),
-                  style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(46)),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _pickPhotos,
-                  icon: const Icon(Icons.photo_library_outlined, size: 19),
-                  label: const Text('选照片（可批量）'),
-                  style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(46)),
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 14),
-          Text(
-            '· 拍照：调用系统相机，拍完立刻进水印编辑页\n'
-            '· 选照片：可一次选多张，同一套水印批量盖上去\n'
-            '· 保存结果在「相册 → Pictures/学聚水印」\n'
-            '· 定位用来填地点/经纬度/海拔，没网也能手输',
-            style: TextStyle(fontSize: 11.5, height: 1.8, color: scheme.onSurfaceVariant),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 不拍照，直接用一张纯色示意图预览水印排版
-  void _previewOnly() {
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => WatermarkEditorPage(paths: const [], settings: _s.copy()),
-    ));
-  }
-
-  Widget _cornerBtn(String label, WmCorner c) {
-    final scheme = Theme.of(context).colorScheme;
-    final on = _s.corner == c;
-    return Expanded(
-      child: InkWell(
-        onTap: () => setState(() => _s.corner = c),
-        borderRadius: BorderRadius.circular(9),
-        child: Container(
-          height: 38,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: on
-                ? scheme.primaryContainer
-                : scheme.surfaceContainerHighest.withValues(alpha: 0.4),
-            borderRadius: BorderRadius.circular(9),
-            border: Border.all(
-              color: on ? scheme.primary.withValues(alpha: 0.55) : scheme.outlineVariant,
-            ),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: 12.5,
-              fontWeight: on ? FontWeight.w600 : FontWeight.w400,
-              color: on ? scheme.onPrimaryContainer : scheme.onSurface,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _fieldRow({
-    required String label,
-    required bool on,
-    required ValueChanged<bool> onToggle,
-    String? value,
-    Widget? trailing,
-    Widget? child,
-  }) {
-    final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              SizedBox(
-                width: 26,
-                height: 30,
-                child: Checkbox(
-                  value: on,
-                  onChanged: (v) => onToggle(v == true),
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-              ),
-              const SizedBox(width: 4),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.w500,
-                  color: on ? scheme.onSurface : scheme.onSurfaceVariant,
-                ),
-              ),
-              if (value != null) ...[
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    value,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: on ? scheme.onSurfaceVariant : scheme.outline,
-                    ),
+      child: hasAny
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (st.title.isNotEmpty)
+                  Padding(
+                    padding: EdgeInsets.only(bottom: f(4)),
+                    child: Text(st.title,
+                        style: textStyle(f(15), w: FontWeight.w700)),
                   ),
-                ),
-              ] else
-                const Spacer(),
-              if (trailing != null) trailing,
-            ],
-          ),
-          if (child != null)
-            Padding(
-              padding: const EdgeInsets.only(left: 30, right: 4, bottom: 6),
-              child: child,
+                if (hasTime)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Text(s.clockText,
+                          style: textStyle(f(36), w: FontWeight.w800)),
+                      SizedBox(width: f(9)),
+                      Container(width: f(3), height: f(32), color: st.accent),
+                      SizedBox(width: f(9)),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(s.dateText,
+                              style: textStyle(f(14), w: FontWeight.w600)),
+                          if (s.weekdayWeatherText.isNotEmpty)
+                            Text(s.weekdayWeatherText, style: textStyle(f(12))),
+                        ],
+                      ),
+                    ],
+                  ),
+                if (hasPlace)
+                  Padding(
+                    padding: EdgeInsets.only(top: f(3)),
+                    child: Text(s.place.trim(),
+                        style: textStyle(f(13), w: FontWeight.w600)),
+                  ),
+                if (hasLatLng)
+                  Padding(
+                    padding: EdgeInsets.only(top: f(2)),
+                    child: Text('经纬度：${s.latLngText}', style: textStyle(f(12))),
+                  ),
+                if (hasAlt)
+                  Padding(
+                    padding: EdgeInsets.only(top: f(2)),
+                    child: Text(s.altText, style: textStyle(f(12))),
+                  ),
+                if (hasNote)
+                  Padding(
+                    padding: EdgeInsets.only(top: f(2)),
+                    child: Text(s.note.trim(), style: textStyle(f(12))),
+                  ),
+              ],
+            )
+          : Text(
+              '（水印内容都是空的，点「水印」勾几个字段）',
+              style: textStyle(f(13)),
             ),
-        ],
-      ),
     );
   }
 }
 
-class _Title extends StatelessWidget {
-  final String text;
-  const _Title(this.text);
+// ----------------------------------------------------------------- 天气
 
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      text,
-      style: TextStyle(
-        fontSize: 13,
-        fontWeight: FontWeight.w600,
-        color: Theme.of(context).colorScheme.primary,
-      ),
+/// WMO 天气代码 → 中文。Open-Meteo 的 current.weather_code。
+String _wmoText(int? code) {
+  if (code == null) return '';
+  if (code == 0) return '晴';
+  if (code <= 2) return '多云';
+  if (code == 3) return '阴';
+  if (code == 45 || code == 48) return '雾';
+  if (code >= 51 && code <= 57) return '毛毛雨';
+  if (code >= 61 && code <= 67) return '雨';
+  if (code >= 71 && code <= 77) return '雪';
+  if (code >= 80 && code <= 82) return '阵雨';
+  if (code == 85 || code == 86) return '阵雪';
+  if (code >= 95) return '雷雨';
+  return '';
+}
+
+/// Open-Meteo 免费当前天气（不要 key）。失败返回空串（没网是常态，
+/// 静默降级成只显示星期几）。
+Future<String> fetchWeatherText(double lat, double lng) async {
+  try {
+    final r = await Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 5),
+      receiveTimeout: const Duration(seconds: 5),
+    )).get<dynamic>(
+      'https://api.open-meteo.com/v1/forecast',
+      queryParameters: <String, dynamic>{
+        'latitude': lat.toStringAsFixed(4),
+        'longitude': lng.toStringAsFixed(4),
+        'current': 'temperature_2m,weather_code',
+      },
     );
+    final data = r.data;
+    final cur = data is Map ? data['current'] : null;
+    if (cur is! Map) return '';
+    final t = (cur['temperature_2m'] as num?)?.round();
+    final code = cur['weather_code'];
+    final w = _wmoText(code is int ? code : null);
+    return [if (w.isNotEmpty) w, if (t != null) '$t°C'].join(' ');
+  } catch (_) {
+    return '';
   }
 }
 
@@ -655,8 +380,9 @@ class WatermarkEditorPage extends StatefulWidget {
 class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
   static const MethodChannel _ch = MethodChannel('studyhub/camera');
 
-  /// 画布逻辑宽度：所有字号按这个基准设计，截屏时按 1.5 倍输出
+  /// 画布逻辑宽度：水印字号按 390 基准设计，渲染时整体放大到 1080
   static const double _canvasW = 1080;
+  static const double _baseW = 390;
   static const double _pixelRatio = 1.5;
 
   final GlobalKey _boundary = GlobalKey();
@@ -680,7 +406,6 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
   }
 
   /// 拍完直接进来：等照片和解码都排好版，自动存一张。
-  /// 用户从相机页按快门之后不用再点「保存」，真正做到「拍完即成片」。
   Future<void> _autoSaveOnce() async {
     await WidgetsBinding.instance.endOfFrame;
     await Future<void>.delayed(const Duration(milliseconds: 300));
@@ -948,7 +673,10 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
                               cacheWidth: 1620,
                               gaplessPlayback: true,
                             ),
-                          if (_s.showMap && _s.lat != null && _s.lng != null)
+                          if (_s.enabled &&
+                              _s.showMap &&
+                              _s.lat != null &&
+                              _s.lng != null)
                             Positioned(
                               top: 24,
                               right: 24,
@@ -1126,7 +854,12 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
         ),
       ),
     );
-    if (c != null && mounted) setState(() => _s.scene = c);
+    if (c != null && mounted) {
+      setState(() {
+        _s.scene = c;
+        _s.enabled = true;
+      });
+    }
   }
 
   Future<void> _pickFields() async {
@@ -1148,6 +881,15 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                SwitchListTile(
+                  dense: true,
+                  title: const Text('启用水印', style: TextStyle(fontSize: 13.5)),
+                  value: _s.enabled,
+                  onChanged: (x) {
+                    setSheet(() {});
+                    setState(() => _s.enabled = x);
+                  },
+                ),
                 sw('时间', _s.showTime, (v) => _s.showTime = v),
                 sw('地点', _s.showPlace, (v) => _s.showPlace = v),
                 sw('经纬度', _s.showLatLng, (v) => _s.showLatLng = v),
@@ -1162,12 +904,12 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
     );
   }
 
-  // ---------------------------------------------------------------- 水印绘制
+  // ---------------------------------------------------------------- 水印位置
 
   Widget _watermarkPositioned(double canvasH) {
     // 边距按画布宽度的 3% 走，换分辨率看着也协调
     const pad = _canvasW * 0.03;
-    final child = _watermarkBox();
+    final child = WmView(s: _s, scale: _canvasW / _baseW);
 
     switch (_s.corner) {
       case WmCorner.topLeft:
@@ -1179,80 +921,6 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
       case WmCorner.bottomLeft:
         return Positioned(left: pad, bottom: pad, child: child);
     }
-  }
-
-  Widget _watermarkBox() {
-    final st = _s.style;
-    final rows = <String>[
-      if (_s.showTime) _s.timeText,
-      if (_s.showPlace && _s.place.trim().isNotEmpty) _s.place.trim(),
-      if (_s.showLatLng && _s.latLngText.isNotEmpty) _s.latLngText,
-      if (_s.showAlt && _s.altText.isNotEmpty) _s.altText,
-      if (_s.showNote && _s.note.trim().isNotEmpty) _s.note.trim(),
-    ];
-    final hasTitle = st.title.isNotEmpty;
-    // 背景透明之后，文字得自己带投影才压得住各种照片：
-    // 亮字配黑影、暗字配亮影。
-    final shadows = <Shadow>[
-      if (st.fg.computeLuminance() > 0.6)
-        const Shadow(color: Color(0x99000000), blurRadius: 6, offset: Offset(0, 1))
-      else
-        const Shadow(color: Color(0x88FFFFFF), blurRadius: 6, offset: Offset(0, 1)),
-    ];
-
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: _canvasW * 0.72),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(22, 12, 26, 12),
-        decoration: BoxDecoration(
-          // v2.1.0：水印**不要底板**（用户明确要求「水印背景透明」），
-          // 只保留左侧色条 + 文字本身。
-          color: Colors.transparent,
-          border: Border(
-            left: BorderSide(color: st.accent, width: 7),
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (hasTitle)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text(
-                  st.title,
-                  style: TextStyle(
-                    fontSize: 34,
-                    fontWeight: FontWeight.w700,
-                    color: st.fg,
-                    letterSpacing: 1.5,
-                    shadows: shadows,
-                  ),
-                ),
-              ),
-            for (var i = 0; i < rows.length; i++)
-              Padding(
-                padding: EdgeInsets.only(top: i == 0 ? 0 : 4),
-                child: Text(
-                  rows[i],
-                  style: TextStyle(
-                    fontSize: 26,
-                    height: 1.35,
-                    color: st.fg,
-                    fontWeight: FontWeight.w500,
-                    shadows: shadows,
-                  ),
-                ),
-              ),
-            if (!hasTitle && rows.isEmpty)
-              Text(
-                '（水印内容都是空的，勾几个字段）',
-                style: TextStyle(fontSize: 22, color: st.fg.withValues(alpha: 0.7)),
-              ),
-          ],
-        ),
-      ),
-    );
   }
 }
 
@@ -1357,17 +1025,14 @@ class _GridPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-// ============================================================ 相机页（v2.1.0）
+// ============================================================ 取景页
 
-/// 水印相机主界面：**打开就是取景画面**（对齐「今日水印相机」的用法）。
+/// 水印相机主界面（v2.2.0 按「今日水印相机」重做）。
 ///
-/// * 当前水印**实时叠在取景画面上**：换模板、改时间地点，当场能看到效果
-/// * 顶部「水印」→ 换样式 / 改时间地点（复用 [WatermarkPage] 的整套设置）
-/// * 底部左边「照片」→ 从相册选（可多选）加同一套水印
-/// * 中间大圆键 = 快门：拍完**自动合成水印并保存**，回到取景继续拍
-///
-/// 相机的启停跟着生命周期走：切后台立刻 release（否则回来黑屏），
-/// 回到前台自动重开。
+/// * 打开就是取景画面，当前水印**实时叠在左下角**（时间每秒自己走）
+/// * 底部三键：本地照片 / 快门 / 水印；快门拍完自动合成保存
+/// * 「水印」→ 模板卡片选择面板 →「编辑内容」→ 字段开关面板
+/// * 右侧「定位」：一次拿到经纬度 + 中文地址 + 天气
 class WatermarkCameraPage extends StatefulWidget {
   const WatermarkCameraPage({super.key});
 
@@ -1377,24 +1042,36 @@ class WatermarkCameraPage extends StatefulWidget {
 
 class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     with WidgetsBindingObserver {
+  static const MethodChannel _ch = MethodChannel('studyhub/camera');
+
   final WatermarkSettings _s = WatermarkSettings();
 
   CameraController? _cam;
   bool _starting = false;
   bool _shooting = false;
   bool _front = false;
+  bool _locating = false;
   String? _err;
+
+  /// 每秒把时间拨到「现在」—— 取景页的水印是真实时间。
+  /// 拍照那一瞬间会再取一次 `DateTime.now()`，误差不超过 1 秒。
+  Timer? _clock;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initCam();
+    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _shooting) return;
+      setState(() => _s.time = DateTime.now());
+    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _clock?.cancel();
     final c = _cam;
     _cam = null;
     c?.dispose();
@@ -1472,6 +1149,60 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  // ---------------------------------------------------------------- 定位
+
+  /// 一次拿到：经纬度 + 海拔 + 中文地址 + 天气，水印立刻刷新。
+  Future<void> _locate() async {
+    if (_locating) return;
+    setState(() => _locating = true);
+    _toast('正在定位…');
+    try {
+      final r = await _ch.invokeMapMethod<String, dynamic>('location');
+      if (!mounted) return;
+      if (r == null || r['ok'] != true) {
+        _toast('定位失败：${r?['msg'] ?? '拿不到位置'}');
+        return;
+      }
+      final lat = (r['lat'] as num?)?.toDouble();
+      final lng = (r['lng'] as num?)?.toDouble();
+      final alt = (r['alt'] as num?)?.toDouble();
+      if (lat == null || lng == null) {
+        _toast('定位结果里没有经纬度');
+        return;
+      }
+      setState(() {
+        _s.lat = lat;
+        _s.lng = lng;
+        _s.alt = alt;
+        _s.showLatLng = true;
+        if (alt != null) _s.showAlt = true;
+      });
+      // 逆地理编码换成中文地址（失败就留着经纬度）
+      try {
+        // 原生 geocode 直接回一个 String（地址串），不是 Map —— 早先写成
+        // invokeMapMethod 会静默抛类型错，地址永远填不上。这里用 String。
+        final addr = await _ch.invokeMethod<String>(
+            'geocode', <String, dynamic>{'lat': lat, 'lng': lng});
+        if (addr != null && addr.isNotEmpty && mounted) {
+          setState(() {
+            _s.place = addr;
+            _s.showPlace = true;
+          });
+        }
+      } catch (_) {}
+      // 天气：拿不到就只显示星期几
+      final w = await fetchWeatherText(lat, lng);
+      if (w.isNotEmpty && mounted) {
+        setState(() => _s.weather = w);
+      }
+      if (mounted) _toast('定位完成');
+    } catch (e) {
+      _toast('定位失败：$e');
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
+  }
+
   // ---------------------------------------------------------------- 拍照
 
   Future<void> _shoot() async {
@@ -1519,12 +1250,394 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     }
   }
 
-  Future<void> _openSettings() async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      // 同一个 settings 对象：返回后取景画面的水印立刻更新
-      builder: (_) => WatermarkPage(settings: _s, title: '水印样式'),
-    ));
-    if (mounted) setState(() {});
+  // ---------------------------------------------------------------- 面板
+
+  /// 模板小卡片的演示数据（固定一套好看的样例，跟今日水印相机一样）
+  WatermarkSettings _demo(WmScene scene) {
+    final d = WatermarkSettings()
+      ..scene = scene
+      ..enabled = true
+      ..time = DateTime(2026, 8, 8, 8, 30)
+      ..place = '北京市 · 天安门'
+      ..lat = 39.908692
+      ..lng = 116.397477
+      ..weather = '晴 26°C'
+      ..showTime = true
+      ..showPlace = true
+      ..showLatLng = true
+      ..showAlt = false
+      ..showMap = false
+      ..showNote = scene == WmScene.work;
+    if (scene == WmScene.work) d.note = '现场已确认';
+    return d;
+  }
+
+  /// 水印选择面板（截图第二张）：⊘ 不加水印 + 模板卡片墙 + 编辑内容入口
+  void _showPicker() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx2, setSheet) {
+          final cs = Theme.of(ctx2).colorScheme;
+          Widget tile(String name, Widget preview, bool selected, VoidCallback onTap) {
+            return InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: selected ? cs.primary : cs.outlineVariant,
+                    width: selected ? 2 : 1,
+                  ),
+                ),
+                padding: const EdgeInsets.all(6),
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        width: double.infinity,
+                        color: const Color(0xFF3A3A3A),
+                        alignment: Alignment.centerLeft,
+                        padding: const EdgeInsets.all(6),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: preview,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: selected ? cs.primary : cs.onSurface,
+                            fontWeight:
+                                selected ? FontWeight.w700 : FontWeight.w400)),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          return SafeArea(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(ctx2).size.height * 0.72,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // ---------- 头部 ----------
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
+                    child: Row(
+                      children: [
+                        const Text('水印',
+                            style: TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.w700)),
+                        const Spacer(),
+                        IconButton(
+                          tooltip: '关闭',
+                          onPressed: () => Navigator.pop(ctx2),
+                          icon: const Icon(Icons.close, size: 22),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // ---------- 卡片墙 ----------
+                  Flexible(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          GridView.count(
+                            crossAxisCount: 2,
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            mainAxisSpacing: 8,
+                            crossAxisSpacing: 8,
+                            childAspectRatio: 1.55,
+                            children: [
+                              // ⊘ 不加水印
+                              tile(
+                                '不加水印',
+                                Icon(Icons.block_rounded,
+                                    size: 34, color: Colors.white54),
+                                !_s.enabled,
+                                () {
+                                  setSheet(() => _s.enabled = false);
+                                  setState(() {});
+                                },
+                              ),
+                              for (final e in WmStyle.all.entries)
+                                tile(
+                                  e.value.name,
+                                  WmView(s: _demo(e.key)),
+                                  _s.enabled && _s.scene == e.key,
+                                  () {
+                                    setSheet(() {
+                                      _s.scene = e.key;
+                                      _s.enabled = true;
+                                    });
+                                    setState(() {});
+                                  },
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          // ---------- 编辑内容入口 ----------
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: () {
+                                Navigator.pop(ctx2);
+                                _showEdit();
+                              },
+                              icon: const Icon(Icons.tune, size: 18),
+                              label: const Text('编辑水印内容'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// 水印内容编辑面板（截图第三张）：一排开关，行尾显示当前值，
+  /// 点行可以改（时间选择器 / 重新定位 / 备注输入框）。
+  void _showEdit() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx2, setSheet) {
+          final cs = Theme.of(ctx2).colorScheme;
+          Widget row({
+            required String label,
+            required bool on,
+            required ValueChanged<bool> onToggle,
+            String? value,
+            VoidCallback? onTap,
+            Color dot = Colors.transparent,
+          }) {
+            return InkWell(
+              onTap: onTap,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                child: Row(
+                  children: [
+                    // 缩到 0.85 否则 M3 的 Switch 在行高里显得很大
+                    Transform.scale(
+                      scale: 0.85,
+                      child: Switch(
+                        value: on,
+                        onChanged: (v) {
+                          setSheet(() => onToggle(v));
+                          setState(() {});
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(label,
+                        style: TextStyle(
+                            fontSize: 14,
+                            color: on ? cs.onSurface : cs.onSurfaceVariant)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        value ?? '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                            fontSize: 12.5, color: cs.onSurfaceVariant),
+                      ),
+                    ),
+                    if (dot != Colors.transparent) ...[
+                      const SizedBox(width: 4),
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                            shape: BoxShape.circle, color: dot),
+                      ),
+                    ],
+                    if (onTap != null) ...[
+                      const SizedBox(width: 2),
+                      Icon(Icons.chevron_right,
+                          size: 18, color: cs.onSurfaceVariant),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          }
+
+          Future<void> pickTime() async {
+            final d = await showDatePicker(
+              context: ctx2,
+              initialDate: _s.time,
+              firstDate: DateTime(2000),
+              lastDate: DateTime(2100),
+            );
+            if (d == null || !ctx2.mounted) return;
+            final t = await showTimePicker(
+              context: ctx2,
+              initialTime: TimeOfDay(hour: _s.time.hour, minute: _s.time.minute),
+            );
+            if (!ctx2.mounted) return;
+            setSheet(() {
+              _s.time = DateTime(d.year, d.month, d.day,
+                  t?.hour ?? _s.time.hour, t?.minute ?? _s.time.minute);
+              _s.showTime = true;
+            });
+            setState(() {});
+          }
+
+          Future<void> editNote() async {
+            final c = TextEditingController(text: _s.note);
+            final ok = await showDialog<bool>(
+              context: ctx2,
+              builder: (ctx3) => AlertDialog(
+                title: const Text('快速备注'),
+                content: TextField(
+                  controller: c,
+                  autofocus: true,
+                  maxLines: 3,
+                  minLines: 1,
+                  decoration: const InputDecoration(hintText: '如：三号车间设备巡检'),
+                ),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx3, false),
+                      child: const Text('取消')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(ctx3, true),
+                      child: const Text('确定')),
+                ],
+              ),
+            );
+            if (ok != true || !ctx2.mounted) return;
+            setSheet(() {
+              _s.note = c.text.trim();
+              _s.showNote = _s.note.isNotEmpty || _s.showNote;
+            });
+            setState(() {});
+          }
+
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // ---------- 头部 ----------
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
+                  child: Row(
+                    children: [
+                      Text(_s.style.name,
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w700)),
+                      const Icon(Icons.edit_outlined,
+                          size: 15, color: Colors.grey),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: '关闭',
+                        onPressed: () => Navigator.pop(ctx2),
+                        icon: const Icon(Icons.close, size: 22),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 4),
+                row(
+                  label: '真实时间',
+                  value: '${_s.dateText} ${_s.clockText}',
+                  on: _s.showTime,
+                  onToggle: (v) => _s.showTime = v,
+                  onTap: pickTime,
+                ),
+                row(
+                  label: '地点',
+                  value: _s.place.isEmpty
+                      ? '（未定位，点行定位）'
+                      : _s.place,
+                  on: _s.showPlace,
+                  onToggle: (v) => _s.showPlace = v,
+                  onTap: () async {
+                    Navigator.pop(ctx2);
+                    await _locate();
+                    if (mounted) _showEdit(); // 拿到新数据后重开面板
+                  },
+                ),
+                row(
+                  label: '经纬度',
+                  value: _s.latLngText.isEmpty ? '（定位后自动填入）' : _s.latLngText,
+                  on: _s.showLatLng,
+                  onToggle: (v) => _s.showLatLng = v,
+                ),
+                row(
+                  label: '海拔',
+                  value: _s.altText.isEmpty ? '（定位后自动填入）' : _s.altText,
+                  on: _s.showAlt,
+                  onToggle: (v) => _s.showAlt = v,
+                ),
+                row(
+                  label: '地图',
+                  value: '显示在照片右上角',
+                  on: _s.showMap,
+                  onToggle: (v) => _s.showMap = v,
+                ),
+                row(
+                  label: '快速备注',
+                  value: _s.note.isEmpty ? '（未填写，点行输入）' : _s.note,
+                  on: _s.showNote,
+                  onToggle: (v) => _s.showNote = v,
+                  onTap: editNote,
+                  dot: _s.note.isEmpty ? const Color(0xFFE5484D) : Colors.transparent,
+                ),
+                const SizedBox(height: 10),
+                // ---------- 底部按钮 ----------
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: () => Navigator.pop(ctx2),
+                          style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(44)),
+                          child: const Text('完成'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
   }
 
   // ---------------------------------------------------------------- UI
@@ -1537,7 +1650,8 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
         fit: StackFit.expand,
         children: [
           _preview(),
-          _watermarkOverlay(),
+          if (_s.enabled) _watermarkOverlay(),
+          _rightRail(),
           _topBar(),
           _bottomBar(),
           if (_err != null) _errorLayer(),
@@ -1563,92 +1677,30 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     );
   }
 
-  /// 取景画面上叠加的水印：**透明背景**，只有左侧色条 + 文字。
+  /// 取景画面上叠加的水印（左下角，底栏上方）。
   Widget _watermarkOverlay() {
-    final st = _s.style;
-    final shadows = <Shadow>[
-      if (st.fg.computeLuminance() > 0.6)
-        const Shadow(color: Color(0x99000000), blurRadius: 5, offset: Offset(0, 1))
-      else
-        const Shadow(color: Color(0x88FFFFFF), blurRadius: 5, offset: Offset(0, 1)),
-    ];
-    final rows = <String>[
-      if (_s.showTime) _s.timeText,
-      if (_s.showPlace && _s.place.trim().isNotEmpty) _s.place.trim(),
-      if (_s.showLatLng && _s.latLngText.isNotEmpty) _s.latLngText,
-      if (_s.showAlt && _s.altText.isNotEmpty) _s.altText,
-      if (_s.showNote && _s.note.trim().isNotEmpty) _s.note.trim(),
-    ];
-    final box = Row(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(width: 3.5, height: 12.0 + rows.length * 18.0, color: st.accent),
-        const SizedBox(width: 7),
-        Flexible(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (st.title.isNotEmpty)
-                Text(
-                  st.title,
-                  style: TextStyle(
-                    fontSize: 19,
-                    height: 1.25,
-                    fontWeight: FontWeight.w700,
-                    color: st.fg,
-                    letterSpacing: 1.0,
-                    shadows: shadows,
-                  ),
-                ),
-              for (final r in rows)
-                Text(
-                  r,
-                  style: TextStyle(
-                    fontSize: 13,
-                    height: 1.35,
-                    color: st.fg,
-                    fontWeight: FontWeight.w500,
-                    shadows: shadows,
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ],
-    );
-
-    Alignment align;
-    switch (_s.corner) {
-      case WmCorner.topLeft:
-        align = Alignment.topLeft;
-        break;
-      case WmCorner.topRight:
-        align = Alignment.topRight;
-        break;
-      case WmCorner.bottomRight:
-        align = Alignment.bottomRight;
-        break;
-      case WmCorner.bottomLeft:
-        align = Alignment.bottomLeft;
-        break;
-    }
     return IgnorePointer(
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Align(alignment: align, child: box),
+      child: Padding(
+        // 底部留出三键栏 + 模式条的高度
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 150),
+        child: Align(
+          alignment: Alignment.bottomLeft,
+          child: WmView(s: _s),
         ),
       ),
     );
   }
 
-  Widget _roundIcon(IconData icon, String tip, VoidCallback onTap) {
+  Widget _roundIcon(IconData icon, String tip, VoidCallback onTap,
+      {bool busy = false}) {
     return IconButton(
       tooltip: tip,
-      onPressed: onTap,
-      icon: Icon(icon, color: Colors.white, size: 24),
+      onPressed: busy ? null : onTap,
+      icon: busy
+          ? SizedBox(
+              width: 20, height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+          : Icon(icon, color: Colors.white, size: 24),
       style: IconButton.styleFrom(backgroundColor: Colors.black.withValues(alpha: 0.35)),
     );
   }
@@ -1662,17 +1714,53 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
           children: [
             _roundIcon(Icons.close, '退出', () => Navigator.of(context).maybePop()),
             const Spacer(),
-            FilledButton.tonalIcon(
-              onPressed: _openSettings,
-              icon: const Icon(Icons.palette_outlined, size: 18),
-              label: const Text('水印'),
-              style: FilledButton.styleFrom(
-                backgroundColor: Colors.white.withValues(alpha: 0.92),
-                foregroundColor: Colors.black87,
-              ),
-            ),
-            const SizedBox(width: 8),
             _roundIcon(Icons.cameraswitch_outlined, '前后镜头', _flip),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 右侧悬浮栏：定位（截图右下的靶心按钮）
+  Widget _rightRail() {
+    return IgnorePointer(
+      ignoring: false,
+      child: Align(
+        alignment: Alignment.bottomRight,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(0, 0, 10, 160),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _roundIcon(Icons.my_location, '取当前地点', _locate, busy: _locating),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _bottomKey(IconData icon, String label, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withValues(alpha: 0.16),
+                border: Border.all(color: Colors.white70, width: 1),
+              ),
+              child: Icon(icon, color: Colors.white, size: 22),
+            ),
+            const SizedBox(height: 4),
+            Text(label, style: const TextStyle(color: Colors.white, fontSize: 11.5)),
           ],
         ),
       ),
@@ -1683,31 +1771,23 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     return Align(
       alignment: Alignment.bottomCenter,
       child: Container(
-        padding: const EdgeInsets.only(bottom: 6),
         decoration: const BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Colors.transparent, Color(0x99000000)],
+            colors: [Colors.transparent, Color(0xB3000000)],
           ),
         ),
         child: SafeArea(
           top: false,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 26, 24, 14),
+            padding: const EdgeInsets.fromLTRB(24, 22, 24, 10),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 // 左：本地照片加水印
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _roundIcon(Icons.photo_library_outlined, '选照片加水印', _pickPhotos),
-                    const SizedBox(height: 3),
-                    const Text('照片',
-                        style: TextStyle(color: Colors.white, fontSize: 11.5)),
-                  ],
-                ),
+                _bottomKey(Icons.photo_library_outlined, '本地照片', _pickPhotos),
                 // 中：快门
                 GestureDetector(
                   onTap: _shooting ? null : _shoot,
@@ -1734,59 +1814,14 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
                     ),
                   ),
                 ),
-                // 右：再点一次「水印」也能改，这里放定位，拍之前先把地点拿到
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _roundIcon(Icons.my_location, '取当前地点', _locateHere),
-                    const SizedBox(height: 3),
-                    const Text('定位',
-                        style: TextStyle(color: Colors.white, fontSize: 11.5)),
-                  ],
-                ),
+                // 右：水印（选择模板 / 编辑内容）
+                _bottomKey(Icons.branding_watermark_outlined, '水印', _showPicker),
               ],
             ),
           ),
         ),
       ),
     );
-  }
-
-  /// 直接在取景页定位：地点 / 经纬度 / 海拔一次拿到，水印立刻更新。
-  Future<void> _locateHere() async {
-    _toast('正在定位…');
-    try {
-      final r = await const MethodChannel('studyhub/camera')
-          .invokeMapMethod<String, dynamic>('location');
-      if (r == null || r['ok'] != true) {
-        _toast('定位失败：${r?['msg'] ?? '拿不到位置'}');
-        return;
-      }
-      final lat = (r['lat'] as num).toDouble();
-      final lng = (r['lng'] as num).toDouble();
-      final alt = r['alt'];
-      if (!mounted) return;
-      setState(() {
-        _s.lat = lat;
-        _s.lng = lng;
-        _s.alt = alt is num ? alt.toDouble() : null;
-        _s.showLatLng = true;
-      });
-      // 逆地理编码换成中文地址（失败就留着经纬度）
-      try {
-        final g = await const MethodChannel('studyhub/camera').invokeMapMethod<String, dynamic>(
-            'geocode', <String, dynamic>{'lat': lat, 'lng': lng});
-        final addr = g?['address'] as String?;
-        if (addr != null && addr.isNotEmpty && mounted) {
-          setState(() {
-            _s.place = addr;
-            _s.showPlace = true;
-          });
-        }
-      } catch (_) {}
-    } catch (e) {
-      _toast('定位失败：$e');
-    }
   }
 
   Widget _errorLayer() {
@@ -1812,7 +1847,7 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
               ),
               const SizedBox(height: 6),
               const Text(
-                '相机不可用时，下面「照片」按钮仍然可以给本地照片加水印',
+                '相机不可用时，「本地照片」仍然可以给本地照片加水印',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white38, fontSize: 11.5),
               ),
