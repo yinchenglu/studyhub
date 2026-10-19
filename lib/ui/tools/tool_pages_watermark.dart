@@ -405,10 +405,27 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
     if (widget.autoSave) _autoSaveOnce();
   }
 
+  /// 把当前这张照片解码进图片缓存，保证截图时**画面已经画上去**。
+  ///
+  /// 只等 endOfFrame 是不够的：`Image.file` 解码是异步的，手机拍的
+  /// 4000×3000 照片解码要几百毫秒，截早了保存下来的就是一块灰色底。
+  /// 先 precache 再等一帧，成片才稳。
+  Future<void> _precacheCurrent() async {
+    if (_isPreviewOnly || !mounted) return;
+    try {
+      await precacheImage(FileImage(File(_curPath)), context);
+    } catch (_) {
+      // 解码失败也让后面的截图流程继续（至少水印是画好的）
+    }
+  }
+
   /// 拍完直接进来：等照片和解码都排好版，自动存一张。
   Future<void> _autoSaveOnce() async {
     await WidgetsBinding.instance.endOfFrame;
-    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await _precacheCurrent();
+    if (!mounted) return;
+    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 120));
     if (!mounted || _saving) return;
     await _saveCurrent();
   }
@@ -515,6 +532,10 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
         if (w > 0 && h > 0 && mounted) {
           setState(() => _aspect = w / h);
         }
+        await WidgetsBinding.instance.endOfFrame;
+        // 换图后同样要先解码，否则截到的是上一张 / 灰底
+        await _precacheCurrent();
+        if (!mounted) return;
         await WidgetsBinding.instance.endOfFrame;
         await Future<void>.delayed(const Duration(milliseconds: 120));
         if (await _saveOne(i)) {
