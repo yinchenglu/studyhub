@@ -158,9 +158,19 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
     final t = await showTimePicker(
       context: context,
       initialTime: TimeOfDay(hour: _start.hour, minute: _start.minute),
+      helpText: '选第一条通话的时刻',
     );
     if (t == null || !mounted) return;
     setState(() => _start = DateTime(_start.year, _start.month, _start.day, t.hour, t.minute));
+  }
+
+  /// v2.1.0：一次把日期 + 时间都改掉。
+  /// 以前只接了 `_pickStartDate`，`_pickStartTime` 写好了却没挂到界面上，
+  /// 所以用户只能改日期、改不了时分。
+  Future<void> _pickStartDateTime() async {
+    await _pickStartDate();
+    if (!mounted) return;
+    await _pickStartTime();
   }
 
   // ------------------------------------------------------------------ 生成
@@ -382,10 +392,16 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _pickStartDate,
+                  // 点一下先选日期、再选时刻
+                  onPressed: _pickStartDateTime,
                   icon: const Icon(Icons.calendar_today_outlined, size: 16),
                   label: Text(_startText, style: const TextStyle(fontSize: 13)),
                 ),
+              ),
+              IconButton(
+                tooltip: '只改时刻',
+                onPressed: _pickStartTime,
+                icon: const Icon(Icons.schedule, size: 20),
               ),
               IconButton(
                 tooltip: '改成现在',

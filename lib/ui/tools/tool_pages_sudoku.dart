@@ -360,88 +360,83 @@ class JigsawRules extends StandardRules {
     return true;
   }
 
-  /// 随机切 9 个锯齿块。每块 9 格，确保连通。
+  /// 随机切 9 个锯齿块。每块 9 格，且**必须连成一片**。
+  ///
+  /// v2.1.0 重写：上一版是「随机挑一个边界格、按概率并入邻区」，
+  /// 这个算法经常中途卡死（某区再也接不上），跑满 200 次都失败，
+  /// 最后 return 的是标准 3×3 宫 —— 用户看到的就是「锯齿数独没有锯齿」。
+  ///
+  /// 新算法：9 个种子均匀铺在 3×3 的大格子里，然后**轮流涨**，
+  /// 每轮每区各吃一个自己的边界格，直到每区满 9 格。
+  /// 因为是「从自己的边界往外吃」，连通性天然成立；边界互相咬合就是锯齿。
   static List<List<int>> makeRandomRegions(int size, math.Random rng) {
-    // 9×9 才切；其它按 fallback 走
-    if (size != 9) {
-      return List.generate(9, (r) => List.generate(9, (c) => (r ~/ 3) * 3 + c ~/ 3));
+    List<List<int>> standard() =>
+        List.generate(9, (r) => List.generate(9, (c) => (r ~/ 3) * 3 + c ~/ 3));
+
+    if (size != 9) return standard();
+
+    // 把一个格子的上下左右空格加进该区的「边界池」
+    void pushFrontier(List<List<int>> pool, List<List<int>> grid, int r, int c) {
+      for (final d in const [
+        [-1, 0],
+        [1, 0],
+        [0, -1],
+        [0, 1],
+      ]) {
+        final nr = r + d[0], nc = c + d[1];
+        if (nr < 0 || nr >= 9 || nc < 0 || nc >= 9) continue;
+        if (grid[nr][nc] != -1) continue;
+        pool.add([nr, nc]);
+      }
     }
-    final grid = List.generate(9, (_) => List.filled(9, -1));
-    final sizes = List.filled(9, 0);
-    var tries = 0;
-    while (tries++ < 200) {
-      for (var r = 0; r < 9; r++) {
-        for (var c = 0; c < 9; c++) {
-          grid[r][c] = -1;
+
+    for (var attempt = 0; attempt < 300; attempt++) {
+      final grid = List.generate(9, (_) => List.filled(9, -1));
+      final counts = List.filled(9, 0);
+      final pools = List.generate(9, (_) => <List<int>>[]);
+
+      // 1) 9 个种子：每个 3×3 大格里随机取一格（互不重叠）
+      var id = 0;
+      for (var br = 0; br < 3; br++) {
+        for (var bc = 0; bc < 3; bc++) {
+          final r = br * 3 + rng.nextInt(3);
+          final c = bc * 3 + rng.nextInt(3);
+          grid[r][c] = id;
+          counts[id] = 1;
+          pushFrontier(pools[id], grid, r, c);
+          id++;
         }
       }
-      for (var i = 0; i < 9; i++) {
-        sizes[i] = 0;
-      }
-      // 先用一个 BFS-style 切法：从左上开始，逐格尝试往同区或新邻区扩展
-      grid[0][0] = 0;
-      sizes[0] = 1;
-      var ok = true;
-      final cells = <List<int>>[
-        [0, 0]
-      ];
-      while (cells.length < 81) {
-        // 随机选一个边界格（已分区的邻接空格）
-        cells.shuffle(rng);
-        bool step = false;
-        for (final cell in cells) {
-          final r = cell[0], c = cell[1];
-          final myId = grid[r][c];
-          final nbrs = [
-            [r - 1, c], [r + 1, c], [r, c - 1], [r, c + 1]
-          ]..shuffle(rng);
-          for (final n in nbrs) {
-            final nr = n[0], nc = n[1];
-            if (nr < 0 || nr >= 9 || nc < 0 || nc >= 9) continue;
-            if (grid[nr][nc] != -1) continue;
-            // 50% 跟邻居同区（直到 9 满），否则开新区
-            if (sizes[myId] < 9 && rng.nextDouble() < 0.55) {
-              grid[nr][nc] = myId;
-              sizes[myId]++;
-              cells.add([nr, nc]);
-              step = true;
-              break;
-            } else {
-              // 找最稀的邻区
-              var bestId = -1;
-              for (var id = 0; id < 9; id++) {
-                if (sizes[id] < 9 && (bestId == -1 || sizes[id] < sizes[bestId])) {
-                  bestId = id;
-                }
-              }
-              if (bestId == -1) {
-                ok = false;
-                break;
-              }
-              grid[nr][nc] = bestId;
-              sizes[bestId]++;
-              cells.add([nr, nc]);
-              step = true;
-              break;
-            }
+
+      // 2) 轮流涨：每轮按随机顺序，每区各吃一个边界格
+      var filled = 9;
+      var guard = 0;
+      while (filled < 81 && guard++ < 400) {
+        final order = List<int>.generate(9, (i) => i)..shuffle(rng);
+        var progressed = false;
+        for (final k in order) {
+          if (counts[k] >= 9) continue;
+          final pool = pools[k];
+          // 清掉已经被别的区吃掉的
+          while (pool.isNotEmpty && grid[pool.last[0]][pool.last[1]] != -1) {
+            pool.removeLast();
           }
-          if (!ok || step) break;
+          if (pool.isEmpty) continue;
+          final pick = pool.removeAt(rng.nextInt(pool.length));
+          grid[pick[0]][pick[1]] = k;
+          counts[k]++;
+          filled++;
+          progressed = true;
+          pushFrontier(pool, grid, pick[0], pick[1]);
+          if (filled >= 81) break;
         }
-        if (!ok) break;
-        if (!step) {
-          // 卡死：重试
-          ok = false;
-          break;
-        }
+        if (!progressed) break;
       }
-      if (ok && sizes.every((s) => s == 9)) {
-        // 还要简单连通性检查（每区 9 格应连成一片）
-        // ——随机切法几乎一定连通，省掉复杂 BFS
-        return grid;
-      }
+
+      if (filled == 81 && counts.every((c) => c == 9)) return grid;
     }
-    // fallback：标准 3×3 宫
-    return List.generate(9, (r) => List.generate(9, (c) => (r ~/ 3) * 3 + c ~/ 3));
+    // 极端情况下还是回标准宫（不可能是锯齿，但至少能玩）
+    return standard();
   }
 }
 
@@ -1059,7 +1054,13 @@ class _SudokuPageState extends State<SudokuPage> {
     final rules = _rules!;
     _pushUndo(r, c);
     if (_noteMode) {
+      // v2.1.0 修：这一格**已经有数字**时，候选笔记会被数字盖住，
+      // 用户点了半天看不到任何变化 —— 所以记笔记前先把数字清掉。
       setState(() {
+        if (b.cells[r][c] != 0) {
+          b.cells[r][c] = 0;
+          b.notes[r][c].clear();
+        }
         if (b.notes[r][c].contains(v)) {
           b.notes[r][c].remove(v);
         } else {
@@ -1231,8 +1232,8 @@ class _SudokuPageState extends State<SudokuPage> {
       children: [
         Expanded(
           child: Padding(
-            // 尽可能贴边：左右 2px，数字宫格能有多大大就多大
-            padding: const EdgeInsets.fromLTRB(2, 2, 2, 2),
+            // 贴着屏幕边：左右 0px，宫格能有多大就多大（用户明确要求）
+            padding: const EdgeInsets.fromLTRB(0, 2, 0, 0),
             child: Center(
               child: AspectRatio(
                 aspectRatio: n == 9 ? 1.0 : (n == 6 && _type == SudokuType.greater) ? 1.5 : 1.0,
@@ -1307,19 +1308,19 @@ class _SudokuPageState extends State<SudokuPage> {
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(10),
-        child: Padding(
+        // v2.1.0：激活时**整块**染主色（原来只染图标那一小块，
+        // 「笔记」开关看不出开没开 —— 用户要求「点了变色、再点褪色」）。
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 2),
           padding: const EdgeInsets.symmetric(vertical: 6),
+          decoration: BoxDecoration(
+            color: active ? cs.primaryContainer : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                decoration: BoxDecoration(
-                  color: active ? cs.primaryContainer : Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(icon, size: 22, color: fg),
-              ),
+              Icon(icon, size: 22, color: fg),
               const SizedBox(height: 2),
               Text(label,
                   style: TextStyle(
@@ -1450,18 +1451,21 @@ class _SudokuGrid extends StatelessWidget {
     final hintColor = scheme.primary.withValues(alpha: 0.18);
     final errColor = const Color(0xFFB23A3A);
 
-    return LayoutBuilder(
-      builder: (ctx, cons) {
-        // 单元格边长 = min(横向 / 列数, 纵向 / 行数) —— 9×6 也能塞得下
-        final byW = cons.maxWidth / n;
-        final byH = cons.maxHeight / (height == 0 ? 1 : height);
-        final cell = byW < byH ? byW : byH;
-        return Container(
-          decoration: BoxDecoration(
-            color: bg,
-            border: Border.all(color: thickColor, width: 1.5),
-          ),
-          child: Stack(
+    return Container(
+      decoration: BoxDecoration(
+        color: bg,
+        border: Border.all(color: thickColor, width: 1.5),
+      ),
+      // LayoutBuilder 必须放在 Container **里面**：
+      // 放外面拿到的是含 1.5px 边框的外尺寸，算出来的 cell 比真实格宽大一点点，
+      // 锯齿宫 / 笼框这些按坐标画的覆盖层会越往右下越偏，看起来像「没对齐」。
+      child: LayoutBuilder(
+        builder: (ctx, cons) {
+          // 单元格边长 = min(横向 / 列数, 纵向 / 行数) —— 9×6 也能塞得下
+          final byW = cons.maxWidth / n;
+          final byH = cons.maxHeight / (height == 0 ? 1 : height);
+          final cell = byW < byH ? byW : byH;
+          return Stack(
             children: [
               // 底层：所有格子
               GridView.builder(
@@ -1502,9 +1506,9 @@ class _SudokuGrid extends StatelessWidget {
                 if ((rules as ArrowRules).arrows.isNotEmpty)
                   _arrowOverlay(board, rules, cell, scheme),
             ],
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 
@@ -1570,11 +1574,12 @@ class _SudokuGrid extends StatelessWidget {
                 : Padding(
                     padding: const EdgeInsets.all(2),
                     child: GridView.count(
-                      crossAxisCount: 3,
+                      // 6×6 只画 1~6（原来固定画 1~9，多出来的两格永远空着）
+                      crossAxisCount: n <= 4 ? 2 : 3,
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
                       children: [
-                        for (var i = 1; i <= 9; i++)
+                        for (var i = 1; i <= n; i++)
                           Center(
                             child: Text(
                               board.notes[r][c].contains(i) ? '$i' : '',
@@ -2168,15 +2173,15 @@ class _NumberPad extends StatelessWidget {
       child: GestureDetector(
         onTap: () => onPick(v),
         child: Container(
-          // 高度跟着宽度走，屏幕多宽按钮就多大
-          constraints: const BoxConstraints(maxHeight: 78),
+          // 高度跟着宽度走，屏幕多宽按钮就多大（v2.1.0：上限 78 → 96，更好按）
+          constraints: const BoxConstraints(maxHeight: 96),
           decoration: BoxDecoration(
             color: bg,
             borderRadius: BorderRadius.circular(10),
           ),
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: AspectRatio(
-            aspectRatio: 1.25,
+            aspectRatio: 1.15,
             child: Stack(
               children: [
                 Center(

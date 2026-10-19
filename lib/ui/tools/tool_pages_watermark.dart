@@ -3,10 +3,12 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 /// 水印相机（v2.0.0+37）
 ///
@@ -146,7 +148,13 @@ class WatermarkSettings {
 // ----------------------------------------------------------------- 设置页
 
 class WatermarkPage extends StatefulWidget {
-  const WatermarkPage({super.key});
+  /// 从相机页进来时传**同一个** settings 对象：改完返回，取景画面的水印立刻变。
+  final WatermarkSettings? settings;
+
+  /// 直接进设置页时叫「水印相机」，从相机里点「水印」进来时叫「水印样式」。
+  final String title;
+
+  const WatermarkPage({super.key, this.settings, this.title = '水印相机'});
 
   @override
   State<WatermarkPage> createState() => _WatermarkPageState();
@@ -155,7 +163,7 @@ class WatermarkPage extends StatefulWidget {
 class _WatermarkPageState extends State<WatermarkPage> {
   static const MethodChannel _ch = MethodChannel('studyhub/camera');
 
-  final WatermarkSettings _s = WatermarkSettings();
+  late final WatermarkSettings _s = widget.settings ?? WatermarkSettings();
 
   final TextEditingController _place = TextEditingController();
   final TextEditingController _note = TextEditingController();
@@ -166,6 +174,8 @@ class _WatermarkPageState extends State<WatermarkPage> {
   @override
   void initState() {
     super.initState();
+    _place.text = _s.place;
+    _note.text = _s.note;
     _place.addListener(() => _s.place = _place.text);
     _note.addListener(() => _s.note = _note.text);
   }
@@ -304,7 +314,7 @@ class _WatermarkPageState extends State<WatermarkPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('水印相机'),
+        title: Text(widget.title),
         actions: [
           IconButton(
             tooltip: '预览效果',
@@ -627,7 +637,16 @@ class WatermarkEditorPage extends StatefulWidget {
   final List<String> paths;
   final WatermarkSettings settings;
 
-  const WatermarkEditorPage({super.key, required this.paths, required this.settings});
+  /// 相机页拍完直接进来时置 true：画面一渲染好就自动存一张，
+  /// 用户不用再点「保存」（对应「拍完即成片」）。
+  final bool autoSave;
+
+  const WatermarkEditorPage({
+    super.key,
+    required this.paths,
+    required this.settings,
+    this.autoSave = false,
+  });
 
   @override
   State<WatermarkEditorPage> createState() => _WatermarkEditorPageState();
@@ -657,6 +676,16 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
   void initState() {
     super.initState();
     _loadAspect();
+    if (widget.autoSave) _autoSaveOnce();
+  }
+
+  /// 拍完直接进来：等照片和解码都排好版，自动存一张。
+  /// 用户从相机页按快门之后不用再点「保存」，真正做到「拍完即成片」。
+  Future<void> _autoSaveOnce() async {
+    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    if (!mounted || _saving) return;
+    await _saveCurrent();
   }
 
   Future<void> _loadAspect() async {
@@ -1162,16 +1191,25 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
       if (_s.showNote && _s.note.trim().isNotEmpty) _s.note.trim(),
     ];
     final hasTitle = st.title.isNotEmpty;
+    // 背景透明之后，文字得自己带投影才压得住各种照片：
+    // 亮字配黑影、暗字配亮影。
+    final shadows = <Shadow>[
+      if (st.fg.computeLuminance() > 0.6)
+        const Shadow(color: Color(0x99000000), blurRadius: 6, offset: Offset(0, 1))
+      else
+        const Shadow(color: Color(0x88FFFFFF), blurRadius: 6, offset: Offset(0, 1)),
+    ];
 
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: _canvasW * 0.72),
       child: Container(
-        padding: const EdgeInsets.fromLTRB(22, 14, 26, 16),
+        padding: const EdgeInsets.fromLTRB(22, 12, 26, 12),
         decoration: BoxDecoration(
-          color: st.bg,
-          borderRadius: BorderRadius.circular(10),
+          // v2.1.0：水印**不要底板**（用户明确要求「水印背景透明」），
+          // 只保留左侧色条 + 文字本身。
+          color: Colors.transparent,
           border: Border(
-            left: BorderSide(color: st.accent, width: 9),
+            left: BorderSide(color: st.accent, width: 7),
           ),
         ),
         child: Column(
@@ -1188,6 +1226,7 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
                     fontWeight: FontWeight.w700,
                     color: st.fg,
                     letterSpacing: 1.5,
+                    shadows: shadows,
                   ),
                 ),
               ),
@@ -1201,6 +1240,7 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
                     height: 1.35,
                     color: st.fg,
                     fontWeight: FontWeight.w500,
+                    shadows: shadows,
                   ),
                 ),
               ),
@@ -1315,4 +1355,471 @@ class _GridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+// ============================================================ 相机页（v2.1.0）
+
+/// 水印相机主界面：**打开就是取景画面**（对齐「今日水印相机」的用法）。
+///
+/// * 当前水印**实时叠在取景画面上**：换模板、改时间地点，当场能看到效果
+/// * 顶部「水印」→ 换样式 / 改时间地点（复用 [WatermarkPage] 的整套设置）
+/// * 底部左边「照片」→ 从相册选（可多选）加同一套水印
+/// * 中间大圆键 = 快门：拍完**自动合成水印并保存**，回到取景继续拍
+///
+/// 相机的启停跟着生命周期走：切后台立刻 release（否则回来黑屏），
+/// 回到前台自动重开。
+class WatermarkCameraPage extends StatefulWidget {
+  const WatermarkCameraPage({super.key});
+
+  @override
+  State<WatermarkCameraPage> createState() => _WatermarkCameraPageState();
+}
+
+class _WatermarkCameraPageState extends State<WatermarkCameraPage>
+    with WidgetsBindingObserver {
+  final WatermarkSettings _s = WatermarkSettings();
+
+  CameraController? _cam;
+  bool _starting = false;
+  bool _shooting = false;
+  bool _front = false;
+  String? _err;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initCam();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    final c = _cam;
+    _cam = null;
+    c?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      final c = _cam;
+      _cam = null;
+      c?.dispose();
+      if (mounted) setState(() {});
+    } else if (state == AppLifecycleState.resumed) {
+      if (_cam == null && !_starting) _initCam();
+    }
+  }
+
+  Future<void> _initCam() async {
+    if (_starting) return;
+    _starting = true;
+    if (mounted) setState(() => _err = null);
+    CameraController? c;
+    try {
+      final st = await Permission.camera.request();
+      if (!st.isGranted) {
+        if (!mounted) return;
+        setState(() => _err =
+            '没有相机权限。\n到「系统设置 → 应用 → 学聚 → 权限」把相机打开，再回来点重试。');
+        return;
+      }
+      final cams = await availableCameras();
+      if (cams.isEmpty) {
+        if (!mounted) return;
+        setState(() => _err = '这台设备上没找到可用的摄像头。');
+        return;
+      }
+      final want = _front ? CameraLensDirection.front : CameraLensDirection.back;
+      final hit = cams.where((d) => d.lensDirection == want);
+      final desc = hit.isNotEmpty ? hit.first : cams.first;
+      c = CameraController(desc, ResolutionPreset.veryHigh, enableAudio: false);
+      await c.initialize();
+      if (!mounted) {
+        await c.dispose();
+        return;
+      }
+      final old = _cam;
+      setState(() => _cam = c);
+      if (old != null && old != c) old.dispose();
+    } catch (e) {
+      if (c != null) {
+        try {
+          await c.dispose();
+        } catch (_) {}
+      }
+      if (!mounted) return;
+      setState(() => _err = '相机启动失败：$e');
+    } finally {
+      _starting = false;
+    }
+  }
+
+  Future<void> _flip() async {
+    if (_shooting) return;
+    _front = !_front;
+    final c = _cam;
+    _cam = null;
+    if (mounted) setState(() {});
+    await c?.dispose();
+    await _initCam();
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  // ---------------------------------------------------------------- 拍照
+
+  Future<void> _shoot() async {
+    final c = _cam;
+    if (_shooting) return;
+    if (c == null || !c.value.isInitialized) {
+      _toast('相机还没就绪，稍等一下再按');
+      return;
+    }
+    setState(() => _shooting = true);
+    try {
+      // 水印上的时间 = 按快门的这一刻
+      _s.time = DateTime.now();
+      final shot = await c.takePicture();
+      if (!mounted) return;
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => WatermarkEditorPage(
+          paths: <String>[shot.path],
+          // 传副本：编辑页里改时间地点不会污染取景画面的水印
+          settings: _s.copy(),
+          autoSave: true,
+        ),
+      ));
+    } catch (e) {
+      _toast('拍照失败：$e');
+    } finally {
+      if (mounted) setState(() => _shooting = false);
+    }
+  }
+
+  Future<void> _pickPhotos() async {
+    try {
+      final list =
+          await ImagePicker().pickMultiImage(imageQuality: 95, maxWidth: 4096);
+      if (list.isEmpty || !mounted) return;
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => WatermarkEditorPage(
+          paths: list.map((e) => e.path).toList(),
+          settings: _s.copy(),
+        ),
+      ));
+      if (mounted) setState(() {});
+    } catch (e) {
+      _toast('选择照片失败：$e');
+    }
+  }
+
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(MaterialPageRoute(
+      // 同一个 settings 对象：返回后取景画面的水印立刻更新
+      builder: (_) => WatermarkPage(settings: _s, title: '水印样式'),
+    ));
+    if (mounted) setState(() {});
+  }
+
+  // ---------------------------------------------------------------- UI
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          _preview(),
+          _watermarkOverlay(),
+          _topBar(),
+          _bottomBar(),
+          if (_err != null) _errorLayer(),
+        ],
+      ),
+    );
+  }
+
+  Widget _preview() {
+    final c = _cam;
+    if (c != null && c.value.isInitialized) {
+      return Center(child: CameraPreview(c));
+    }
+    return Container(
+      color: const Color(0xFF141414),
+      child: const Center(
+        child: SizedBox(
+          width: 26,
+          height: 26,
+          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+        ),
+      ),
+    );
+  }
+
+  /// 取景画面上叠加的水印：**透明背景**，只有左侧色条 + 文字。
+  Widget _watermarkOverlay() {
+    final st = _s.style;
+    final shadows = <Shadow>[
+      if (st.fg.computeLuminance() > 0.6)
+        const Shadow(color: Color(0x99000000), blurRadius: 5, offset: Offset(0, 1))
+      else
+        const Shadow(color: Color(0x88FFFFFF), blurRadius: 5, offset: Offset(0, 1)),
+    ];
+    final rows = <String>[
+      if (_s.showTime) _s.timeText,
+      if (_s.showPlace && _s.place.trim().isNotEmpty) _s.place.trim(),
+      if (_s.showLatLng && _s.latLngText.isNotEmpty) _s.latLngText,
+      if (_s.showAlt && _s.altText.isNotEmpty) _s.altText,
+      if (_s.showNote && _s.note.trim().isNotEmpty) _s.note.trim(),
+    ];
+    final box = Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(width: 3.5, height: 12.0 + rows.length * 18.0, color: st.accent),
+        const SizedBox(width: 7),
+        Flexible(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (st.title.isNotEmpty)
+                Text(
+                  st.title,
+                  style: TextStyle(
+                    fontSize: 19,
+                    height: 1.25,
+                    fontWeight: FontWeight.w700,
+                    color: st.fg,
+                    letterSpacing: 1.0,
+                    shadows: shadows,
+                  ),
+                ),
+              for (final r in rows)
+                Text(
+                  r,
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.35,
+                    color: st.fg,
+                    fontWeight: FontWeight.w500,
+                    shadows: shadows,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+
+    Alignment align;
+    switch (_s.corner) {
+      case WmCorner.topLeft:
+        align = Alignment.topLeft;
+        break;
+      case WmCorner.topRight:
+        align = Alignment.topRight;
+        break;
+      case WmCorner.bottomRight:
+        align = Alignment.bottomRight;
+        break;
+      case WmCorner.bottomLeft:
+        align = Alignment.bottomLeft;
+        break;
+    }
+    return IgnorePointer(
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Align(alignment: align, child: box),
+        ),
+      ),
+    );
+  }
+
+  Widget _roundIcon(IconData icon, String tip, VoidCallback onTap) {
+    return IconButton(
+      tooltip: tip,
+      onPressed: onTap,
+      icon: Icon(icon, color: Colors.white, size: 24),
+      style: IconButton.styleFrom(backgroundColor: Colors.black.withValues(alpha: 0.35)),
+    );
+  }
+
+  Widget _topBar() {
+    return SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
+        child: Row(
+          children: [
+            _roundIcon(Icons.close, '退出', () => Navigator.of(context).maybePop()),
+            const Spacer(),
+            FilledButton.tonalIcon(
+              onPressed: _openSettings,
+              icon: const Icon(Icons.palette_outlined, size: 18),
+              label: const Text('水印'),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.white.withValues(alpha: 0.92),
+                foregroundColor: Colors.black87,
+              ),
+            ),
+            const SizedBox(width: 8),
+            _roundIcon(Icons.cameraswitch_outlined, '前后镜头', _flip),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bottomBar() {
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: Container(
+        padding: const EdgeInsets.only(bottom: 6),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.transparent, Color(0x99000000)],
+          ),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 26, 24, 14),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // 左：本地照片加水印
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _roundIcon(Icons.photo_library_outlined, '选照片加水印', _pickPhotos),
+                    const SizedBox(height: 3),
+                    const Text('照片',
+                        style: TextStyle(color: Colors.white, fontSize: 11.5)),
+                  ],
+                ),
+                // 中：快门
+                GestureDetector(
+                  onTap: _shooting ? null : _shoot,
+                  child: Container(
+                    width: 74,
+                    height: 74,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 4),
+                    ),
+                    child: Container(
+                      margin: const EdgeInsets.all(5),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: _shooting ? Colors.white54 : Colors.white,
+                      ),
+                      child: _shooting
+                          ? const Padding(
+                              padding: EdgeInsets.all(17),
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.black54),
+                            )
+                          : null,
+                    ),
+                  ),
+                ),
+                // 右：再点一次「水印」也能改，这里放定位，拍之前先把地点拿到
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _roundIcon(Icons.my_location, '取当前地点', _locateHere),
+                    const SizedBox(height: 3),
+                    const Text('定位',
+                        style: TextStyle(color: Colors.white, fontSize: 11.5)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 直接在取景页定位：地点 / 经纬度 / 海拔一次拿到，水印立刻更新。
+  Future<void> _locateHere() async {
+    _toast('正在定位…');
+    try {
+      final r = await const MethodChannel('studyhub/camera')
+          .invokeMapMethod<String, dynamic>('location');
+      if (r == null || r['ok'] != true) {
+        _toast('定位失败：${r?['msg'] ?? '拿不到位置'}');
+        return;
+      }
+      final lat = (r['lat'] as num).toDouble();
+      final lng = (r['lng'] as num).toDouble();
+      final alt = r['alt'];
+      if (!mounted) return;
+      setState(() {
+        _s.lat = lat;
+        _s.lng = lng;
+        _s.alt = alt is num ? alt.toDouble() : null;
+        _s.showLatLng = true;
+      });
+      // 逆地理编码换成中文地址（失败就留着经纬度）
+      try {
+        final g = await const MethodChannel('studyhub/camera').invokeMapMethod<String, dynamic>(
+            'geocode', <String, dynamic>{'lat': lat, 'lng': lng});
+        final addr = g?['address'] as String?;
+        if (addr != null && addr.isNotEmpty && mounted) {
+          setState(() {
+            _s.place = addr;
+            _s.showPlace = true;
+          });
+        }
+      } catch (_) {}
+    } catch (e) {
+      _toast('定位失败：$e');
+    }
+  }
+
+  Widget _errorLayer() {
+    return Container(
+      color: Colors.black.withValues(alpha: 0.82),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(26),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.no_photography_outlined, color: Colors.white54, size: 44),
+              const SizedBox(height: 12),
+              Text(
+                _err ?? '',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.6),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.tonal(
+                onPressed: _initCam,
+                child: const Text('重试'),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                '相机不可用时，下面「照片」按钮仍然可以给本地照片加水印',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white38, fontSize: 11.5),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

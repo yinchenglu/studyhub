@@ -104,7 +104,12 @@ class ToolScaffold extends StatelessWidget {
         right: false,
         child: child,
       ),
-      bottomNavigationBar: bottom,
+      // bottomNavigationBar 里的 TabBar **不会**自动躲开系统导航栏
+      // （Scaffold 只对 body 做避让）。不加 SafeArea 的话，页面底部那排
+      // 「单个查询 / 批量查询」标签会被三键导航条压住一半，点不动
+      // —— 用户报的「身份证查户下面按钮被挡住」就是它。
+      bottomNavigationBar:
+          bottom == null ? null : SafeArea(top: false, child: bottom),
     );
   }
 }

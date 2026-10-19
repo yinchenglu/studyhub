@@ -733,7 +733,8 @@ Widget toolPageOf(String name) {
     case '通话记录':
       return const CallLogToolPage();
     case '水印相机':
-      return const WatermarkPage();
+      // v2.1.0：主界面改成取景相机（今日水印相机那种），设置页从「水印」按钮进
+      return const WatermarkCameraPage();
     // ---- v1.8.0 ----
     case '单位换算':
       return const UnitConvertPage();

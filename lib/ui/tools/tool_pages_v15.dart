@@ -1006,6 +1006,12 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
   int _src = 0;
   String? _error;
 
+  /// 输入格式：false = 十进制度（39.908692），true = 度分秒（39°54′31.3″N）。
+  ///
+  /// v2.1.0 新增：以前只能填小数度，可现场拿到的坐标条、纸质记录
+  /// 大多是「39°54′31.3″N」这种写法，还得自己拿计算器换算。
+  bool _dmsIn = false;
+
   static const _srcLabels = <String>['WGS84', 'GCJ02', 'BD09'];
   static const _srcHints = <String>[
     'GPS 原始 / 海外地图（OSM、Google 海外）',
@@ -1022,10 +1028,12 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
 
   /// 校验输入。通过返回 true，并在 _error 里留下 null。
   bool _pick() {
-    final lat = double.tryParse(_lat.text.trim());
-    final lon = double.tryParse(_lon.text.trim());
+    final lat = _parseCoord(_lat.text);
+    final lon = _parseCoord(_lon.text);
     if (lat == null || lon == null) {
-      _error = '纬度 / 经度得是数字';
+      _error = _dmsIn
+          ? '格式示例：39°54′31.3″N  /  116°23′50.9″E（也可以写 39 54 31.3）'
+          : '纬度 / 经度得是数字';
       return false;
     }
     if (!lat.isFinite || !lon.isFinite) {
@@ -1038,6 +1046,50 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
     }
     _error = null;
     return true;
+  }
+
+  /// 解析一个坐标字符串，十进制度和度分秒都认。
+  ///
+  /// 认得的写法：
+  ///   `39.908692` / `39°54′31.3″N` / `N39°54'31.3"` / `39 54 31.3` / `39:54:31.3`
+  /// 带 S / W 的按负数处理（南纬、西经）。
+  static double? _parseCoord(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return null;
+    // 1) 半球字母 → 符号
+    var sign = 1.0;
+    final upper = s.toUpperCase();
+    if (upper.contains('S') || upper.contains('W')) sign = -1;
+    s = s.replaceAll(RegExp('[NSEWnsew]'), ' ');
+    // 2) 各种度分秒符号统一成空格（逐个替换，避免正则里的引号转义踩坑）
+    for (final ch in const ['°', 'º', '˚', '度', '分', '秒', '′', '″', "'", '"', '’', '”', '“']) {
+      s = s.replaceAll(ch, ' ');
+    }
+    s = s.replaceAll(RegExp('[,，;；:：]'), ' ');
+    final parts = s
+        .split(RegExp(r'\s+'))
+        .where((e) => e.isNotEmpty)
+        .map(double.tryParse)
+        .toList();
+    if (parts.isEmpty || parts.any((e) => e == null)) return null;
+    final first = parts[0]!;
+    final negative = first < 0 || sign < 0;
+    var abs = first.abs();
+    if (parts.length > 1) abs += parts[1]!.abs() / 60;
+    if (parts.length > 2) abs += parts[2]!.abs() / 3600;
+    return negative ? -abs : abs;
+  }
+
+  /// 切换输入格式时，把框里已有的值换算成对应写法，方便只改一两个数字。
+  void _setDmsIn(bool v) {
+    final lat = _parseCoord(_lat.text);
+    final lon = _parseCoord(_lon.text);
+    setState(() {
+      _dmsIn = v;
+      if (lat != null) _lat.text = v ? _dms(lat, true) : lat.toStringAsFixed(6);
+      if (lon != null) _lon.text = v ? _dms(lon, false) : lon.toStringAsFixed(6);
+      _pick();
+    });
   }
 
   /// 复制一行的值
@@ -1058,17 +1110,32 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
         children: [
+          // ---- 输入格式：小数度 / 度分秒（v2.1.0 新增）----
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment<bool>(
+                  value: false, label: Text('十进制度'), icon: Icon(Icons.tag, size: 16)),
+              ButtonSegment<bool>(
+                  value: true, label: Text('度分秒'), icon: Icon(Icons.straighten, size: 16)),
+            ],
+            selected: <bool>{_dmsIn},
+            showSelectedIcon: false,
+            onSelectionChanged: (s) => _setDmsIn(s.first),
+          ),
+          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
                 child: TextField(
                   controller: _lat,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                  keyboardType: _dmsIn
+                      ? TextInputType.text
+                      : const TextInputType.numberWithOptions(decimal: true, signed: true),
                   onChanged: (_) => setState(_pick),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '纬度',
-                    hintText: '39.908692',
-                    border: OutlineInputBorder(),
+                    hintText: _dmsIn ? '39°54′31.3″N' : '39.908692',
+                    border: const OutlineInputBorder(),
                     isDense: true,
                   ),
                 ),
@@ -1077,12 +1144,14 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
               Expanded(
                 child: TextField(
                   controller: _lon,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                  keyboardType: _dmsIn
+                      ? TextInputType.text
+                      : const TextInputType.numberWithOptions(decimal: true, signed: true),
                   onChanged: (_) => setState(_pick),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: '经度',
-                    hintText: '116.397477',
-                    border: OutlineInputBorder(),
+                    hintText: _dmsIn ? '116°23′50.9″E' : '116.397477',
+                    border: const OutlineInputBorder(),
                     isDense: true,
                   ),
                 ),
@@ -1174,8 +1243,8 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
   }
 
   Widget _resultBlock(BuildContext context) {
-    final lat = double.tryParse(_lat.text.trim());
-    final lon = double.tryParse(_lon.text.trim());
+    final lat = _parseCoord(_lat.text);
+    final lon = _parseCoord(_lon.text);
     if (lat == null || lon == null || _error != null) {
       return const SizedBox.shrink();
     }
