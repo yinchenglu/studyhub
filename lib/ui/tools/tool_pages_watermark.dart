@@ -377,14 +377,14 @@ Future<void> showWatermarkSheet(
         builder: (ctx2, setSheet) {
           Future<void> doLocate() async {
             final ok = await wmLocate(ctx2, s, onChanged: () {
+              if (!ctx2.mounted) return;
               setSheet(() {});
               onChanged?.call();
             });
-            if (ok) {
-              setSheet(() {});
-              onChanged?.call();
-              if (ctx2.mounted) _snack(ctx2, '定位完成');
-            }
+            if (!ok || !ctx2.mounted) return;
+            setSheet(() {});
+            onChanged?.call();
+            _snack(ctx2, '定位完成');
           }
 
           Future<void> pickLogo() async {
@@ -392,6 +392,7 @@ Future<void> showWatermarkSheet(
               final f = await ImagePicker().pickImage(source: ImageSource.gallery);
               if (f == null) return;
               final bytes = await f.readAsBytes();
+              if (!ctx2.mounted) return;
               setSheet(() {
                 s.logo = bytes;
                 s.showLogo = true;
