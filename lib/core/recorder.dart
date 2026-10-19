@@ -66,32 +66,22 @@ class AudioRecorder {
 
   /// 录音 / 录像输出目录，不存在就建。
   ///
-  /// 优先级：自定义目录（设置里选过）→ 公共「下载」目录（写得了就用）
-  /// → 应用私有目录兜底。每一级失败都静默落到下一级 —— 录音这种
-  /// 「点一下就该开始」的东西，不能因为目录问题直接失败。
+  /// v2.2.2：**跟「设置 → 下载目录」保持一致**。用户在设置里把下载目录
+  /// 改到哪，录音录像就跟着存到哪；没设置过就是默认的 `Download/StudyHub`。
+  /// 写不进去（没有「所有文件访问」权限）再静默退回应用私有目录 ——
+  /// 录音这种「点一下就该开始」的东西，不能因为目录问题直接失败。
   static Future<Directory> outputDir() async {
-    final custom = await SettingsStore.instance.recorderDirPath();
-    if (custom != null && custom.isNotEmpty) {
-      try {
-        final dir = Directory(custom);
-        if (!await dir.exists()) await dir.create(recursive: true);
-        return dir;
-      } catch (_) {
-        // 落回默认目录
-      }
-    }
     final pub = await publicDir();
     if (pub != null) return pub;
     return defaultDir();
   }
 
-  /// 公共「下载」目录：`<外部存储根>/Download/StudyHub/录音录像/`。
+  /// 公共目录：**设置里的「下载目录」**（没设置过就是 `Download/StudyHub`）。
   ///
-  /// 写得了（有「所有文件访问」权限）就返回目录，写不了返回 null。
-  /// 判定方式是真的试写一个小探针文件再删掉 —— 权限状态光问
-  /// permission_handler 在一些 ROM 上不准，写一次最踏实。
-  /// 结果缓存在本会话内（[_publicCache]），权限中途变了用
-  /// [recheck] 强制重验一次。
+  /// 写得了就返回目录，写不了返回 null。判定方式是真的试写一个小探针
+  /// 文件再删掉 —— 权限状态光问 permission_handler 在一些 ROM 上不准，
+  /// 写一次最踏实。结果缓存在本会话内（[_publicCache]），
+  /// 设置改了 / 权限中途变了用 [recheck] 强制重验。
   static Directory? _publicCache;
 
   static Future<Directory?> publicDir({bool recheck = false}) async {
@@ -99,17 +89,22 @@ class AudioRecorder {
     if (!recheck && _publicCache != null) return _publicCache;
     Directory? out;
     try {
-      var root = '';
-      final base = await getExternalStorageDirectory();
-      if (base != null) {
-        // path_provider 给的是 …/Android/data/包名/files，截掉 /Android/
-        // 得到外部存储根（跟 CacheManager.defaultDownloadPath 同一套算法）
-        const mark = '/Android/';
-        final i = base.path.indexOf(mark);
-        root = i > 0 ? base.path.substring(0, i) : base.path;
+      // ① 设置里指定的下载目录
+      var target = (await SettingsStore.instance.downloadDirPath())?.trim() ?? '';
+      if (target.isEmpty) {
+        // ② 没设置过：跟 CacheManager.defaultDownloadPath() 同一个位置
+        var root = '';
+        final base = await getExternalStorageDirectory();
+        if (base != null) {
+          // path_provider 给的是 …/Android/data/包名/files，截掉 /Android/
+          const mark = '/Android/';
+          final i = base.path.indexOf(mark);
+          root = i > 0 ? base.path.substring(0, i) : base.path;
+        }
+        if (root.isEmpty) root = '/storage/emulated/0';
+        target = p.join(root, 'Download', 'StudyHub');
       }
-      if (root.isEmpty) root = '/storage/emulated/0';
-      final d = Directory(p.join(root, 'Download', 'StudyHub', '录音录像'));
+      final d = Directory(target);
       if (!await d.exists()) await d.create(recursive: true);
       final probe = File(p.join(d.path, '.studyhub_probe'));
       await probe.writeAsString('ok');
@@ -120,6 +115,31 @@ class AudioRecorder {
     }
     _publicCache = out;
     return out;
+  }
+
+  /// 设置里改了下载目录之后调用，下次重新解析（缓存里可能是旧路径）。
+  static void resetDirCache() => _publicCache = null;
+
+  /// v2.2.0/2.2.1 的旧位置（`Download/StudyHub/录音录像`）。
+  ///
+  /// 这两个版本装过的用户，录音留在这里；列表要一起扫，
+  /// 不能让「升级一下录音都不见了」。
+  static Future<Directory?> legacyDir() async {
+    if (!Platform.isAndroid) return null;
+    try {
+      var root = '';
+      final base = await getExternalStorageDirectory();
+      if (base != null) {
+        const mark = '/Android/';
+        final i = base.path.indexOf(mark);
+        root = i > 0 ? base.path.substring(0, i) : base.path;
+      }
+      if (root.isEmpty) root = '/storage/emulated/0';
+      final d = Directory(p.join(root, 'Download', 'StudyHub', '录音录像'));
+      return await d.exists() ? d : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 应用私有目录下的默认输出目录 `文档/recordings/`。
@@ -207,7 +227,9 @@ class AudioRecorder {
   ///
   /// v2.2.0：默认目录从私有挪到了「下载」，但私有目录里的历史文件
   /// 不能就此看不见 —— 这里把当前目录和私有目录**都扫一遍**、按路径
-  /// 去重后合并，旧录音照样能播、能删。
+  /// 去重后合并，旧录音照样能播、能删。v2.2.2 又把默认位置从
+  /// `下载/StudyHub/录音录像` 改成跟「设置里的下载目录」一致，
+  /// 所以旧子目录也要一起扫。
   static Future<List<File>> listAll() async {
     final dirs = <String>{};
     try {
@@ -215,6 +237,10 @@ class AudioRecorder {
     } catch (_) {}
     try {
       dirs.add((await defaultDir()).path);
+    } catch (_) {}
+    try {
+      final legacy = await legacyDir();
+      if (legacy != null) dirs.add(legacy.path);
     } catch (_) {}
 
     final out = <File>[];

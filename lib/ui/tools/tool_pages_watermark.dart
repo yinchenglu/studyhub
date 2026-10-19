@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -12,127 +11,51 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-/// 水印相机（v2.2.0 按「今日水印相机」重做）
+/// 水印相机（v2.2.2 重做）
 ///
-/// 归类：生活与娱乐。
+/// 跟上一版的区别（用户逐条提的）：
+///   * **去掉所有场景模板**：点「水印」不再先选模板，直接进编辑面板；
+///   * 可编辑项只有：Logo、时间、地点、经纬度、海拔、文本，每项一个开关；
+///   * 去掉「地图小图」和「天气」（那两项是上一版加的，用户不要了）；
+///   * 地点优先定位、可从地图数据里搜出来选，也能直接改文字；
+///   * 横屏时水印自动缩小、避开底部按钮栏和安全区。
 ///
-/// 三个界面，跟「今日水印相机」一一对应（用户给了三张截图）：
-///   1. 取景页（[WatermarkCameraPage]）：打开就是拍照画面，当前水印
-///      **实时叠在画面左下角**——大字时间 + 日期星期天气 + 地点 + 经纬度。
-///      底部三个键：本地照片 / 快门 / 水印；右侧「定位」。
-///   2. 水印选择面板：底部弹出的模板卡片墙（⊘ 不加水印 + 各模板），
-///      点卡片即时换水印，✕ 关闭。
-///   3. 水印内容编辑面板：一排开关（真实时间 / 地点 / 经纬度 / 海拔 /
-///      地图 / 快速备注），跟截图第三张一致，「完成」收起。
+/// 两个入口共用一个编辑面板：取景页底部的「水印」，以及编辑页顶部的
+/// 「水印内容」。面板内容可滚动 + 键盘弹出时自动上移，不会被系统栏挡住。
 ///
-/// 快门 → [WatermarkEditorPage]（自动保存）：用 RepaintBoundary 把
-/// 1080 逻辑宽的画布按 1.5 倍截成 PNG 存相册。
-///
-/// 原生通道 `studyhub/camera`：
-///   location（取一次定位，含海拔）/ geocode（逆地理编码）/ saveImage（存相册）
-///
-/// 天气：定位成功后调 Open-Meteo 免费接口（不要 key）拿一句「阴 17°C」，
-/// 拿不到就只显示星期几，不报错。
-///
-/// 地图小图：没有地图 SDK，用 OpenStreetMap 的单张瓦片（z=15）当底图，
-/// 中间叠一个定位针。没网时自动降级成「坐标网格 + 定位针」。
+/// 原生能力走 `studyhub/camera`：
+///   * `location`  → 取一次定位（含海拔/精度）
+///   * `geocode`   → 经纬度转中文地址（Geocoder，失败返回空串）
+///   * `saveImage` → 把 Dart 合成好的图存进相册
 
-// ----------------------------------------------------------------- 数据模型
+// ============================================================== 数据模型
 
-/// 水印模板。第一项「时间地点天气」是今日水印相机的默认款。
-enum WmScene { clock, punch, work, safety, training, custom }
-
-class WmStyle {
-  final String name;
-  final String title; // 空串 = 不显示标题条
-  final Color bg; // 底板色（alpha 0 = 透明底，时间地点天气就是透明）
-  final Color accent; // 竖色条 / 标题色
-  final Color fg;
-
-  const WmStyle({
-    required this.name,
-    required this.title,
-    required this.bg,
-    required this.accent,
-    required this.fg,
-  });
-
-  static const Map<WmScene, WmStyle> all = {
-    WmScene.clock: WmStyle(
-      name: '时间地点天气',
-      title: '',
-      bg: Colors.transparent,
-      accent: Color(0xFFFFC53D),
-      fg: Colors.white,
-    ),
-    WmScene.punch: WmStyle(
-      name: '考勤打卡',
-      title: '考勤打卡',
-      bg: Color(0xB3000000),
-      accent: Color(0xFF34C759),
-      fg: Colors.white,
-    ),
-    WmScene.work: WmStyle(
-      name: '工作记录',
-      title: '工作记录',
-      bg: Color(0xE60A2D4D),
-      accent: Color(0xFF2F9BE0),
-      fg: Colors.white,
-    ),
-    WmScene.safety: WmStyle(
-      name: '安全生产',
-      title: '安全生产',
-      bg: Color(0xF2FFFFFF),
-      accent: Color(0xFFD93025),
-      fg: Color(0xFF1A1A1A),
-    ),
-    WmScene.training: WmStyle(
-      name: '培训记录',
-      title: '培训记录',
-      bg: Color(0xE6123D2A),
-      accent: Color(0xFF34C759),
-      fg: Colors.white,
-    ),
-    WmScene.custom: WmStyle(
-      name: '自定义',
-      title: '',
-      bg: Color(0x99000000),
-      accent: Color(0xFF7F77DD),
-      fg: Colors.white,
-    ),
-  };
-}
-
-enum WmCorner { bottomLeft, topLeft, bottomRight, topRight }
-
-/// 水印的全部可变量。取景页、选择面板、编辑面板改的都是同一个对象，
-/// 改完立刻反映到取景画面。
 class WatermarkSettings {
-  WmScene scene = WmScene.clock;
-
-  /// ⊘ 不加水印（选择面板左上角那个圆圈斜杠）
+  /// 总开关（关掉 = 拍出来没有水印）
   bool enabled = true;
 
-  bool showTime = true;
-  bool showPlace = true;
-  bool showLatLng = true;
-  bool showAlt = false;
-  bool showMap = false;
-  bool showNote = false;
+  /// 自定义 Logo（PNG/JPG 字节）。为空表示还没传。
+  Uint8List? logo;
+  bool showLogo = false;
 
+  /// Logo 大小倍率（1.0 = 默认高度 34，跟着整体 scale 走）
+  double logoScale = 1.0;
+
+  bool showTime = true;
   DateTime time = DateTime.now();
+
+  bool showPlace = true;
   String place = '';
+
+  bool showLatLng = true;
   double? lat;
   double? lng;
+
+  bool showAlt = false;
   double? alt;
+
+  bool showNote = false;
   String note = '';
-
-  /// 「阴 17°C」这一句，定位成功后从 Open-Meteo 拿，拿不到就空着。
-  String weather = '';
-
-  WmCorner corner = WmCorner.bottomLeft;
-
-  WmStyle get style => WmStyle.all[scene] ?? WmStyle.all[WmScene.clock]!;
 
   static String _two(int v) => v.toString().padLeft(2, '0');
 
@@ -148,13 +71,7 @@ class WatermarkSettings {
 
   String get weekdayText => _weekCn[time.weekday - 1];
 
-  /// 「星期一  阴 17°C」（天气拿不到就只剩星期几）
-  String get weekdayWeatherText => [
-        weekdayText,
-        if (weather.isNotEmpty) weather,
-      ].join('  ');
-
-  /// 「30.828295°N,110.976382°E」—— 纬度在前，跟今日水印相机一致
+  /// 「30.828295°N,110.976382°E」—— 纬度在前
   String get latLngText {
     if (lat == null || lng == null) return '';
     final ns = lat! >= 0 ? 'N' : 'S';
@@ -166,37 +83,38 @@ class WatermarkSettings {
   String get altText => alt == null ? '' : '海拔 ${alt!.toStringAsFixed(1)} m';
 
   WatermarkSettings copy() {
-    final c = WatermarkSettings()
-      ..scene = scene
+    return WatermarkSettings()
       ..enabled = enabled
+      ..logo = logo
+      ..showLogo = showLogo
+      ..logoScale = logoScale
       ..showTime = showTime
-      ..showPlace = showPlace
-      ..showLatLng = showLatLng
-      ..showAlt = showAlt
-      ..showMap = showMap
-      ..showNote = showNote
       ..time = time
+      ..showPlace = showPlace
       ..place = place
+      ..showLatLng = showLatLng
       ..lat = lat
       ..lng = lng
+      ..showAlt = showAlt
       ..alt = alt
-      ..note = note
-      ..weather = weather
-      ..corner = corner;
-    return c;
+      ..showNote = showNote
+      ..note = note;
   }
 }
 
-// ----------------------------------------------------------------- 水印渲染
+// ============================================================== 水印渲染
 
-/// 水印渲染的**唯一**实现：取景页实时叠层、模板卡片小预览、编辑页成片
-/// 用的都是它，靠 [scale] 缩放（1.0 = 手机屏幕基准，编辑页画布用大倍数）。
+/// 水印本体。取景页叠层、编辑页成片用的都是它，靠 [scale] 缩放
+/// （1.0 = 手机屏幕基准；编辑页画布按短边放大）。
 ///
-/// 版式对齐「今日水印相机」：
+/// 版式：
+///   [Logo]
 ///   17:11 │ 2026-10-19
-///         │ 星期一  阴 17°C
-///   秭归县 · 秭归县疾病预防控制中心
+///         │ 星期一
+///   地点文字
 ///   经纬度：30.828295°N,110.976382°E
+///   海拔 128.4 m
+///   多行文本……
 class WmView extends StatelessWidget {
   final WatermarkSettings s;
   final double scale;
@@ -207,163 +125,815 @@ class WmView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final st = s.style;
-    // 亮字配黑影、暗字配亮影，透明底也压得住各种照片
+    // 深色照片上白字要有黑影，浅色照片也要看得清 —— 统一用暗阴影 + 微亮描边感
     final shadows = <Shadow>[
-      if (st.fg.computeLuminance() > 0.6)
-        Shadow(color: const Color(0x99000000), blurRadius: f(6), offset: Offset(0, f(1)))
-      else
-        Shadow(color: const Color(0x88FFFFFF), blurRadius: f(6), offset: Offset(0, f(1))),
+      Shadow(color: const Color(0xB3000000), blurRadius: f(6), offset: Offset(0, f(1))),
     ];
-    final textStyle = (double size, {FontWeight w = FontWeight.w500}) =>
+    TextStyle ts(double size, {FontWeight w = FontWeight.w500, double h = 1.3}) =>
         TextStyle(
-          // 注意：字号由调用点自己套 f(...)，这里别再乘一次，否则 scale² 变大
           fontSize: size,
-          height: 1.3,
+          height: h,
           fontWeight: w,
-          color: st.fg,
+          color: Colors.white,
           shadows: shadows,
         );
 
-    final hasTime = s.enabled && s.showTime;
+    final hasLogo = s.showLogo && s.logo != null;
+    final hasTime = s.showTime;
     final hasPlace = s.showPlace && s.place.trim().isNotEmpty;
     final hasLatLng = s.showLatLng && s.latLngText.isNotEmpty;
     final hasAlt = s.showAlt && s.altText.isNotEmpty;
     final hasNote = s.showNote && s.note.trim().isNotEmpty;
-    final hasAny = st.title.isNotEmpty ||
-        hasTime ||
-        hasPlace ||
-        hasLatLng ||
-        hasAlt ||
-        hasNote;
 
-    return Container(
-      // 用值相等判断透明底（新 Flutter 的 Color.alpha 访问器已被弃用/移除，
-      // 别拿它判 alpha；clock 模板的 bg 就是 Colors.transparent）
-      padding: st.bg == Colors.transparent
-          ? EdgeInsets.zero
-          : EdgeInsets.symmetric(horizontal: f(14), vertical: f(9)),
-      decoration: BoxDecoration(
-        color: st.bg,
-        borderRadius: BorderRadius.circular(f(8)),
-      ),
-      child: hasAny
-          ? Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (st.title.isNotEmpty)
-                  Padding(
-                    padding: EdgeInsets.only(bottom: f(4)),
-                    child: Text(st.title,
-                        style: textStyle(f(15), w: FontWeight.w700)),
-                  ),
-                if (hasTime)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Text(s.clockText,
-                          style: textStyle(f(36), w: FontWeight.w800)),
-                      SizedBox(width: f(9)),
-                      Container(width: f(3), height: f(32), color: st.accent),
-                      SizedBox(width: f(9)),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(s.dateText,
-                              style: textStyle(f(14), w: FontWeight.w600)),
-                          if (s.weekdayWeatherText.isNotEmpty)
-                            Text(s.weekdayWeatherText, style: textStyle(f(12))),
-                        ],
-                      ),
-                    ],
-                  ),
-                if (hasPlace)
-                  Padding(
-                    padding: EdgeInsets.only(top: f(3)),
-                    child: Text(s.place.trim(),
-                        style: textStyle(f(13), w: FontWeight.w600)),
-                  ),
-                if (hasLatLng)
-                  Padding(
-                    padding: EdgeInsets.only(top: f(2)),
-                    child: Text('经纬度：${s.latLngText}', style: textStyle(f(12))),
-                  ),
-                if (hasAlt)
-                  Padding(
-                    padding: EdgeInsets.only(top: f(2)),
-                    child: Text(s.altText, style: textStyle(f(12))),
-                  ),
-                if (hasNote)
-                  Padding(
-                    padding: EdgeInsets.only(top: f(2)),
-                    child: Text(s.note.trim(), style: textStyle(f(12))),
-                  ),
-              ],
-            )
-          : Text(
-              '（水印内容都是空的，点「水印」勾几个字段）',
-              style: textStyle(f(13)),
+    if (!hasLogo && !hasTime && !hasPlace && !hasLatLng && !hasAlt && !hasNote) {
+      return Text('（水印内容都是空的，点「水印」勾几个字段）', style: ts(f(13)));
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (hasLogo)
+          Padding(
+            padding: EdgeInsets.only(bottom: f(6)),
+            // 只给高度，宽度按比例 —— PNG 透明底能直接叠在照片上
+            child: Image.memory(
+              s.logo!,
+              height: f(34) * s.logoScale,
+              fit: BoxFit.contain,
+              gaplessPlayback: true,
             ),
+          ),
+        if (hasTime)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(s.clockText, style: ts(f(36), w: FontWeight.w800, h: 1.1)),
+              SizedBox(width: f(9)),
+              Container(width: f(3), height: f(32), color: const Color(0xFFFFC53D)),
+              SizedBox(width: f(9)),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(s.dateText, style: ts(f(14), w: FontWeight.w600)),
+                  Text(s.weekdayText, style: ts(f(12))),
+                ],
+              ),
+            ],
+          ),
+        if (hasPlace)
+          Padding(
+            padding: EdgeInsets.only(top: f(4)),
+            child: Text(s.place.trim(), style: ts(f(13.5), w: FontWeight.w600)),
+          ),
+        if (hasLatLng)
+          Padding(
+            padding: EdgeInsets.only(top: f(2)),
+            child: Text('经纬度：${s.latLngText}', style: ts(f(12))),
+          ),
+        if (hasAlt)
+          Padding(
+            padding: EdgeInsets.only(top: f(2)),
+            child: Text(s.altText, style: ts(f(12))),
+          ),
+        if (hasNote)
+          Padding(
+            padding: EdgeInsets.only(top: f(3)),
+            child: Text(s.note.trim(), style: ts(f(12.5), h: 1.45)),
+          ),
+      ],
     );
   }
 }
 
-// ----------------------------------------------------------------- 天气
+// ============================================================== 定位 / 地址
 
-/// WMO 天气代码 → 中文。Open-Meteo 的 current.weather_code。
-String _wmoText(int? code) {
-  if (code == null) return '';
-  if (code == 0) return '晴';
-  if (code <= 2) return '多云';
-  if (code == 3) return '阴';
-  if (code == 45 || code == 48) return '雾';
-  if (code >= 51 && code <= 57) return '毛毛雨';
-  if (code >= 61 && code <= 67) return '雨';
-  if (code >= 71 && code <= 77) return '雪';
-  if (code >= 80 && code <= 82) return '阵雨';
-  if (code == 85 || code == 86) return '阵雪';
-  if (code >= 95) return '雷雨';
-  return '';
+const MethodChannel _wmCh = MethodChannel('studyhub/camera');
+
+void _snack(BuildContext context, String msg) {
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+  );
 }
 
-/// Open-Meteo 免费当前天气（不要 key）。失败返回空串（没网是常态，
-/// 静默降级成只显示星期几）。
-Future<String> fetchWeatherText(double lat, double lng) async {
+/// 申请定位权限并取一次坐标。成功返回 true。
+///
+/// 用户点名「点按钮就要弹权限菜单」，所以这里**先** request 再调原生通道。
+Future<bool> wmLocate(
+  BuildContext context,
+  WatermarkSettings s, {
+  VoidCallback? onChanged,
+}) async {
+  var st = await Permission.locationWhenInUse.status;
+  if (!st.isGranted) {
+    st = await Permission.locationWhenInUse.request();
+  }
+  if (!st.isGranted) {
+    if (!context.mounted) return false;
+    if (st.isPermanentlyDenied) {
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('定位权限被拒绝'),
+          content: const Text('需要到系统设置里打开定位权限。\n\n'
+              '路径：设置 → 应用 → 学聚 → 权限 → 位置信息。'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('算了')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('去设置')),
+          ],
+        ),
+      );
+      if (go == true) await openAppSettings();
+    } else {
+      _snack(context, '没有定位权限，地点可以手动输入');
+    }
+    return false;
+  }
+
+  Map<String, dynamic>? r;
   try {
-    final r = await Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 5),
-      receiveTimeout: const Duration(seconds: 5),
-    )).get<dynamic>(
-      'https://api.open-meteo.com/v1/forecast',
-      queryParameters: <String, dynamic>{
-        'latitude': lat.toStringAsFixed(4),
-        'longitude': lng.toStringAsFixed(4),
-        'current': 'temperature_2m,weather_code',
-      },
+    r = await _wmCh.invokeMapMethod<String, dynamic>('location');
+  } catch (e) {
+    if (context.mounted) _snack(context, '定位失败：$e');
+    return false;
+  }
+  if (r == null || r['ok'] != true) {
+    if (context.mounted) _snack(context, '${r?['msg'] ?? '拿不到位置'}');
+    return false;
+  }
+  final lat = (r['lat'] as num?)?.toDouble();
+  final lng = (r['lng'] as num?)?.toDouble();
+  if (lat == null || lng == null) {
+    if (context.mounted) _snack(context, '定位结果里没有经纬度');
+    return false;
+  }
+  s.lat = lat;
+  s.lng = lng;
+  s.alt = (r['alt'] as num?)?.toDouble();
+  s.showLatLng = true;
+  if (s.place.trim().isEmpty) s.showPlace = true;
+  onChanged?.call();
+
+  // 逆地理编码（失败就只留经纬度）
+  final addr = await wmReverseGeocode(lat, lng);
+  if (addr.isNotEmpty) {
+    s.place = addr;
+    s.showPlace = true;
+    onChanged?.call();
+  }
+  return true;
+}
+
+/// 经纬度 → 中文地址。原生 `geocode` 直接回 String。
+Future<String> wmReverseGeocode(double lat, double lng) async {
+  try {
+    final a = await _wmCh.invokeMethod<String>(
+      'geocode',
+      <String, dynamic>{'lat': lat, 'lng': lng},
     );
-    final data = r.data;
-    final cur = data is Map ? data['current'] : null;
-    if (cur is! Map) return '';
-    final t = (cur['temperature_2m'] as num?)?.round();
-    final code = cur['weather_code'];
-    final w = _wmoText(code is int ? code : null);
-    return [if (w.isNotEmpty) w, if (t != null) '$t°C'].join(' ');
+    return (a ?? '').trim();
   } catch (_) {
     return '';
   }
 }
 
-// ----------------------------------------------------------------- 编辑页
+/// 地图数据里搜地点（OpenStreetMap Nominatim，免费、不要 key）。
+///
+/// 为什么用它：国内地图 SDK 都要 key 和签名包名，学聚是自签名的个人项目，
+/// 加一套 SDK 太重。Nominatim 走 HTTPS，国内能连（不行就手动输入，不强求）。
+Future<List<PlaceHit>> wmSearchPlaces(String q) async {
+  final key = q.trim();
+  if (key.isEmpty) return const <PlaceHit>[];
+  try {
+    final r = await Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 6),
+      receiveTimeout: const Duration(seconds: 8),
+      headers: const {'User-Agent': 'StudyHub/2.2 (Android)'},
+    )).get<List<dynamic>>(
+      'https://nominatim.openstreetmap.org/search',
+      queryParameters: <String, dynamic>{
+        'q': key,
+        'format': 'json',
+        'limit': 10,
+        'accept-language': 'zh-CN',
+      },
+    );
+    final list = r.data ?? const <dynamic>[];
+    final out = <PlaceHit>[];
+    for (final e in list) {
+      if (e is! Map) continue;
+      final name = (e['display_name'] as String?)?.trim() ?? '';
+      final lat = double.tryParse('${e['lat']}');
+      final lng = double.tryParse('${e['lon']}');
+      if (name.isEmpty) continue;
+      out.add(PlaceHit(_shortAddress(name), lat, lng));
+    }
+    return out;
+  } catch (_) {
+    return const <PlaceHit>[];
+  }
+}
+
+/// 把 Nominatim 的长地址截短：只留前 4 段（门牌/路/区/市）。
+String _shortAddress(String full) {
+  final parts = full.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+  if (parts.length <= 4) return parts.join(' · ');
+  return parts.take(4).join(' · ');
+}
+
+class PlaceHit {
+  final String name;
+  final double? lat;
+  final double? lng;
+  const PlaceHit(this.name, this.lat, this.lng);
+}
+
+// ============================================================== 编辑面板
+
+/// 水印内容编辑面板。取景页和编辑页共用。
+///
+/// 面板内容放在 SingleChildScrollView 里、整体限高 86% 屏高，
+/// 键盘弹出时按 viewInsets 上移 —— 选项不会被底部导航栏或输入法挡住。
+Future<void> showWatermarkSheet(
+  BuildContext context,
+  WatermarkSettings s, {
+  VoidCallback? onChanged,
+}) async {
+  final scheme = Theme.of(context).colorScheme;
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    showDragHandle: true,
+    backgroundColor: scheme.surface,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+    ),
+    builder: (ctx) {
+      return StatefulBuilder(
+        builder: (ctx2, setSheet) {
+          Future<void> doLocate() async {
+            final ok = await wmLocate(ctx2, s, onChanged: () {
+              setSheet(() {});
+              onChanged?.call();
+            });
+            if (ok) {
+              setSheet(() {});
+              onChanged?.call();
+              if (ctx2.mounted) _snack(ctx2, '定位完成');
+            }
+          }
+
+          Future<void> pickLogo() async {
+            try {
+              final f = await ImagePicker().pickImage(source: ImageSource.gallery);
+              if (f == null) return;
+              final bytes = await f.readAsBytes();
+              setSheet(() {
+                s.logo = bytes;
+                s.showLogo = true;
+              });
+              onChanged?.call();
+            } catch (e) {
+              if (ctx2.mounted) _snack(ctx2, '选择图片失败：$e');
+            }
+          }
+
+          Future<void> editTime() async {
+            final d = await showDatePicker(
+              context: ctx2,
+              initialDate: s.time,
+              firstDate: DateTime(2000),
+              lastDate: DateTime(2100),
+            );
+            if (d == null || !ctx2.mounted) return;
+            final t = await showTimePicker(
+              context: ctx2,
+              initialTime: TimeOfDay(hour: s.time.hour, minute: s.time.minute),
+            );
+            setSheet(() {
+              s.time = DateTime(d.year, d.month, d.day, t?.hour ?? s.time.hour,
+                  t?.minute ?? s.time.minute, s.time.second);
+              s.showTime = true;
+            });
+            onChanged?.call();
+          }
+
+          Future<void> editPlace() async {
+            final hit = await Navigator.of(ctx2).push<PlaceHit>(
+              MaterialPageRoute(
+                builder: (_) => WatermarkPlacePage(
+                  init: s.place,
+                  lat: s.lat,
+                  lng: s.lng,
+                ),
+              ),
+            );
+            if (hit == null || !ctx2.mounted) return;
+            setSheet(() {
+              s.place = hit.name;
+              s.showPlace = true;
+              if (hit.lat != null && hit.lng != null) {
+                s.lat = hit.lat;
+                s.lng = hit.lng;
+                s.showLatLng = true;
+              }
+            });
+            onChanged?.call();
+          }
+
+          Future<void> editNote() async {
+            final ctrl = TextEditingController(text: s.note);
+            final ok = await showDialog<bool>(
+              context: ctx2,
+              builder: (ctx3) => AlertDialog(
+                title: const Text('文本'),
+                content: TextField(
+                  controller: ctrl,
+                  autofocus: true,
+                  minLines: 3,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    hintText: '可以输入多行，如：\n三号车间设备巡检\n现场已确认',
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx3, false), child: const Text('取消')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(ctx3, true), child: const Text('确定')),
+                ],
+              ),
+            );
+            if (ok != true || !ctx2.mounted) return;
+            setSheet(() {
+              s.note = ctrl.text.trimRight();
+              s.showNote = true;
+            });
+            onChanged?.call();
+          }
+
+          Widget switchRow({
+            required IconData icon,
+            required String label,
+            required bool on,
+            required ValueChanged<bool> onToggle,
+            String? value,
+            VoidCallback? onTap,
+            Widget? trailing,
+          }) {
+            return InkWell(
+              onTap: onTap,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 2, 10, 2),
+                child: Row(
+                  children: [
+                    Icon(icon, size: 19, color: on ? scheme.primary : scheme.outline),
+                    const SizedBox(width: 10),
+                    Text(label, style: const TextStyle(fontSize: 14)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        value ?? '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.right,
+                        style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                      ),
+                    ),
+                    if (trailing != null) trailing,
+                    Transform.scale(
+                      scale: 0.8,
+                      child: Switch(
+                        value: on,
+                        onChanged: (v) {
+                          setSheet(() => onToggle(v));
+                          onChanged?.call();
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          return Padding(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx2).viewInsets.bottom),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(ctx2).size.height * 0.86,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // ---------- 头部 ----------
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 6, 0),
+                    child: Row(
+                      children: [
+                        const Text('水印内容',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                        const Spacer(),
+                        IconButton(
+                          tooltip: '关闭',
+                          onPressed: () => Navigator.pop(ctx2),
+                          icon: const Icon(Icons.close, size: 22),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // ---------- 可滚动的内容 ----------
+                  Flexible(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Column(
+                        children: [
+                          switchRow(
+                            icon: Icons.water_drop_outlined,
+                            label: '启用水印',
+                            on: s.enabled,
+                            onToggle: (v) => s.enabled = v,
+                            value: s.enabled ? '' : '不加水印',
+                          ),
+                          const Divider(height: 12),
+
+                          // ---- Logo ----
+                          switchRow(
+                            icon: Icons.image_outlined,
+                            label: 'Logo',
+                            on: s.showLogo,
+                            onToggle: (v) {
+                              s.showLogo = v;
+                              if (v && s.logo == null) pickLogo();
+                            },
+                            value: s.logo == null ? '未上传' : '',
+                            trailing: s.logo == null
+                                ? null
+                                : IconButton(
+                                    tooltip: '换一张',
+                                    icon: const Icon(Icons.swap_horiz, size: 20),
+                                    onPressed: pickLogo,
+                                  ),
+                          ),
+                          if (s.logo == null)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(44, 0, 14, 6),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: OutlinedButton.icon(
+                                  onPressed: pickLogo,
+                                  icon: const Icon(Icons.upload_file, size: 17),
+                                  label: const Text('上传 PNG 图片',
+                                      style: TextStyle(fontSize: 12.5)),
+                                ),
+                              ),
+                            ),
+                          if (s.logo != null && s.showLogo) ...[
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(44, 0, 14, 0),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF2A2A2A),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Image.memory(s.logo!,
+                                        height: 34, fit: BoxFit.contain),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  const Text('大小', style: TextStyle(fontSize: 12.5)),
+                                  Expanded(
+                                    child: Slider(
+                                      value: s.logoScale.clamp(0.4, 3.0).toDouble(),
+                                      min: 0.4,
+                                      max: 3.0,
+                                      divisions: 26,
+                                      label: '${s.logoScale.toStringAsFixed(1)}×',
+                                      onChanged: (v) {
+                                        setSheet(() => s.logoScale = v);
+                                        onChanged?.call();
+                                      },
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: 36,
+                                    child: Text('${s.logoScale.toStringAsFixed(1)}×',
+                                        style: const TextStyle(fontSize: 11.5)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+
+                          // ---- 时间 ----
+                          switchRow(
+                            icon: Icons.schedule,
+                            label: '时间',
+                            on: s.showTime,
+                            onToggle: (v) => s.showTime = v,
+                            value: '${s.dateText} ${s.clockText}',
+                            onTap: editTime,
+                          ),
+
+                          // ---- 地点 ----
+                          switchRow(
+                            icon: Icons.place_outlined,
+                            label: '地点',
+                            on: s.showPlace,
+                            onToggle: (v) => s.showPlace = v,
+                            value: s.place.trim().isEmpty ? '未设置，点这里选' : s.place,
+                            onTap: editPlace,
+                          ),
+
+                          // ---- 经纬度 ----
+                          switchRow(
+                            icon: Icons.my_location,
+                            label: '经纬度',
+                            on: s.showLatLng,
+                            onToggle: (v) {
+                              s.showLatLng = v;
+                              if (v && s.lat == null) doLocate();
+                            },
+                            value: s.latLngText.isEmpty ? '未定位' : s.latLngText,
+                            trailing: IconButton(
+                              tooltip: '重新定位',
+                              icon: const Icon(Icons.refresh, size: 19),
+                              onPressed: doLocate,
+                            ),
+                          ),
+
+                          // ---- 海拔 ----
+                          switchRow(
+                            icon: Icons.terrain_outlined,
+                            label: '海拔',
+                            on: s.showAlt,
+                            onToggle: (v) {
+                              s.showAlt = v;
+                              if (v && s.alt == null) doLocate();
+                            },
+                            value: s.altText.isEmpty ? '未定位' : s.altText,
+                          ),
+
+                          // ---- 文本 ----
+                          switchRow(
+                            icon: Icons.notes_outlined,
+                            label: '文本',
+                            on: s.showNote,
+                            onToggle: (v) => s.showNote = v,
+                            value: s.note.trim().isEmpty
+                                ? '未填写，点这里输入'
+                                : s.note.replaceAll('\n', ' / '),
+                            onTap: editNote,
+                          ),
+                          const SizedBox(height: 6),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                '开关打开即显示在照片上；点整行可以改内容。\n'
+                                '没有定位权限时，地点可以手动输入或从搜索里选。',
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    height: 1.5,
+                                    color: scheme.onSurfaceVariant),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  // ---------- 底部 ----------
+                  SafeArea(
+                    top: false,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: () => Navigator.pop(ctx2),
+                          style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(44)),
+                          child: const Text('完成'),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
+// ============================================================== 地点选择页
+
+/// 地点选择：优先定位，其次地图数据里搜，最后可以手动输入。
+///
+/// 单独一页而不是弹窗，是因为要放搜索框 + 结果列表 + 键盘，
+/// 弹窗里塞这些很容易被输入法挡住（用户明确说过别遮挡）。
+class WatermarkPlacePage extends StatefulWidget {
+  final String init;
+  final double? lat;
+  final double? lng;
+
+  const WatermarkPlacePage({
+    super.key,
+    this.init = '',
+    this.lat,
+    this.lng,
+  });
+
+  @override
+  State<WatermarkPlacePage> createState() => _WatermarkPlacePageState();
+}
+
+class _WatermarkPlacePageState extends State<WatermarkPlacePage> {
+  late final TextEditingController _q = TextEditingController(text: widget.init);
+  List<PlaceHit> _hits = const <PlaceHit>[];
+  bool _busy = false;
+  String? _msg;
+  String _current = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrent();
+  }
+
+  @override
+  void dispose() {
+    _q.dispose();
+    super.dispose();
+  }
+
+  /// 已有坐标就先把「当前位置」的中文地址取回来当第一候选。
+  Future<void> _loadCurrent() async {
+    final lat = widget.lat;
+    final lng = widget.lng;
+    if (lat == null || lng == null) return;
+    final a = await wmReverseGeocode(lat, lng);
+    if (!mounted) return;
+    if (a.isNotEmpty) setState(() => _current = a);
+  }
+
+  Future<void> _search() async {
+    final key = _q.text.trim();
+    if (key.isEmpty) return;
+    setState(() {
+      _busy = true;
+      _msg = null;
+    });
+    final hits = await wmSearchPlaces(key);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _hits = hits;
+      _msg = hits.isEmpty ? '没搜到（可能没网 / 地图服务连不上），可以直接用输入的文字' : null;
+    });
+  }
+
+  Future<void> _useHere() async {
+    final s = WatermarkSettings();
+    final ok = await wmLocate(context, s);
+    if (!mounted) return;
+    if (!ok) return;
+    setState(() {
+      _current = s.place;
+      if (s.place.isNotEmpty) _q.text = s.place;
+    });
+    if (s.place.isNotEmpty) {
+      Navigator.pop(context, PlaceHit(s.place, s.lat, s.lng));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('选择地点'),
+        actions: [
+          TextButton.icon(
+            onPressed: _useHere,
+            icon: const Icon(Icons.my_location, size: 17),
+            label: const Text('当前位置'),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _q,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (_) => _search(),
+                    decoration: InputDecoration(
+                      hintText: '搜地点，如：秭归县疾病预防控制中心',
+                      isDense: true,
+                      prefixIcon: const Icon(Icons.search, size: 19),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: _busy ? null : _search,
+                  child: Text(_busy ? '…' : '搜索'),
+                ),
+              ],
+            ),
+          ),
+          if (_current.isNotEmpty)
+            ListTile(
+              dense: true,
+              leading: Icon(Icons.place, color: scheme.primary, size: 20),
+              title: Text(_current, style: const TextStyle(fontSize: 13.5)),
+              subtitle: const Text('当前位置', style: TextStyle(fontSize: 11)),
+              trailing: const Icon(Icons.chevron_right, size: 18),
+              onTap: () => Navigator.pop(
+                context,
+                PlaceHit(_current, widget.lat, widget.lng),
+              ),
+            ),
+          if (_busy) const LinearProgressIndicator(minHeight: 2),
+          if (_msg != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(_msg!,
+                    style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant)),
+              ),
+            ),
+          Expanded(
+            child: ListView.separated(
+              itemCount: _hits.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (_, i) {
+                final h = _hits[i];
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.location_on_outlined, size: 19),
+                  title: Text(h.name, style: const TextStyle(fontSize: 13.5)),
+                  subtitle: (h.lat != null && h.lng != null)
+                      ? Text(
+                          '${h.lat!.toStringAsFixed(5)}, ${h.lng!.toStringAsFixed(5)}',
+                          style: const TextStyle(fontSize: 10.5))
+                      : null,
+                  onTap: () => Navigator.pop(context, h),
+                );
+              },
+            ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: () {
+                    final t = _q.text.trim();
+                    if (t.isEmpty) return;
+                    Navigator.pop(context, PlaceHit(t, null, null));
+                  },
+                  style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(44)),
+                  child: const Text('就用输入的文字（不改经纬度）'),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================== 编辑页
 
 class WatermarkEditorPage extends StatefulWidget {
   final List<String> paths;
   final WatermarkSettings settings;
 
-  /// 相机页拍完直接进来时置 true：画面一渲染好就自动存一张，
-  /// 用户不用再点「保存」（对应「拍完即成片」）。
+  /// 相机页拍完直接进来时置 true：画面渲染好就自动存一张。
   final bool autoSave;
 
   const WatermarkEditorPage({
@@ -378,8 +948,6 @@ class WatermarkEditorPage extends StatefulWidget {
 }
 
 class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
-  static const MethodChannel _ch = MethodChannel('studyhub/camera');
-
   /// 画布逻辑宽度：水印字号按 390 基准设计，渲染时整体放大到 1080
   static const double _canvasW = 1080;
   static const double _baseW = 390;
@@ -407,9 +975,8 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
 
   /// 把当前这张照片解码进图片缓存，保证截图时**画面已经画上去**。
   ///
-  /// 只等 endOfFrame 是不够的：`Image.file` 解码是异步的，手机拍的
-  /// 4000×3000 照片解码要几百毫秒，截早了保存下来的就是一块灰色底。
-  /// 先 precache 再等一帧，成片才稳。
+  /// 只等 endOfFrame 不够：手机拍的 4000×3000 照片解码要几百毫秒，
+  /// 截早了保存下来的就是一块灰色底。
   Future<void> _precacheCurrent() async {
     if (_isPreviewOnly || !mounted) return;
     try {
@@ -468,7 +1035,7 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
   Future<bool> _saveOne(int i) async {
     final bytes = await _capture();
     if (bytes == null) return false;
-    await _ch.invokeMethod('saveImage', {
+    await _wmCh.invokeMethod('saveImage', {
       'bytes': bytes,
       'name': _fileName(i),
       'mime': 'image/png',
@@ -497,6 +1064,11 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
         _saving = false;
         _msg = ok ? '已保存到相册（Pictures/学聚水印）' : '保存失败：截图没拿到';
       });
+      if (ok && widget.autoSave) {
+        // 拍完自动存完就退回取景页，别把人困在编辑页
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        if (mounted) Navigator.of(context).maybePop();
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -533,7 +1105,6 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
           setState(() => _aspect = w / h);
         }
         await WidgetsBinding.instance.endOfFrame;
-        // 换图后同样要先解码，否则截到的是上一张 / 灰底
         await _precacheCurrent();
         if (!mounted) return;
         await WidgetsBinding.instance.endOfFrame;
@@ -557,80 +1128,6 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
     });
   }
 
-  // ---------------------------------------------------------------- 编辑
-
-  Future<void> _editTime() async {
-    final d = await showDatePicker(
-      context: context,
-      initialDate: _s.time,
-      firstDate: DateTime(2000),
-      lastDate: DateTime(2100),
-    );
-    if (d == null || !mounted) return;
-    final t = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay(hour: _s.time.hour, minute: _s.time.minute),
-    );
-    if (!mounted) return;
-    setState(() {
-      _s.time = DateTime(d.year, d.month, d.day, t?.hour ?? _s.time.hour,
-          t?.minute ?? _s.time.minute, _s.time.second);
-      _s.showTime = true;
-    });
-  }
-
-  Future<void> _editPlace() async {
-    final c = TextEditingController(text: _s.place);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('地点'),
-        content: TextField(
-          controller: c,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '手动输入地点'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('确定')),
-        ],
-      ),
-    );
-    if (ok == true && mounted) {
-      setState(() {
-        _s.place = c.text.trim();
-        _s.showPlace = _s.place.isNotEmpty || _s.showPlace;
-      });
-    }
-  }
-
-  Future<void> _editNote() async {
-    final c = TextEditingController(text: _s.note);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('备注'),
-        content: TextField(
-          controller: c,
-          autofocus: true,
-          maxLines: 3,
-          minLines: 1,
-          decoration: const InputDecoration(hintText: '如：设备巡检，现场已确认'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('确定')),
-        ],
-      ),
-    );
-    if (ok == true && mounted) {
-      setState(() {
-        _s.note = c.text.trim();
-        _s.showNote = _s.note.isNotEmpty;
-      });
-    }
-  }
-
   // ---------------------------------------------------------------- UI
 
   @override
@@ -646,6 +1143,13 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
                 ? '水印编辑 · ${_idx + 1}/${widget.paths.length}'
                 : '水印编辑'),
         actions: [
+          IconButton(
+            tooltip: '水印内容',
+            onPressed: () => showWatermarkSheet(context, _s, onChanged: () {
+              if (mounted) setState(() {});
+            }),
+            icon: const Icon(Icons.branding_watermark_outlined, size: 21),
+          ),
           if (!_isPreviewOnly)
             IconButton(
               tooltip: '换成当前时间',
@@ -694,16 +1198,7 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
                               cacheWidth: 1620,
                               gaplessPlayback: true,
                             ),
-                          if (_s.enabled &&
-                              _s.showMap &&
-                              _s.lat != null &&
-                              _s.lng != null)
-                            Positioned(
-                              top: 24,
-                              right: 24,
-                              child: _MiniMap(lat: _s.lat!, lng: _s.lng!),
-                            ),
-                          _watermarkPositioned(canvasH),
+                          if (_s.enabled) _watermarkPositioned(canvasH),
                         ],
                       ),
                     ),
@@ -715,88 +1210,74 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
 
           // ---------- 底部操作 ----------
           Container(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
             color: scheme.surface,
-            child: Column(
-              children: [
-                if (_saving && _progressText.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Row(
-                      children: [
-                        const SizedBox(
-                          width: 14, height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(_progressText, style: const TextStyle(fontSize: 12)),
-                      ],
+            child: SafeArea(
+              top: false,
+              child: Column(
+                children: [
+                  if (_saving && _progressText.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          const SizedBox(
+                            width: 14, height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(_progressText, style: const TextStyle(fontSize: 12)),
+                        ],
+                      ),
                     ),
-                  ),
-                if (_msg != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      _msg!,
-                      style: TextStyle(fontSize: 12.5, height: 1.5, color: scheme.primary),
+                  if (_msg != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        _msg!,
+                        style: TextStyle(fontSize: 12.5, height: 1.5, color: scheme.primary),
+                      ),
                     ),
-                  ),
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
+                  Row(
                     children: [
-                      _chip('时间', Icons.schedule, _editTime),
-                      _chip('地点', Icons.place_outlined, _editPlace),
-                      _chip('备注', Icons.notes_outlined, _editNote),
-                      _chip('位置', Icons.open_with, _pickCorner),
-                      _chip('模板', Icons.style_outlined, _pickScene),
-                      _chip('字段', Icons.checklist, _pickFields),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    if (!_isPreviewOnly)
                       Expanded(
-                        child: OutlinedButton(
-                          onPressed: _saving ? null : _saveCurrent,
+                        child: OutlinedButton.icon(
+                          onPressed: () => showWatermarkSheet(context, _s, onChanged: () {
+                            if (mounted) setState(() {});
+                          }),
+                          icon: const Icon(Icons.tune, size: 18),
+                          label: const Text('水印内容'),
                           style: OutlinedButton.styleFrom(
                               minimumSize: const Size.fromHeight(44)),
-                          child: const Text('保存这张'),
                         ),
                       ),
-                    if (!_isPreviewOnly) const SizedBox(width: 10),
-                    if (!_isPreviewOnly && widget.paths.length > 1)
+                      const SizedBox(width: 10),
                       Expanded(
                         child: FilledButton(
+                          onPressed: _saving || _isPreviewOnly ? null : _saveCurrent,
+                          style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(44)),
+                          child: const Text('保存'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (!_isPreviewOnly && widget.paths.length > 1)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.tonal(
                           onPressed: _saving ? null : _saveAll,
                           style: FilledButton.styleFrom(
-                              minimumSize: const Size.fromHeight(44)),
-                          child: Text('全部保存（${widget.paths.length}）'),
-                        ),
-                      )
-                    else if (_isPreviewOnly)
-                      Expanded(
-                        child: FilledButton(
-                          onPressed: () => Navigator.pop(context),
-                          style: FilledButton.styleFrom(
-                              minimumSize: const Size.fromHeight(44)),
-                          child: const Text('返回调整'),
-                        ),
-                      )
-                    else
-                      Expanded(
-                        child: FilledButton(
-                          onPressed: _saving ? null : _saveCurrent,
-                          style: FilledButton.styleFrom(
-                              minimumSize: const Size.fromHeight(44)),
-                          child: const Text('保存到相册'),
+                              minimumSize: const Size.fromHeight(42)),
+                          child: Text('全部保存（${widget.paths.length} 张）'),
                         ),
                       ),
-                  ],
-                ),
-              ],
+                    ),
+                  const SizedBox(height: 10),
+                ],
+              ),
             ),
           ),
         ],
@@ -804,256 +1285,30 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
     );
   }
 
-  Widget _chip(String label, IconData icon, VoidCallback onTap) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: ActionChip(
-        avatar: Icon(icon, size: 15),
-        label: Text(label, style: const TextStyle(fontSize: 12)),
-        onPressed: _saving ? null : onTap,
-        visualDensity: VisualDensity.compact,
-      ),
-    );
-  }
-
-  Future<void> _pickCorner() async {
-    final c = await showModalBottomSheet<WmCorner>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final e in const {
-              WmCorner.topLeft: '左上角',
-              WmCorner.topRight: '右上角',
-              WmCorner.bottomLeft: '左下角（默认）',
-              WmCorner.bottomRight: '右下角',
-            }.entries)
-              ListTile(
-                dense: true,
-                leading: Icon(
-                  _s.corner == e.key ? Icons.radio_button_checked : Icons.radio_button_off,
-                  size: 19,
-                ),
-                title: Text(e.value),
-                onTap: () => Navigator.pop(ctx, e.key),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (c != null && mounted) setState(() => _s.corner = c);
-  }
-
-  Future<void> _pickScene() async {
-    final c = await showModalBottomSheet<WmScene>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final e in WmStyle.all.entries)
-              ListTile(
-                dense: true,
-                leading: Container(
-                  width: 16,
-                  height: 16,
-                  decoration: BoxDecoration(
-                    color: e.value.accent,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
-                title: Text(e.value.name),
-                trailing: _s.scene == e.key
-                    ? Icon(Icons.check, size: 18, color: Theme.of(ctx).colorScheme.primary)
-                    : null,
-                onTap: () => Navigator.pop(ctx, e.key),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (c != null && mounted) {
-      setState(() {
-        _s.scene = c;
-        _s.enabled = true;
-      });
-    }
-  }
-
-  Future<void> _pickFields() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx2, setSheet) {
-          Widget sw(String label, bool v, ValueChanged<bool> f) => SwitchListTile(
-                dense: true,
-                title: Text(label, style: const TextStyle(fontSize: 13.5)),
-                value: v,
-                onChanged: (x) {
-                  setSheet(() {});
-                  setState(() => f(x));
-                },
-              );
-          return SafeArea(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SwitchListTile(
-                  dense: true,
-                  title: const Text('启用水印', style: TextStyle(fontSize: 13.5)),
-                  value: _s.enabled,
-                  onChanged: (x) {
-                    setSheet(() {});
-                    setState(() => _s.enabled = x);
-                  },
-                ),
-                sw('时间', _s.showTime, (v) => _s.showTime = v),
-                sw('地点', _s.showPlace, (v) => _s.showPlace = v),
-                sw('经纬度', _s.showLatLng, (v) => _s.showLatLng = v),
-                sw('海拔', _s.showAlt, (v) => _s.showAlt = v),
-                sw('地图小图（右上角）', _s.showMap, (v) => _s.showMap = v),
-                sw('备注', _s.showNote, (v) => _s.showNote = v),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   // ---------------------------------------------------------------- 水印位置
 
   Widget _watermarkPositioned(double canvasH) {
-    // 边距按画布宽度的 3% 走，换分辨率看着也协调
+    // 边距按画布宽度的 3% 走
     const pad = _canvasW * 0.03;
-    final child = WmView(s: _s, scale: _canvasW / _baseW);
-
-    switch (_s.corner) {
-      case WmCorner.topLeft:
-        return Positioned(left: pad, top: pad, child: child);
-      case WmCorner.topRight:
-        return Positioned(right: pad, top: pad, child: child);
-      case WmCorner.bottomRight:
-        return Positioned(right: pad, bottom: pad, child: child);
-      case WmCorner.bottomLeft:
-        return Positioned(left: pad, bottom: pad, child: child);
-    }
-  }
-}
-
-// ----------------------------------------------------------------- 地图小图
-
-/// 220×220 的位置小图。
-///
-/// 底图用 OSM 的单张瓦片（z=15，约 1.2km 见方），不需要任何 key；
-/// 加载失败（没网 / 被墙）就画坐标网格 —— 至少能看出「有位置」。
-class _MiniMap extends StatelessWidget {
-  final double lat;
-  final double lng;
-
-  const _MiniMap({required this.lat, required this.lng});
-
-  static const int _z = 15;
-  static const double _size = 220;
-
-  int get _tx => ((lng + 180) / 360 * (1 << _z)).floor();
-  int get _ty {
-    final r = lat * math.pi / 180;
-    final v = (1 - math.log(math.tan(r) + 1 / math.cos(r)) / math.pi) / 2;
-    return (v * (1 << _z)).floor();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final url = 'https://tile.openstreetmap.org/$_z/$_tx/$_ty.png';
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: SizedBox(
-        width: _size,
-        height: _size,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Image.network(
-              url,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => const _GridFallback(),
-              loadingBuilder: (_, child, p) =>
-                  p == null ? child : const _GridFallback(),
-            ),
-            // 定位针
-            Center(
-              child: Icon(
-                Icons.location_on,
-                size: 46,
-                color: const Color(0xFFD93025),
-                shadows: const [Shadow(color: Colors.black45, blurRadius: 6)],
-              ),
-            ),
-            // 底部信息条（OSM 要求署名）
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: Container(
-                color: Colors.black.withValues(alpha: 0.45),
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                child: Text(
-                  '${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)} · © OSM',
-                  style: const TextStyle(fontSize: 13, color: Colors.white),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
+    // 缩放按**短边**算：竖图水印不至于太小，横图也不至于把画面盖住一半
+    final shortSide = canvasH < _canvasW ? canvasH : _canvasW;
+    final scale = (shortSide / _baseW).clamp(0.55, 3.2).toDouble();
+    return Positioned(
+      left: pad,
+      bottom: pad,
+      child: WmView(s: _s, scale: scale),
     );
   }
 }
 
-class _GridFallback extends StatelessWidget {
-  const _GridFallback();
+// ============================================================== 取景页
 
-  @override
-  Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: _GridPainter(),
-      child: const SizedBox.expand(),
-    );
-  }
-}
-
-class _GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF3E4A44));
-    final p = Paint()
-      ..color = Colors.white.withValues(alpha: 0.16)
-      ..strokeWidth = 1;
-    for (var i = 1; i < 5; i++) {
-      final x = size.width * i / 5;
-      final y = size.height * i / 5;
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), p);
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), p);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-// ============================================================ 取景页
-
-/// 水印相机主界面（v2.2.0 按「今日水印相机」重做）。
+/// 水印相机主界面。
 ///
-/// * 打开就是取景画面，当前水印**实时叠在左下角**（时间每秒自己走）
-/// * 底部三键：本地照片 / 快门 / 水印；快门拍完自动合成保存
-/// * 「水印」→ 模板卡片选择面板 →「编辑内容」→ 字段开关面板
-/// * 右侧「定位」：一次拿到经纬度 + 中文地址 + 天气
+/// * 打开就是取景画面，水印实时叠在左下角（时间每秒自己走）
+/// * 底部三键：本地照片 / 快门 / 水印
+/// * 「水印」直接进水印内容面板（没有场景模板这一步）
+/// * 横屏时水印整体缩小、避让底部按钮栏和安全区
 class WatermarkCameraPage extends StatefulWidget {
   const WatermarkCameraPage({super.key});
 
@@ -1063,8 +1318,6 @@ class WatermarkCameraPage extends StatefulWidget {
 
 class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     with WidgetsBindingObserver {
-  static const MethodChannel _ch = MethodChannel('studyhub/camera');
-
   final WatermarkSettings _s = WatermarkSettings();
 
   CameraController? _cam;
@@ -1075,7 +1328,6 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
   String? _err;
 
   /// 每秒把时间拨到「现在」—— 取景页的水印是真实时间。
-  /// 拍照那一瞬间会再取一次 `DateTime.now()`，误差不超过 1 秒。
   Timer? _clock;
 
   @override
@@ -1165,60 +1417,15 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     await _initCam();
   }
 
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  // ---------------------------------------------------------------- 定位
-
-  /// 一次拿到：经纬度 + 海拔 + 中文地址 + 天气，水印立刻刷新。
   Future<void> _locate() async {
     if (_locating) return;
     setState(() => _locating = true);
-    _toast('正在定位…');
+    _snack(context, '正在定位…');
     try {
-      final r = await _ch.invokeMapMethod<String, dynamic>('location');
-      if (!mounted) return;
-      if (r == null || r['ok'] != true) {
-        _toast('定位失败：${r?['msg'] ?? '拿不到位置'}');
-        return;
-      }
-      final lat = (r['lat'] as num?)?.toDouble();
-      final lng = (r['lng'] as num?)?.toDouble();
-      final alt = (r['alt'] as num?)?.toDouble();
-      if (lat == null || lng == null) {
-        _toast('定位结果里没有经纬度');
-        return;
-      }
-      setState(() {
-        _s.lat = lat;
-        _s.lng = lng;
-        _s.alt = alt;
-        _s.showLatLng = true;
-        if (alt != null) _s.showAlt = true;
+      final ok = await wmLocate(context, _s, onChanged: () {
+        if (mounted) setState(() {});
       });
-      // 逆地理编码换成中文地址（失败就留着经纬度）
-      try {
-        // 原生 geocode 直接回一个 String（地址串），不是 Map —— 早先写成
-        // invokeMapMethod 会静默抛类型错，地址永远填不上。这里用 String。
-        final addr = await _ch.invokeMethod<String>(
-            'geocode', <String, dynamic>{'lat': lat, 'lng': lng});
-        if (addr != null && addr.isNotEmpty && mounted) {
-          setState(() {
-            _s.place = addr;
-            _s.showPlace = true;
-          });
-        }
-      } catch (_) {}
-      // 天气：拿不到就只显示星期几
-      final w = await fetchWeatherText(lat, lng);
-      if (w.isNotEmpty && mounted) {
-        setState(() => _s.weather = w);
-      }
-      if (mounted) _toast('定位完成');
-    } catch (e) {
-      _toast('定位失败：$e');
+      if (ok && mounted) _snack(context, '定位完成');
     } finally {
       if (mounted) setState(() => _locating = false);
     }
@@ -1230,7 +1437,7 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     final c = _cam;
     if (_shooting) return;
     if (c == null || !c.value.isInitialized) {
-      _toast('相机还没就绪，稍等一下再按');
+      _snack(context, '相机还没就绪，稍等一下再按');
       return;
     }
     setState(() => _shooting = true);
@@ -1248,7 +1455,7 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
         ),
       ));
     } catch (e) {
-      _toast('拍照失败：$e');
+      _snack(context, '拍照失败：$e');
     } finally {
       if (mounted) setState(() => _shooting = false);
     }
@@ -1267,398 +1474,8 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
       ));
       if (mounted) setState(() {});
     } catch (e) {
-      _toast('选择照片失败：$e');
+      _snack(context, '选择照片失败：$e');
     }
-  }
-
-  // ---------------------------------------------------------------- 面板
-
-  /// 模板小卡片的演示数据（固定一套好看的样例，跟今日水印相机一样）
-  WatermarkSettings _demo(WmScene scene) {
-    final d = WatermarkSettings()
-      ..scene = scene
-      ..enabled = true
-      ..time = DateTime(2026, 8, 8, 8, 30)
-      ..place = '北京市 · 天安门'
-      ..lat = 39.908692
-      ..lng = 116.397477
-      ..weather = '晴 26°C'
-      ..showTime = true
-      ..showPlace = true
-      ..showLatLng = true
-      ..showAlt = false
-      ..showMap = false
-      ..showNote = scene == WmScene.work;
-    if (scene == WmScene.work) d.note = '现场已确认';
-    return d;
-  }
-
-  /// 水印选择面板（截图第二张）：⊘ 不加水印 + 模板卡片墙 + 编辑内容入口
-  void _showPicker() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx2, setSheet) {
-          final cs = Theme.of(ctx2).colorScheme;
-          Widget tile(String name, Widget preview, bool selected, VoidCallback onTap) {
-            return InkWell(
-              onTap: onTap,
-              borderRadius: BorderRadius.circular(10),
-              child: Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: selected ? cs.primary : cs.outlineVariant,
-                    width: selected ? 2 : 1,
-                  ),
-                ),
-                padding: const EdgeInsets.all(6),
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: Container(
-                        width: double.infinity,
-                        color: const Color(0xFF3A3A3A),
-                        alignment: Alignment.centerLeft,
-                        padding: const EdgeInsets.all(6),
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          alignment: Alignment.centerLeft,
-                          child: preview,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 5),
-                    Text(name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: selected ? cs.primary : cs.onSurface,
-                            fontWeight:
-                                selected ? FontWeight.w700 : FontWeight.w400)),
-                  ],
-                ),
-              ),
-            );
-          }
-
-          return SafeArea(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(ctx2).size.height * 0.72,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // ---------- 头部 ----------
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
-                    child: Row(
-                      children: [
-                        const Text('水印',
-                            style: TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.w700)),
-                        const Spacer(),
-                        IconButton(
-                          tooltip: '关闭',
-                          onPressed: () => Navigator.pop(ctx2),
-                          icon: const Icon(Icons.close, size: 22),
-                        ),
-                      ],
-                    ),
-                  ),
-                  // ---------- 卡片墙 ----------
-                  Flexible(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          GridView.count(
-                            crossAxisCount: 2,
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            mainAxisSpacing: 8,
-                            crossAxisSpacing: 8,
-                            childAspectRatio: 1.55,
-                            children: [
-                              // ⊘ 不加水印
-                              tile(
-                                '不加水印',
-                                Icon(Icons.block_rounded,
-                                    size: 34, color: Colors.white54),
-                                !_s.enabled,
-                                () {
-                                  setSheet(() => _s.enabled = false);
-                                  setState(() {});
-                                },
-                              ),
-                              for (final e in WmStyle.all.entries)
-                                tile(
-                                  e.value.name,
-                                  WmView(s: _demo(e.key)),
-                                  _s.enabled && _s.scene == e.key,
-                                  () {
-                                    setSheet(() {
-                                      _s.scene = e.key;
-                                      _s.enabled = true;
-                                    });
-                                    setState(() {});
-                                  },
-                                ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          // ---------- 编辑内容入口 ----------
-                          SizedBox(
-                            width: double.infinity,
-                            child: OutlinedButton.icon(
-                              onPressed: () {
-                                Navigator.pop(ctx2);
-                                _showEdit();
-                              },
-                              icon: const Icon(Icons.tune, size: 18),
-                              label: const Text('编辑水印内容'),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  /// 水印内容编辑面板（截图第三张）：一排开关，行尾显示当前值，
-  /// 点行可以改（时间选择器 / 重新定位 / 备注输入框）。
-  void _showEdit() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx2, setSheet) {
-          final cs = Theme.of(ctx2).colorScheme;
-          Widget row({
-            required String label,
-            required bool on,
-            required ValueChanged<bool> onToggle,
-            String? value,
-            VoidCallback? onTap,
-            Color dot = Colors.transparent,
-          }) {
-            return InkWell(
-              onTap: onTap,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                child: Row(
-                  children: [
-                    // 缩到 0.85 否则 M3 的 Switch 在行高里显得很大
-                    Transform.scale(
-                      scale: 0.85,
-                      child: Switch(
-                        value: on,
-                        onChanged: (v) {
-                          setSheet(() => onToggle(v));
-                          setState(() {});
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(label,
-                        style: TextStyle(
-                            fontSize: 14,
-                            color: on ? cs.onSurface : cs.onSurfaceVariant)),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        value ?? '',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.right,
-                        style: TextStyle(
-                            fontSize: 12.5, color: cs.onSurfaceVariant),
-                      ),
-                    ),
-                    if (dot != Colors.transparent) ...[
-                      const SizedBox(width: 4),
-                      Container(
-                        width: 7,
-                        height: 7,
-                        decoration: BoxDecoration(
-                            shape: BoxShape.circle, color: dot),
-                      ),
-                    ],
-                    if (onTap != null) ...[
-                      const SizedBox(width: 2),
-                      Icon(Icons.chevron_right,
-                          size: 18, color: cs.onSurfaceVariant),
-                    ],
-                  ],
-                ),
-              ),
-            );
-          }
-
-          Future<void> pickTime() async {
-            final d = await showDatePicker(
-              context: ctx2,
-              initialDate: _s.time,
-              firstDate: DateTime(2000),
-              lastDate: DateTime(2100),
-            );
-            if (d == null || !ctx2.mounted) return;
-            final t = await showTimePicker(
-              context: ctx2,
-              initialTime: TimeOfDay(hour: _s.time.hour, minute: _s.time.minute),
-            );
-            if (!ctx2.mounted) return;
-            setSheet(() {
-              _s.time = DateTime(d.year, d.month, d.day,
-                  t?.hour ?? _s.time.hour, t?.minute ?? _s.time.minute);
-              _s.showTime = true;
-            });
-            setState(() {});
-          }
-
-          Future<void> editNote() async {
-            final c = TextEditingController(text: _s.note);
-            final ok = await showDialog<bool>(
-              context: ctx2,
-              builder: (ctx3) => AlertDialog(
-                title: const Text('快速备注'),
-                content: TextField(
-                  controller: c,
-                  autofocus: true,
-                  maxLines: 3,
-                  minLines: 1,
-                  decoration: const InputDecoration(hintText: '如：三号车间设备巡检'),
-                ),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(ctx3, false),
-                      child: const Text('取消')),
-                  FilledButton(
-                      onPressed: () => Navigator.pop(ctx3, true),
-                      child: const Text('确定')),
-                ],
-              ),
-            );
-            if (ok != true || !ctx2.mounted) return;
-            setSheet(() {
-              _s.note = c.text.trim();
-              _s.showNote = _s.note.isNotEmpty || _s.showNote;
-            });
-            setState(() {});
-          }
-
-          return SafeArea(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // ---------- 头部 ----------
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
-                  child: Row(
-                    children: [
-                      Text(_s.style.name,
-                          style: const TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.w700)),
-                      const Icon(Icons.edit_outlined,
-                          size: 15, color: Colors.grey),
-                      const Spacer(),
-                      IconButton(
-                        tooltip: '关闭',
-                        onPressed: () => Navigator.pop(ctx2),
-                        icon: const Icon(Icons.close, size: 22),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 4),
-                row(
-                  label: '真实时间',
-                  value: '${_s.dateText} ${_s.clockText}',
-                  on: _s.showTime,
-                  onToggle: (v) => _s.showTime = v,
-                  onTap: pickTime,
-                ),
-                row(
-                  label: '地点',
-                  value: _s.place.isEmpty
-                      ? '（未定位，点行定位）'
-                      : _s.place,
-                  on: _s.showPlace,
-                  onToggle: (v) => _s.showPlace = v,
-                  onTap: () async {
-                    Navigator.pop(ctx2);
-                    await _locate();
-                    if (mounted) _showEdit(); // 拿到新数据后重开面板
-                  },
-                ),
-                row(
-                  label: '经纬度',
-                  value: _s.latLngText.isEmpty ? '（定位后自动填入）' : _s.latLngText,
-                  on: _s.showLatLng,
-                  onToggle: (v) => _s.showLatLng = v,
-                ),
-                row(
-                  label: '海拔',
-                  value: _s.altText.isEmpty ? '（定位后自动填入）' : _s.altText,
-                  on: _s.showAlt,
-                  onToggle: (v) => _s.showAlt = v,
-                ),
-                row(
-                  label: '地图',
-                  value: '显示在照片右上角',
-                  on: _s.showMap,
-                  onToggle: (v) => _s.showMap = v,
-                ),
-                row(
-                  label: '快速备注',
-                  value: _s.note.isEmpty ? '（未填写，点行输入）' : _s.note,
-                  on: _s.showNote,
-                  onToggle: (v) => _s.showNote = v,
-                  onTap: editNote,
-                  dot: _s.note.isEmpty ? const Color(0xFFE5484D) : Colors.transparent,
-                ),
-                const SizedBox(height: 10),
-                // ---------- 底部按钮 ----------
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: FilledButton(
-                          onPressed: () => Navigator.pop(ctx2),
-                          style: FilledButton.styleFrom(
-                              minimumSize: const Size.fromHeight(44)),
-                          child: const Text('完成'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
   }
 
   // ---------------------------------------------------------------- UI
@@ -1667,16 +1484,21 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          _preview(),
-          if (_s.enabled) _watermarkOverlay(),
-          _rightRail(),
-          _topBar(),
-          _bottomBar(),
-          if (_err != null) _errorLayer(),
-        ],
+      body: OrientationBuilder(
+        builder: (context, orientation) {
+          final landscape = orientation == Orientation.landscape;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              _preview(),
+              if (_s.enabled) _watermarkOverlay(landscape),
+              _rightRail(landscape),
+              _topBar(),
+              _bottomBar(landscape),
+              if (_err != null) _errorLayer(),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1698,15 +1520,28 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     );
   }
 
-  /// 取景画面上叠加的水印（左下角，底栏上方）。
-  Widget _watermarkOverlay() {
+  /// 取景画面上叠加的水印。
+  ///
+  /// 竖屏贴左下角、躲开底部三键；横屏整体缩到 0.82 倍、抬高一点，
+  /// 并且左右各多留一点，避开刘海 / 挖孔 / 手势条。
+  Widget _watermarkOverlay(bool landscape) {
+    final safe = MediaQuery.of(context).padding;
+    final size = MediaQuery.of(context).size;
     return IgnorePointer(
       child: Padding(
-        // 底部留出三键栏 + 模式条的高度
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 150),
+        padding: EdgeInsets.only(
+          left: (landscape ? 26 : 16) + safe.left,
+          right: (landscape ? 26 : 16) + safe.right,
+          bottom: landscape ? 126 : 152,
+        ),
         child: Align(
           alignment: Alignment.bottomLeft,
-          child: WmView(s: _s),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: size.width * (landscape ? 0.55 : 0.86),
+            ),
+            child: WmView(s: _s, scale: landscape ? 0.82 : 1.0),
+          ),
         ),
       ),
     );
@@ -1718,9 +1553,11 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
       tooltip: tip,
       onPressed: busy ? null : onTap,
       icon: busy
-          ? SizedBox(
-              width: 20, height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+          ? const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            )
           : Icon(icon, color: Colors.white, size: 24),
       style: IconButton.styleFrom(backgroundColor: Colors.black.withValues(alpha: 0.35)),
     );
@@ -1742,20 +1579,20 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     );
   }
 
-  /// 右侧悬浮栏：定位（截图右下的靶心按钮）
-  Widget _rightRail() {
-    return IgnorePointer(
-      ignoring: false,
-      child: Align(
-        alignment: Alignment.bottomRight,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(0, 0, 10, 160),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _roundIcon(Icons.my_location, '取当前地点', _locate, busy: _locating),
-            ],
-          ),
+  /// 右侧悬浮栏：定位。横屏时往上挪一点，别被底部按钮压住。
+  Widget _rightRail(bool landscape) {
+    return Align(
+      alignment: Alignment.bottomRight,
+      child: Padding(
+        padding: EdgeInsets.only(
+          right: 10 + MediaQuery.of(context).padding.right,
+          bottom: landscape ? 136 : 166,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _roundIcon(Icons.my_location, '取当前地点', _locate, busy: _locating),
+          ],
         ),
       ),
     );
@@ -1788,7 +1625,7 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     );
   }
 
-  Widget _bottomBar() {
+  Widget _bottomBar(bool landscape) {
     return Align(
       alignment: Alignment.bottomCenter,
       child: Container(
@@ -1802,7 +1639,7 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
         child: SafeArea(
           top: false,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 22, 24, 10),
+            padding: EdgeInsets.fromLTRB(24, landscape ? 10 : 22, 24, 10),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               crossAxisAlignment: CrossAxisAlignment.center,
@@ -1813,8 +1650,8 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
                 GestureDetector(
                   onTap: _shooting ? null : _shoot,
                   child: Container(
-                    width: 74,
-                    height: 74,
+                    width: landscape ? 62 : 74,
+                    height: landscape ? 62 : 74,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       border: Border.all(color: Colors.white, width: 4),
@@ -1827,7 +1664,7 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
                       ),
                       child: _shooting
                           ? const Padding(
-                              padding: EdgeInsets.all(17),
+                              padding: EdgeInsets.all(14),
                               child: CircularProgressIndicator(
                                   strokeWidth: 2, color: Colors.black54),
                             )
@@ -1835,8 +1672,14 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
                     ),
                   ),
                 ),
-                // 右：水印（选择模板 / 编辑内容）
-                _bottomKey(Icons.branding_watermark_outlined, '水印', _showPicker),
+                // 右：水印（直接进内容编辑，没有模板这一步）
+                _bottomKey(
+                  Icons.branding_watermark_outlined,
+                  '水印',
+                  () => showWatermarkSheet(context, _s, onChanged: () {
+                    if (mounted) setState(() {});
+                  }),
+                ),
               ],
             ),
           ),

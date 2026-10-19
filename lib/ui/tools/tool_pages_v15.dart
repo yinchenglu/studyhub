@@ -5,7 +5,9 @@ import 'dart:ui' show FontFeature;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 
+import '../../core/permissions.dart';
 import 'tool_pages.dart';
 
 // ===========================================================================
@@ -1018,13 +1020,55 @@ class _CoordinateConvertPageState extends State<CoordinateConvertPage> {
   /// 大多是「39°54′31.3″N」这种写法，还得自己拿计算器换算。
   bool _dmsIn = false;
 
+  /// 申请定位权限：已授权直接过；没授权就弹系统窗；永久拒绝则引导去设置。
+  ///
+  /// 注意 `Permission.locationWhenInUse` 在 Android 上映射到
+  /// ACCESS_FINE_LOCATION/ACCESS_COARSE_LOCATION（清单里两个都声明了）。
+  Future<bool> _ensureLocationPermission() async {
+    var st = await Permission.locationWhenInUse.status;
+    if (st.isGranted) return true;
+    if (st.isDenied) {
+      st = await Permission.locationWhenInUse.request();
+      if (st.isGranted) return true;
+    }
+    if (!mounted) return false;
+    // 只是这次拒绝（还能再弹系统窗）：提示一句就结束，别用对话框挡路
+    if (!st.isPermanentlyDenied) {
+      toast(context, '没有定位权限，可以在输入框里手动填坐标');
+      return false;
+    }
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('定位权限被拒绝'),
+        content: const Text('需要到系统设置里手动打开定位权限。\n\n'
+            '路径：设置 → 应用 → 学聚 → 权限 → 位置信息。\n'
+            '打开后回到这里再点一次「当前位置」。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false), child: const Text('算了')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true), child: const Text('去设置')),
+        ],
+      ),
+    );
+    if (go == true) await openPermissionSettings();
+    return false;
+  }
+
   /// 取当前定位并填入。走 `studyhub/camera` 原生通道的 `location` 方法
   /// （和指南针、水印相机同一个），拿回来的是 GPS 原始坐标 —— 也就是 WGS84，
   /// 所以顺手把「输入坐标系」切到 WGS84，用户不用再手动选一遍。
+  ///
+  /// v2.2.2：先主动申请定位权限。之前直接调通道，没权限时原生只回一句
+  /// 「还没给定位权限」，系统弹窗根本不出现 —— 用户点名要求点击时就弹菜单。
   Future<void> _useMyLocation() async {
     if (_locating) return;
     setState(() => _locating = true);
     try {
+      final ok = await _ensureLocationPermission();
+      if (!mounted) return;
+      if (!ok) return;
       final r = await const MethodChannel('studyhub/camera')
           .invokeMapMethod<String, dynamic>('location');
       if (!mounted) return;
