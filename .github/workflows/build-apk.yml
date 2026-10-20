@@ -605,7 +605,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     # 实测每个 21 MB 的包要推 ~20 分钟，两个包 ~39 分钟，留一次重试的余量
-    timeout-minutes: 55
+    timeout-minutes: 80
     steps:
       - name: 拉取代码（全量历史）
         uses: actions/checkout@v4
@@ -664,106 +664,39 @@ jobs:
           [ -z "$DEF" ] && DEF=main
           echo "Gitee 默认分支：${DEF}"
 
-          echo "[1/4] 推源码 → ${DEF}"
+          echo "[1/3] 推源码 → ${DEF}"
           git push --progress --force "$GIT_URL" "HEAD:refs/heads/${DEF}" \
             && echo "  源码 OK（用掉 $(used)）" \
             || echo "::warning::源码推送失败（多半是 GITEE_TOKEN 权限不足或仓库路径不对）"
 
           # ---- 2. tag ----
-          echo "[2/4] 推 tag ${TAG}"
+          echo "[2/3] 推 tag ${TAG}"
           git tag -f "$TAG" >/dev/null 2>&1
           git push --progress -f "$GIT_URL" "refs/tags/${TAG}" \
             && echo "  tag OK（用掉 $(used)）"
 
-          echo "[3/4] 推 APK"
-          # 只镜像手机真用得上的两个 ABI。
-          # 构建其实还会出一个 app-x86_64-release.apk（模拟器用，23 MB），
-          # 三个一起推 = 66 MB，跨境传到 Gitee 会直接僵死（第一版就是这么挂的）。
-          rm -rf /tmp/apkpush && mkdir -p /tmp/apkpush
-          cd /tmp/apkpush
-          git init -q -b apk
-          git config user.name "ci-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # ---- 3. 发行版 + APK 附件（v2.3.3 起：APK 不再进仓库分支）----
+          # 为什么换（踩坑记录，别改回去）：
+          #   · Gitee 免费版配额：单仓库 500MB、单文件 50MB、附件 3GB。
+          #   · 旧做法是每版 force push 一条 `apk` 分支，里面装两个 21MB 安装包。
+          #     force push 只移动分支指针，旧对象不会被回收 —— 四十多版下来仓库
+          #     早就超过 500MB。超限之后 Gitee 会把这些大文件分支**静默丢弃**：
+          #     客户端日志里明明有 `* [new branch] HEAD -> apk`，服务端却没留下，
+          #     于是 raw/apk/xxx.apk 永远 404「Repository or file not found」。
+          #   · 发行版附件走「附件容量」（免费版 3GB），不占仓库体积，而且直链
+          #     /releases/download/<tag>/<file> **免登录**就能下（实测 v71 的包 200）。
+          #   · 只传 arm64：21MB 跨境要 15~25 分钟，两个包塞不进一次 job。
+          echo "[3/3] 建发行版 + 上传 APK 附件"
+          BODY="APK 直接点下面的链接下载（不用登录）：
 
-          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          cat > latest.json <<EOF
-          {"version":"${APP_VER}","build":${BUILD},"tag":"${TAG}",
-           "commit":"${SHA}","built_at":"${NOW}","repo":"${GITEE_REPO}"}
-          EOF
+          - [app-arm64-v8a-release.apk](${WEB}/releases/download/${TAG}/app-arm64-v8a-release.apk) —— 64 位，近年手机装这个
 
-          cat > README.md <<EOF
-          # 学聚 APK（自动发布，勿手改）
+          版本 ${APP_VER}，构建编号 ${BUILD}，源码提交 ${SHA}。
 
-          当前版本 **${APP_VER}**，构建编号 **${BUILD}**，tag \`${TAG}\`，提交 \`${SHA}\`。
-
-          - 64 位（绝大多数手机）：[app-arm64-v8a-release.apk](${WEB}/raw/apk/app-arm64-v8a-release.apk)
-          - 32 位（老机型）：[app-armeabi-v7a-release.apk](${WEB}/raw/apk/app-armeabi-v7a-release.apk)
-
-          > 注：Gitee 对大文件 raw 下载要求登录，未登录访问这两个链接会被拒。
-
-          本分支每次构建都会被整体覆盖（force push），只保留最新一版。
-          历史版本见 GitHub Releases 或本仓库对应的 tag。
-          EOF
-
-          git add latest.json README.md
-          git commit -q -m "说明 ${TAG}（${APP_VER}）"
-
-          # 逐个包推、一个包一次请求：
-          #   · 单次 21 MB 比一次 66 MB 成功率高得多
-          #   · 后一个失败不影响已经推上去的前一个
-          #   · 每次尝试最多 25 分钟（timeout 兜底），低速 2 分钟即中断重试
-          push_one() {
-            F="$1"; TRIES="$2"; N=1
-            if [ ! -f "/tmp/apk/${F}" ]; then
-              echo "  ${F} 不在产物里，跳过"
-              return 1
-            fi
-            cp "/tmp/apk/${F}" .
-            git add -A
-            git commit -q -m "${F} ${TAG}（${APP_VER}）"
-            while [ "$N" -le "$TRIES" ]; do
-              echo "  第 ${N}/${TRIES} 次推 ${F}（已用 $(used)）..."
-              if timeout 1200 git push --progress -f "$GIT_URL" HEAD:refs/heads/apk; then
-                echo "  ${F} 完成（累计 $(used)）"
-                return 0
-              fi
-              echo "  ${F} 第 ${N} 次失败（累计 $(used)），10 秒后重试"
-              N=$((N + 1))
-              sleep 10
-            done
-            echo "::warning::${F} 推了 ${TRIES} 次都没上去"
-            return 1
-          }
-
-          # 实测：每个 21 MB 的包从海外 runner 推到 Gitee 要 ~20 分钟，
-          # 两个包约 39 分钟。所以先推 arm64（人人都用得上），
-          # 推完时间还富余再补 32 位，避免把 job 超时顶穿。
-          OKN=0
-          push_one app-arm64-v8a-release.apk 3 && OKN=$((OKN + 1))
-          ELAPSED=$(( $(date +%s) - T0 ))
-          if [ "$OKN" = "1" ] && [ "$ELAPSED" -le 1800 ]; then
-            push_one app-armeabi-v7a-release.apk 1 && OKN=$((OKN + 1))
-          else
-            echo "  已用 ${ELAPSED}s，32 位包这次不推"
-          fi
-          echo "本次成功推上去 ${OKN} 个 APK（共 $(used)）"
-          cd "$GITHUB_WORKSPACE"
-
-          # ---- 4. 发行版（可选，只是给个版本页；不再上传附件）----
-          # 附件上传接口 POST /releases/{id}/attach_files 在外网 runner 上
-          # 长期无响应（一直挂到超时），v71~v75 连试五版全部失败，已弃用。
-          echo "[4/4] 建 Gitee 发行版（可选）"
-          BODY="APK 直接点下面两个链接下载：
-
-          - [app-arm64-v8a-release.apk](${WEB}/raw/apk/app-arm64-v8a-release.apk) —— 64 位，近年手机优先装这个
-          - [app-armeabi-v7a-release.apk](${WEB}/raw/apk/app-armeabi-v7a-release.apk) —— 32 位，老机型才需要
-
-          > Gitee 大文件 raw 下载需要先登录 Gitee 账号。
-
-          版本 ${APP_VER}，构建编号 ${BUILD}，源码提交 ${SHA}。"
+          32 位老机型：https://github.com/yinchenglu/studyhub/releases/download/${TAG}/app-armeabi-v7a-release.apk"
 
           HTTP=$(curl -s -o /tmp/rel.json -w "%{http_code}" \
-            --connect-timeout 20 --max-time 90 \
+            --connect-timeout 20 --max-time 120 \
             -X POST "${API}/releases" \
             -H "Content-Type: application/x-www-form-urlencoded" \
             --data-urlencode "access_token=${GITEE_TOKEN}" \
@@ -772,12 +705,48 @@ jobs:
             --data-urlencode "body=${BODY}" \
             --data-urlencode "prerelease=false" \
             --data-urlencode "target_commitish=${DEF}")
-          echo "  发行版 HTTP ${HTTP}：$(head -c 200 /tmp/rel.json)"
+          echo "  建发行版 HTTP ${HTTP}"
+          REL_ID=$(python3 -c "import json;d=json.load(open('/tmp/rel.json'));print(d.get('id','') if isinstance(d,dict) else '')" 2>/dev/null)
+          if [ -z "$REL_ID" ]; then
+            curl -s -o /tmp/rel2.json --connect-timeout 20 --max-time 90 \
+              "${API}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}"
+            REL_ID=$(python3 -c "import json;d=json.load(open('/tmp/rel2.json'));print(d.get('id','') if isinstance(d,dict) else '')" 2>/dev/null)
+            echo "  发行版已存在，id=${REL_ID}"
+          fi
+
+          # 上传附件：跨境极慢，单文件给 40 分钟；低于 1KB/s 持续 5 分钟即中断重试
+          attach() {
+            F="$1"
+            [ -f "/tmp/apk/${F}" ] || { echo "  ${F} 不在产物里，跳过"; return 1; }
+            T=1
+            while [ "$T" -le 2 ]; do
+              echo "  上传 ${F} 第 ${T}/2 次（已用 $(used)）..."
+              CODE=$(curl -s -o /tmp/att.json -w "%{http_code}" \
+                --connect-timeout 30 --max-time 2400 \
+                --speed-limit 1024 --speed-time 300 \
+                -X POST "${API}/releases/${REL_ID}/attach_files" \
+                -F "access_token=${GITEE_TOKEN}" \
+                -F "file=@/tmp/apk/${F}")
+              echo "    HTTP ${CODE}：$(head -c 160 /tmp/att.json)"
+              if [ "$CODE" = "201" ] || [ "$CODE" = "200" ]; then
+                echo "  附件直链：${WEB}/releases/download/${TAG}/${F}"
+                return 0
+              fi
+              T=$((T + 1))
+              sleep 15
+            done
+            return 1
+          }
+
+          if [ -n "$REL_ID" ]; then
+            attach app-arm64-v8a-release.apk
+          else
+            echo "::warning::拿不到发行版 id，本次没传附件"
+          fi
 
           echo "----- Gitee 镜像就绪（总用时 $(used)）-----"
           echo "  源码：${WEB}/tree/${DEF}"
-          echo "  64 位：${WEB}/raw/apk/app-arm64-v8a-release.apk"
-          echo "  32 位：${WEB}/raw/apk/app-armeabi-v7a-release.apk"
+          echo "  下载页：${WEB}/releases/tag/${TAG}"
           sleep 2
 
       # 同步的完整日志推到 ci-logs 分支：anon 可读，出问题不用登 GitHub 翻 Actions

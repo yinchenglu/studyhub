@@ -882,56 +882,52 @@ studyhub_app/
     - 验证方法：`grep -oE "_ToolDef\\('([^']+)'" tools_page.dart` 和
       `grep -oE "case '([^']+)'"` 的名单 diff 一下必须为空
 
-17. **发版自动同步到 Gitee**（v2.0.0+40 新增，+45/+46 改掉上传方式）
+17. **发版自动同步到 Gitee**（v2.0.0+40 新增；+45/+46 换过一次上传方式；
+    **v2.3.3+58 彻底改成「发行版附件」**）
     - 位置：`.github/workflows/build-apk.yml` 里**独立的 `gitee` job**
-      （不在 `build` 里 —— 跨境推 40 MB 要十几到几十分钟，
-      放 build 里会把这个包的上线时间一起拖住）
+      （不在 `build` 里 —— 跨境传 21 MB 要十几到几十分钟，放 build 里会把
+      这个包的上线时间一起拖住）
     - 流程：`build` 先出包、建 GitHub Release（约 8 分钟，你马上能下），
-      `gitee` job 再去取 Artifact、慢慢追镜像，追多久都不影响 GitHub
+      `gitee` job 再去取 Artifact、慢慢同步，同步多久都不影响 GitHub
     - 目标仓库写死在 workflow 的 `GITEE_REPO`（当前 `yin-cheng-lu/StudyHub`），
       改仓库要改这一处
     - 令牌放 Actions secret **`GITEE_TOKEN`**（Gitee → 设置 → 私人令牌，
       权限勾 `projects`）。**没配不会让构建失败**，只会打一条 warning 跳过
-    - 做四件事：① 把源码强推到 Gitee 的默认分支（分支名用 `git ls-remote`
-      现查，**不调 API**，实测 5 秒）② 打 `v<run_number>` tag 推过去
-      ③ **把 APK 当普通文件推到一条叫 `apk` 的分支**（每次整体覆盖，只留最新一版）
-      ④ （可选）调 v5 API 建发行版，正文里放下载链接
-    - **APK 的下载地址是固定的**：
-      * 64 位：`https://gitee.com/yin-cheng-lu/StudyHub/raw/apk/app-arm64-v8a-release.apk`
-      * 32 位：`https://gitee.com/yin-cheng-lu/StudyHub/raw/apk/app-armeabi-v7a-release.apk`
-      * 版本信息：同分支下的 `latest.json`
-      * **这两个链接必须登录 Gitee 才能下**（未登录回 `403 large file require login`，
-        这是 Gitee 对大文件 raw 下载的限制，不是权限没配对）；
-        要发给别人下载，用 GitHub Release 的链接
-    - **速度**：实测每个 21 MB 的包要从海外 runner 推 **约 20 分钟**
-      （跑一次 `Writing objects` 之后就是纯等网络，不是卡死）。
-      所以先推 arm64，推完若总用时 ≤ 30 分钟再补 32 位，两个都推约 39 分钟
-    - 排查通道：`gitee` job 的全量输出会被推到 **`ci-logs` 分支的 `gitee.log`**，
+    - 做三件事：① 把源码强推到 Gitee 默认分支（分支名用 `git ls-remote` 现查）
+      ② 打 `v<run_number>` tag 推过去 ③ 建发行版，**把 arm64 的 APK 作为
+      发行版附件上传**
+    - **下载地址（免登录，直接点）**：
+      * `https://gitee.com/yin-cheng-lu/StudyHub/releases/tag/v<run_number>`
+      * 直链：`https://gitee.com/yin-cheng-lu/StudyHub/releases/download/v<run_number>/app-arm64-v8a-release.apk`
+    - **为什么不再把 APK 塞进 git 分支（老办法已废弃，别改回去）**：
+      Gitee 免费版配额是**单仓库 500 MB / 单文件 50 MB / 附件 3 GB**。
+      老办法每版 `force push` 一条装两个 21 MB 安装包的 `apk` 分支，
+      而 force push 只移动分支指针、**旧对象不会被回收** —— 四十多版下来
+      仓库早超过 500 MB。超限后 Gitee 会把这些大文件分支**静默丢弃**：
+      客户端日志里明明有 `* [new branch] HEAD -> apk`，服务端却没留下这个分支，
+      于是 `raw/apk/xxx.apk` 永远 404，浏览器显示
+      **`[session-xxxxxxxx] Repository or file not found`**。
+      发行版附件走的是「附件容量」（3 GB，和仓库体积分开算），直链还免登录。
+    - 只传 **arm64** 一个包：21 MB 跨境要 15~25 分钟，两个包塞不进一次 job；
+      32 位包老机型才用得上，链接直接指向 GitHub Release
+    - 排查通道：`gitee` job 的全量输出会推到 **`ci-logs` 分支的 `gitee.log`**，
       匿名可读（`raw.githubusercontent.com/<repo>/ci-logs/gitee.log`），
       不用登 GitHub 翻 Actions
-    - 五个易踩的坑：
+    - 易踩的坑：
       * **checkout 必须 `fetch-depth: 0`** —— 浅克隆往另一个远端 push 会被
-        `shallow update not allowed` 拒绝（本仓库历史才 3 MB，全量拉没负担）
-      * **不要用发行的「附件上传」接口**（`POST /releases/{id}/attach_files`）：
-        GitHub 的海外 runner 上去连 Gitee，这个接口**长期无响应**，
-        连接建起来就不回、一直挂到超时（v71~v75 连试五版，发行版都建出来了、
-        附件表永远是空的）。所以 APK 改走 git push，同一个令牌、稳得多
-      * **千万别把 3 个 ABI 一起推**：构建其实还会出一个 `app-x86_64-release.apk`
-        （模拟器用，23 MB），三包齐推 = 66 MB，git 打包完就僵在上传，
-        30 分钟都推不完（v77 就这么挂的）。只挑手机用得上的两个
-      * **必须开低速中断**：`http.lowSpeedLimit 1024` + `http.lowSpeedTime 120`。
-        不开（比如 `lowSpeedTime 2400`）一旦连接僵住，git 会一直等，
-        直接耗到 job 超时，日志里只看到 `Total 7 ... done` 就没了
+        `shallow update not allowed` 拒绝
+      * **上传附件要给足时间**：`--max-time 2400` + `--speed-limit 1024
+        --speed-time 300`（低于 1 KB/s 持续 5 分钟才中断重试）。
+        v72~v75 那几版误判成「接口无响应」，其实就是 21 MB 传了 20 多分钟
+        还没完，被 job 超时掐了
       * **Gitee 的匿名 API 限流很凶**（构建机 IP 直接 `403 Rate Limit Exceeded`），
-        凡是能不用 API 的地方都别用 —— 分支名用 `ls-remote`，
-        建发行版只是锦上添花，失败只打 warning
-      * **Gitee 的 raw 有内容审核**：`README.md` 这类文本文件命中违禁词会回
-        `451 The content may contain violation information`（本仓库的 README 就中招了），
-        但 `pubspec.yaml` / APK 这类不受影响
-      * **分支名 URL 会被 CDN 缓存**：`apk` 分支刚建好的头几分钟，
-        `raw/apk/xxx` 可能还是 404；换成提交号（`raw/<sha>/xxx`）立刻能取到
-    - 仓库体积：每次构建会往 Gitee 推约 42 MB 对象（旧版本变成不可达对象），
-      免费仓库 1 GB 上限，大约能撑 20 次左右；攒够了可以让我清一次
+        能不用 API 的地方都别用；建发行版/传附件失败只打 warning，不影响 GitHub
+      * **Gitee 的 raw 有内容审核**：`README.md` 命中文违禁词会回
+        `451 The content may contain violation information`（本仓库就中招过），
+        `pubspec.yaml` / APK 不受影响
+      * **仓库体积要留意**：现在每版只推源码（几 MB），体积增长很慢；
+        若哪天源码也推不上，说明仓库彻底超限，去 Gitee 设置里看「仓库体积」，
+        必要时删库重建（CI 下一次构建会自动把源码补回去）
 
 18. **`shared_preferences` 插件已从项目移除，不要再加回来**（v2.0.0+49 修）
     - 症状：装完打开**纯白屏**（release 版看不到任何报错）。装诊断版后能看到：
@@ -1059,6 +1055,24 @@ case '新名字':
 
 > Release 页面的正文已经精简成几行（不然 APK 下载按钮被顶到很下面），
 > 每次改了什么统一记在这里。
+
+### v2.3.3（2.3.3+58）—— 只改发布链路，App 功能跟 v2.3.2 一样
+
+**修「Gitee 下载一直报 `Repository or file not found`」**
+- 原因：Gitee 免费版**单仓库 500 MB** 上限。老做法每版往仓库里 force push
+  一条装两个 21 MB 安装包的 `apk` 分支，而 force push 不回收旧对象，
+  四十多版下来仓库早超了。超限后 Gitee 会把这些大分支**静默丢弃**：
+  日志里明明有 `* [new branch] HEAD -> apk`，服务端却没留下分支，于是
+  所有 `raw/apk/*.apk` 链接一律 404（浏览器就显示那句
+  `[session-xxxxxxxx] Repository or file not found`）。
+- 另外 raw 下载本身还要求登录（`403 large file require login`），
+  就算分支在，手机浏览器直接点也下不了。
+- 改法：**APK 改走 Gitee 发行版附件**。附件容量和仓库体积分开算（免费版 3 GB），
+  直链 `releases/download/<tag>/<file>` 免登录可下。
+  CI 里同步 job 从此只推源码 + tag + 一个 arm64 安装包附件，
+  不再产生任何大文件分支。
+- 上传超时也放宽：`--max-time 2400`，只有连续 5 分钟低于 1 KB/s 才中断重试。
+  （v72~v75 那几版把「传得慢」误判成「接口无响应」了。）
 
 ### v2.3.2（2.3.2+57）
 
