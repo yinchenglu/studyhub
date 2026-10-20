@@ -908,18 +908,22 @@ studyhub_app/
       于是 `raw/apk/xxx.apk` 永远 404，浏览器显示
       **`[session-xxxxxxxx] Repository or file not found`**。
       发行版附件走的是「附件容量」（3 GB，和仓库体积分开算），直链还免登录。
-    - 只传 **arm64** 一个包：21 MB 跨境要 15~25 分钟，两个包塞不进一次 job；
-      32 位包老机型才用得上，链接直接指向 GitHub Release
+    - 同步逻辑在 **`tools/sync_gitee.py`**（从 StudyHub-TV 仓库移植的同款脚本），
+      两个包都传、已传过的自动跳过；GitHub 网页「Run workflow」时填
+      `release_tag`（例：`v88`）可以给历史版本补建发行版
+    - **速度**：实测 14 MB 附件要 ~15 分钟、21 MB 要 ~20 分钟（跨境就是慢，
+      不是卡死），两个包约 40 分钟
     - 排查通道：`gitee` job 的全量输出会推到 **`ci-logs` 分支的 `gitee.log`**，
       匿名可读（`raw.githubusercontent.com/<repo>/ci-logs/gitee.log`），
       不用登 GitHub 翻 Actions
     - 易踩的坑：
       * **checkout 必须 `fetch-depth: 0`** —— 浅克隆往另一个远端 push 会被
         `shallow update not allowed` 拒绝
-      * **上传附件要给足时间**：`--max-time 2400` + `--speed-limit 1024
-        --speed-time 300`（低于 1 KB/s 持续 5 分钟才中断重试）。
-        v72~v75 那几版误判成「接口无响应」，其实就是 21 MB 传了 20 多分钟
-        还没完，被 job 超时掐了
+      * **上传必须走 curl 且关掉 100-continue**：`--http1.1 -H "Expect:"`，
+        再配 `--speed-limit 4096 --speed-time 90`（低于 4 KB/s 持续 90 秒
+        就放弃重来）+ 外层重试。urllib 直传会在 sendall 上卡死
+        （StudyHub-TV v1.4.0 实测）；StudyHub 仓库 v72~v75 把「传得慢」
+        误判成「接口无响应」而弃用附件，一半原因就是没关 100-continue
       * **Gitee 的匿名 API 限流很凶**（构建机 IP 直接 `403 Rate Limit Exceeded`），
         能不用 API 的地方都别用；建发行版/传附件失败只打 warning，不影响 GitHub
       * **Gitee 的 raw 有内容审核**：`README.md` 命中文违禁词会回
@@ -1069,10 +1073,13 @@ case '新名字':
   就算分支在，手机浏览器直接点也下不了。
 - 改法：**APK 改走 Gitee 发行版附件**。附件容量和仓库体积分开算（免费版 3 GB），
   直链 `releases/download/<tag>/<file>` 免登录可下。
-  CI 里同步 job 从此只推源码 + tag + 一个 arm64 安装包附件，
-  不再产生任何大文件分支。
-- 上传超时也放宽：`--max-time 2400`，只有连续 5 分钟低于 1 KB/s 才中断重试。
-  （v72~v75 那几版把「传得慢」误判成「接口无响应」了。）
+  CI 改为调用 `tools/sync_gitee.py`（StudyHub-TV 同款脚本）：
+  只推源码 + tag，APK 全部作为发行版附件上传，不再产生任何大文件分支。
+- 上传细节按 StudyHub-TV 的踩坑记录修正：curl `--http1.1` + 关 `Expect:` +
+  低速 90 秒中断 + 3 次重试。（v72~v75 那几版把「传得慢」误判成
+  「接口无响应」，其实 14 MB 就要 ~15 分钟。）
+- 下载页变成：`https://gitee.com/yin-cheng-lu/StudyHub/releases/tag/v<构建号>`，
+  附件免登录直下。
 
 ### v2.3.2（2.3.2+57）
 
