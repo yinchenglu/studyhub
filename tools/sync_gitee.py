@@ -286,7 +286,11 @@ def release_asset_names(full_name, release_id, tag):
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             html = r.read().decode("utf-8", "replace")
-        names = {os.path.basename(n) for n in re.findall(r"[\w.\-]+\.apk", html)}
+        # 只认「releases/download/」形式的真附件链接。
+        # 不能见 .apk 就算 —— 发行版**正文里写了文件名**（v90 踩过：
+        # 正文列了 app-arm64-...apk，被抓成"已存在附件"，真包反而没传）。
+        names = {os.path.basename(n) for n in
+                 re.findall(r"releases/download/[^\"'\s<>]+\.apk", html)}
     except Exception:
         pass
     return names
@@ -451,9 +455,13 @@ def main():
     # 已经传过同名的就先跳过，重复跑不会堆一串重复文件
     existing = release_asset_names(full_name, rid, tag)
 
+    # 只传手机用得上的两个 ABI；x86_64 是模拟器用的，传上去白占 20 分钟跨境
+    def _wanted(n):
+        n = n.lower()
+        return n.endswith(".apk") and ("arm64-v8a" in n or "armeabi-v7a" in n)
+
     apks = sorted(
-        os.path.join(DIST, n) for n in os.listdir(DIST)
-        if n.lower().endswith(".apk")
+        os.path.join(DIST, n) for n in os.listdir(DIST) if _wanted(n)
     ) if os.path.isdir(DIST) else []
     if not apks:
         warn("%s/ 里没有 APK，Gitee 发行版只建了壳" % DIST)
