@@ -26,15 +26,30 @@ class UnitConvertPage extends StatefulWidget {
 }
 
 class _UnitConvertPageState extends State<UnitConvertPage> {
-  /// 分类名列表 = 18 个换算类 + 2 个特殊页
-  static final List<String> _catNames = [
-    for (final c in kUnitCategories) c.name,
+  /// 分类名列表 = 18 个换算类 + 进制转换 + 2 个特殊页
+  ///
+  /// v2.3.0：「进制转换」按用户要求插到**第 8 个** chip
+  /// （长度/面积/体积/质量/温度/速度/时间/**进制转换**/数据存储/…）。
+  static const int _radixIndex = 7;
+
+  static final List<String> _catNames = <String>[
+    for (var i = 0; i < kUnitCategories.length; i++) ...<String>[
+      if (i == _radixIndex) '进制转换',
+      kUnitCategories[i].name,
+    ],
     '人民币大写',
     '亲戚称呼',
   ];
 
-  static int get _rmbIndex => kUnitCategories.length;
-  static int get _kinIndex => kUnitCategories.length + 1;
+  static int get _rmbIndex => _catNames.length - 2;
+  static int get _kinIndex => _catNames.length - 1;
+
+  /// `_cat` 是 chip 的下标，单位类在 `kUnitCategories` 里的下标要减掉
+  /// 「进制转换」占的那一格；不是单位类时返回 -1。
+  int get _unitIdx {
+    if (_cat == _radixIndex || _cat >= _rmbIndex) return -1;
+    return _cat < _radixIndex ? _cat : _cat - 1;
+  }
 
   int _cat = 0;
 
@@ -118,15 +133,18 @@ class _UnitConvertPageState extends State<UnitConvertPage> {
           ? const _KinBody()
           : _cat == _rmbIndex
               ? const _RmbBody()
-              : _unitBody(scheme),
+              : _cat == _radixIndex
+                  ? const _RadixBody()
+                  : _unitBody(scheme),
     );
   }
 
   // ------------------------------------------------------------ 单位换算
 
   Widget _unitBody(ColorScheme scheme) {
-    final c = kUnitCategories[_cat];
-    final base = _baseOf[_cat] ?? 0;
+    final idx = _unitIdx;
+    final c = kUnitCategories[idx];
+    final base = _baseOf[idx] ?? 0;
     final v = _parseInput();
     final baseValue = v == null ? null : c.units[base].toBase(v);
 
@@ -169,7 +187,7 @@ class _UnitConvertPageState extends State<UnitConvertPage> {
                           style: const TextStyle(fontSize: 13)),
                     ),
                 ],
-                onChanged: (i) => setState(() => _baseOf[_cat] = i ?? 0),
+                onChanged: (i) => setState(() => _baseOf[idx] = i ?? 0),
               ),
             ],
           ),
@@ -240,7 +258,7 @@ class _UnitConvertPageState extends State<UnitConvertPage> {
                     ),
                   ),
                   onTap: () => _copy(text, u.name),
-                  onLongPress: () => setState(() => _baseOf[_cat] = i),
+                  onLongPress: () => setState(() => _baseOf[idx] = i),
                 );
               },
             ),
@@ -253,6 +271,267 @@ class _UnitConvertPageState extends State<UnitConvertPage> {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ============================================================ 进制转换
+
+/// 进制转换（v2.3.0 需求1）
+///
+/// 用户原话：「增加进制转换，排第 8 个，就是十进制，二进制，八进制，
+/// 十六进制等相互转换。」
+///
+/// 交互跟旁边的单位换算保持一致：**填一个数，下面把所有进制全列出来**，
+/// 点一行复制。换输入进制点右边的下拉即可，不用来回切两个框。
+///
+/// 两个细节：
+///   * 用 `BigInt` 而不是 `int` —— 64 位十六进制（`FFFFFFFFFFFFFFFF`）
+///     用 int 会直接溢出成负数，用户会以为工具算错了；
+///   * 认 `0x / 0b / 0o` 前缀和负号，从代码里粘过来能直接用，
+///     粘了前缀就按前缀的进制算，不用再手动去改下拉。
+class _RadixBody extends StatefulWidget {
+  const _RadixBody();
+
+  @override
+  State<_RadixBody> createState() => _RadixBodyState();
+}
+
+class _RadixBodyState extends State<_RadixBody> {
+  final _ctrl = TextEditingController(text: '255');
+  int _base = 10;
+
+  static const List<int> _bases = <int>[2, 8, 10, 16];
+
+  static const Map<int, String> _baseName = <int, String>{
+    2: '二进制',
+    8: '八进制',
+    10: '十进制',
+    16: '十六进制',
+  };
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  /// 解析输入。坏输入返回 null（不报错，界面显示「—」）。
+  BigInt? _parse() {
+    var t = _ctrl.text.trim().toLowerCase().replaceAll(' ', '').replaceAll('_', '');
+    if (t.isEmpty) return null;
+    var neg = false;
+    if (t.startsWith('-')) {
+      neg = true;
+      t = t.substring(1);
+    } else if (t.startsWith('+')) {
+      t = t.substring(1);
+    }
+    var base = _base;
+    if (t.startsWith('0x')) {
+      base = 16;
+      t = t.substring(2);
+    } else if (t.startsWith('0b')) {
+      base = 2;
+      t = t.substring(2);
+    } else if (t.startsWith('0o')) {
+      base = 8;
+      t = t.substring(2);
+    }
+    if (t.isEmpty) return null;
+    try {
+      final v = BigInt.parse(t, radix: base);
+      return neg ? -v : v;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 十六进制按字节分组（FF FF FF），读数时不用一个个数字数位数
+  String _byteGroup(String s) {
+    final neg = s.startsWith('-');
+    final body = neg ? s.substring(1) : s;
+    final buf = StringBuffer();
+    for (var i = 0; i < body.length; i++) {
+      if (i > 0 && (body.length - i) % 2 == 0) buf.write(' ');
+      buf.write(body[i]);
+    }
+    return (neg ? '-' : '') + buf.toString();
+  }
+
+  String _of(BigInt v, int base) {
+    final s = v.toRadixString(base);
+    return base == 16 ? s.toUpperCase() : s;
+  }
+
+  void _copy(String text, String label) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+          content: Text('已复制 $label：$text'),
+          duration: const Duration(milliseconds: 1200)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final v = _parse();
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _ctrl,
+                  // 要能输 a~f，所以是 text 键盘而不是数字键盘
+                  keyboardType: TextInputType.text,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  style: const TextStyle(fontSize: 17, fontFamily: 'monospace'),
+                  decoration: InputDecoration(
+                    labelText: '输入数值',
+                    isDense: true,
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      tooltip: '清零',
+                      icon: const Icon(Icons.backspace_outlined, size: 18),
+                      onPressed: () => setState(() => _ctrl.text = ''),
+                    ),
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ),
+              const SizedBox(width: 8),
+              DropdownButton<int>(
+                value: _base,
+                items: [
+                  for (final b in _bases)
+                    DropdownMenuItem(value: b, child: Text('$b 进制')),
+                ],
+                onChanged: (b) => setState(() => _base = b ?? 10),
+              ),
+            ],
+          ),
+        ),
+        if (v == null)
+          const Padding(
+            padding: EdgeInsets.all(24),
+            child: Text('输入一个整数，下面会列出各进制的结果', style: TextStyle(fontSize: 13)),
+          )
+        else
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(14, 2, 14, 12),
+              children: [
+                for (final b in _bases) ...[
+                  _radixRow(
+                    context,
+                    title: b == _base ? '${_baseName[b]!}（当前输入）' : _baseName[b]!,
+                    sub: 'radix $b',
+                    text: _of(v, b),
+                    highlight: b == _base,
+                    onCopy: () => _copy(_of(v, b), _baseName[b]!),
+                  ),
+                ],
+                if (v >= BigInt.from(0)) ...[
+                  const SizedBox(height: 6),
+                  _radixRow(
+                    context,
+                    title: '十六进制（按字节）',
+                    sub: '每两位一组',
+                    text: _byteGroup(_of(v, 16)),
+                    onCopy: () => _copy(_byteGroup(_of(v, 16)), '按字节的十六进制'),
+                  ),
+                ],
+                const SizedBox(height: 6),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Text(
+                    '位数：二进制 ${_of(v.abs(), 2).length} 位'
+                    '${v < BigInt.from(0) ? '（负数，不含符号位）' : ''}\n'
+                    '支持 0x / 0b / 0o 前缀，粘进来会按前缀的进制算。',
+                    style: TextStyle(
+                        fontSize: 11.5, height: 1.7, color: scheme.onSurfaceVariant),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+          child: Text(
+            '点一行复制结果。',
+            style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _radixRow(
+    BuildContext context, {
+    required String title,
+    required String sub,
+    required String text,
+    required VoidCallback onCopy,
+    bool highlight = false,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onCopy,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.fromLTRB(12, 9, 8, 9),
+        decoration: BoxDecoration(
+          color: highlight
+              ? scheme.primaryContainer.withValues(alpha: 0.4)
+              : scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(title,
+                          style: const TextStyle(
+                              fontSize: 12.5, fontWeight: FontWeight.w600)),
+                      const SizedBox(width: 6),
+                      Text(sub,
+                          style:
+                              TextStyle(fontSize: 10.5, color: scheme.onSurfaceVariant)),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  // 长数字（64 位二进制）要能换行，不能溢出
+                  SelectableText(
+                    text,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      height: 1.35,
+                      fontWeight: FontWeight.w600,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: '复制',
+              icon: const Icon(Icons.content_copy, size: 16),
+              onPressed: onCopy,
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -1331,6 +1331,27 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
   /// 每秒把时间拨到「现在」—— 取景页的水印是真实时间。
   Timer? _clock;
 
+  // ---------------------------------------------------------------- 横屏
+  //
+  // v2.3.0：用户说手机旋转时系统会弹一个「转横屏」的小按钮，那个其实是
+  // 系统的旋转建议（改的是系统的方向锁定），不想要。改成页面里一个**固定**
+  // 的切换按钮：点一下本 App 自己进横屏，系统那边的方向锁定一个字不动。
+  //
+  // 实现就是 `SystemChrome.setPreferredOrientations` —— 只影响本 Activity，
+  // 不碰系统设置；退出本页时恢复成「不限制」，别的页面照旧。
+  bool _landscape = false;
+
+  // ---------------------------------------------------------------- 闪光灯
+  FlashMode _flash = FlashMode.off;
+
+  // ---------------------------------------------------------------- 缩放
+  double _zoom = 1.0;
+  double _baseZoom = 1.0;
+  double _minZoom = 1.0;
+  double _maxZoom = 1.0;
+  bool _zoomTip = false;
+  Timer? _zoomTipTimer;
+
   @override
   void initState() {
     super.initState();
@@ -1346,9 +1367,12 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _clock?.cancel();
+    _zoomTipTimer?.cancel();
     final c = _cam;
     _cam = null;
     c?.dispose();
+    // 离开本页时把方向限制放开，别的页面按系统设置走
+    SystemChrome.setPreferredOrientations(const <DeviceOrientation>[]);
     super.dispose();
   }
 
@@ -1392,6 +1416,27 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
         await c.dispose();
         return;
       }
+      // v2.3.0：缩放范围 —— 每台机器的 maxZoom 差很多（2x ~ 10x），
+      // 问一次存起来，捏合时按真实范围夹，别自己去猜。
+      var mn = 1.0, mx = 1.0;
+      try {
+        mn = await c.getMinZoomLevel();
+        mx = await c.getMaxZoomLevel();
+      } catch (_) {
+        // 有些机型/老版本没有这两个方法，捏合就当没这功能
+      }
+      if (mx < mn) mx = mn;
+      _minZoom = mn;
+      _maxZoom = mx;
+      _zoom = mn;
+      _baseZoom = mn;
+      // 重新开相机（翻转镜头 / 回到前台）后把闪光灯状态补回去，
+      // 不然用户设了「常亮」，切一下镜头就灭了。
+      try {
+        await c.setFlashMode(_flash);
+      } catch (_) {
+        // 前摄通常没有闪光灯，忽略
+      }
       final old = _cam;
       setState(() => _cam = c);
       if (old != null && old != c) old.dispose();
@@ -1416,6 +1461,120 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     if (mounted) setState(() {});
     await c?.dispose();
     await _initCam();
+  }
+
+  // ---------------------------------------------------------------- 横屏
+
+  /// 只切本 App 的方向，不碰系统的「方向锁定」。
+  Future<void> _toggleLandscape() async {
+    final next = !_landscape;
+    setState(() => _landscape = next);
+    await _applyOrientation(next);
+  }
+
+  Future<void> _applyOrientation(bool landscape) async {
+    try {
+      await SystemChrome.setPreferredOrientations(landscape
+          ? const <DeviceOrientation>[
+              DeviceOrientation.landscapeLeft,
+              DeviceOrientation.landscapeRight,
+            ]
+          : const <DeviceOrientation>[DeviceOrientation.portraitUp]);
+    } catch (_) {
+      // 个别 ROM 会拒绝，忽略即可（界面照样能点，只是不转）
+    }
+  }
+
+  /// 进编辑页时先摆正回竖屏（那片是看图用的，竖着更好操作），
+  /// 回来再按当前状态恢复。
+  Future<void> _pushEditor(Widget page) async {
+    await _applyOrientation(false);
+    if (!mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+    if (!mounted) return;
+    await _applyOrientation(_landscape);
+  }
+
+  // ---------------------------------------------------------------- 闪光灯
+
+  static const List<FlashMode> _flashLoop = <FlashMode>[
+    FlashMode.off,
+    FlashMode.auto,
+    FlashMode.always,
+    FlashMode.torch,
+  ];
+
+  Future<void> _cycleFlash() async {
+    final i = _flashLoop.indexOf(_flash);
+    final next = _flashLoop[(i + 1) % _flashLoop.length];
+    final c = _cam;
+    try {
+      await c?.setFlashMode(next);
+    } catch (_) {
+      if (mounted) _snack(context, '这个镜头用不了闪光灯');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _flash = next);
+    _snack(context, '闪光灯：${_flashLabel(next)}');
+  }
+
+  String _flashLabel(FlashMode m) {
+    switch (m) {
+      case FlashMode.off:
+        return '关闭';
+      case FlashMode.auto:
+        return '自动';
+      case FlashMode.always:
+        return '拍照时闪光';
+      case FlashMode.torch:
+        return '常亮（当手电用）';
+    }
+  }
+
+  IconData _flashIcon(FlashMode m) {
+    switch (m) {
+      case FlashMode.off:
+        return Icons.flash_off;
+      case FlashMode.auto:
+        return Icons.flash_auto;
+      case FlashMode.always:
+        return Icons.flash_on;
+      case FlashMode.torch:
+        return Icons.highlight;
+    }
+  }
+
+  // ---------------------------------------------------------------- 捏合缩放
+
+  void _onScaleStart(ScaleStartDetails d) {
+    _baseZoom = _zoom;
+  }
+
+  /// 把缩放值喂给相机。失败就当没这回事 —— 捏合不是主流程，
+  /// 不能让一个不支持的机型把页面搞崩。
+  Future<void> _applyZoom(CameraController c, double z) async {
+    try {
+      await c.setZoomLevel(z);
+    } catch (_) {}
+  }
+
+  void _onScaleUpdate(ScaleUpdateDetails d) {
+    final c = _cam;
+    if (c == null || !c.value.isInitialized) return;
+    // 单指不缩放（单指留给「点一下对焦」之外的手势，别抢）
+    if (d.pointerCount < 2) return;
+    if (_maxZoom <= _minZoom) return;
+    final z = (_baseZoom * d.scale).clamp(_minZoom, _maxZoom).toDouble();
+    if ((z - _zoom).abs() < 0.01) return;
+    setState(() => _zoom = z);
+    _applyZoom(c, z);
+    // 缩放倍数提示：1.2 秒后自己消失
+    _zoomTipTimer?.cancel();
+    if (!_zoomTip) setState(() => _zoomTip = true);
+    _zoomTipTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => _zoomTip = false);
+    });
   }
 
   Future<void> _locate() async {
@@ -1447,13 +1606,11 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
       _s.time = DateTime.now();
       final shot = await c.takePicture();
       if (!mounted) return;
-      await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => WatermarkEditorPage(
-          paths: <String>[shot.path],
-          // 传副本：编辑页里改时间地点不会污染取景画面的水印
-          settings: _s.copy(),
-          autoSave: true,
-        ),
+      await _pushEditor(WatermarkEditorPage(
+        paths: <String>[shot.path],
+        // 传副本：编辑页里改时间地点不会污染取景画面的水印
+        settings: _s.copy(),
+        autoSave: true,
       ));
     } catch (e) {
       _snack(context, '拍照失败：$e');
@@ -1467,11 +1624,9 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
       final list =
           await ImagePicker().pickMultiImage(imageQuality: 95, maxWidth: 4096);
       if (list.isEmpty || !mounted) return;
-      await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => WatermarkEditorPage(
-          paths: list.map((e) => e.path).toList(),
-          settings: _s.copy(),
-        ),
+      await _pushEditor(WatermarkEditorPage(
+        paths: list.map((e) => e.path).toList(),
+        settings: _s.copy(),
       ));
       if (mounted) setState(() {});
     } catch (e) {
@@ -1491,15 +1646,45 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
           return Stack(
             fit: StackFit.expand,
             children: [
-              _preview(),
+              // 双指捏合放大 / 缩小画面（v2.3.0）
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onScaleStart: _onScaleStart,
+                onScaleUpdate: _onScaleUpdate,
+                child: _preview(),
+              ),
               if (_s.enabled) _watermarkOverlay(landscape),
-              _rightRail(landscape),
               _topBar(),
               _bottomBar(landscape),
+              if (_zoomTip) _zoomBadge(),
               if (_err != null) _errorLayer(),
             ],
           );
         },
+      ),
+    );
+  }
+
+  /// 捏合时中间弹一下「2.4x」，松手 1.2 秒后自己消失
+  Widget _zoomBadge() {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.only(top: 58),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.55),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              '${_zoom.toStringAsFixed(1)}x',
+              style: const TextStyle(
+                  color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1564,6 +1749,9 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     );
   }
 
+  /// 顶部一排：关闭 / 闪光灯 / 定位 / 横竖屏 / 前后镜头
+  ///
+  /// v2.3.0 按用户要求把「关闭、取定位、切横屏」收进同一排，关闭放在最上角。
   Widget _topBar() {
     return SafeArea(
       bottom: false,
@@ -1573,26 +1761,22 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
           children: [
             _roundIcon(Icons.close, '退出', () => Navigator.of(context).maybePop()),
             const Spacer(),
+            _roundIcon(_flashIcon(_flash), '闪光灯：${_flashLabel(_flash)}', _cycleFlash),
+            const SizedBox(width: 4),
+            _roundIcon(
+              Icons.my_location,
+              _locating ? '正在定位…' : '取当前地点',
+              _locate,
+              busy: _locating,
+            ),
+            const SizedBox(width: 4),
+            _roundIcon(
+              _landscape ? Icons.stay_current_portrait : Icons.stay_current_landscape,
+              _landscape ? '切回竖屏' : '切到横屏（不动系统的方向锁定）',
+              _toggleLandscape,
+            ),
+            const SizedBox(width: 4),
             _roundIcon(Icons.cameraswitch_outlined, '前后镜头', _flip),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 右侧悬浮栏：定位。横屏时往上挪一点，别被底部按钮压住。
-  Widget _rightRail(bool landscape) {
-    return Align(
-      alignment: Alignment.bottomRight,
-      child: Padding(
-        padding: EdgeInsets.only(
-          right: 10 + MediaQuery.of(context).padding.right,
-          bottom: landscape ? 136 : 166,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _roundIcon(Icons.my_location, '取当前地点', _locate, busy: _locating),
           ],
         ),
       ),

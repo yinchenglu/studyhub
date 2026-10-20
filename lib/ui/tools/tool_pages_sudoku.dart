@@ -15,13 +15,14 @@
 //     不同类型实现不同的 `isLegal / isComplete / randomShuffle`
 //   * UI 走 `setState`，跑题时主动解算；没解出来就放着不纠错
 //     （地狱难度才会发生，留给用户自己想）
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../data/local/pref_store.dart';
 
-import 'tool_pages.dart'; // ToolScaffold / toast / copyText / keepScreenOn
+import 'tool_pages.dart'; // ToolScaffold
 
 // ============================================================ 类型
 
@@ -818,6 +819,16 @@ class _SudokuPageState extends State<SudokuPage> {
   bool _showHint = false;
   bool _busy = false;
 
+  /// 当前选中的格子（-1 = 没选）。数字盘只往选中的格子里填。
+  int _selR = -1;
+  int _selC = -1;
+
+  /// 底部状态栏右边那句提示（原来全用 toast，现在一屏放得下了）
+  String _msg = '';
+
+  /// 用时每秒走一格
+  Timer? _tick;
+
   /// v1.9.0+28：「校验」标出来的错格（key = "r-c"），用户落子后清空
   Set<String> _checkedWrong = {};
 
@@ -825,6 +836,16 @@ class _SudokuPageState extends State<SudokuPage> {
   void initState() {
     super.initState();
     _restore();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _board == null) return;
+      setState(() {}); // 只为刷新「用时」
+    });
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
   }
 
   Future<void> _restore() async {
@@ -847,6 +868,8 @@ class _SudokuPageState extends State<SudokuPage> {
         }
       });
     } catch (_) {}
+    // v2.3.0：进页面直接给一道题（跟网页版一致，不再先停在选题页）
+    if (mounted && _board == null) _newGame();
   }
 
   Future<void> _save() async {
@@ -860,6 +883,10 @@ class _SudokuPageState extends State<SudokuPage> {
   /// 出题。一次性：生成全盘 → 挖洞 → 渲染。
   Future<void> _newGame() async {
     setState(() => _busy = true);
+    // 出题是同步的几千次回溯，会卡住主线程 —— 先让「正在生成…」这一帧
+    // 画出来，否则用户看到的是纯空白（v2.3.0 单屏版尤其明显）。
+    await Future<void>.delayed(const Duration(milliseconds: 24));
+    if (!mounted) return;
     final rng = math.Random();
     SudokuRules rules;
     SudokuBoard full;
@@ -928,6 +955,9 @@ class _SudokuPageState extends State<SudokuPage> {
       _checkedWrong = {};
       _undoStack.clear();
       _startedAt = DateTime.now();
+      _selR = -1;
+      _selC = -1;
+      _msg = '点一格，再点下面的数字';
     });
     _save();
   }
@@ -1006,44 +1036,32 @@ class _SudokuPageState extends State<SudokuPage> {
     return out;
   }
 
+  /// 点格子 = 选中（v2.3.0 起不再弹数字盘，数字盘常驻在棋盘下面）。
+  ///
+  /// 提示格也允许选中 —— 选中后会点亮同行 / 同列 / 同宫，看得清数字分布；
+  /// 真要往里填的时候会在 [_onPick] 里拦一句「这格是提示」。
   void _onCellTap(int r, int c) {
-    if (_board == null || _rules == null) return;
-    final b = _board!;
-    if (b.fixed[r][c]) {
-      toast(context, '这格是提示，不能改');
+    if (_board == null) return;
+    setState(() {
+      _selR = r;
+      _selC = c;
+      _msg = '';
+    });
+  }
+
+  /// 数字盘按下一个数字
+  void _onPick(int v) {
+    final b = _board;
+    if (b == null) return;
+    if (_selR < 0 || _selC < 0) {
+      setState(() => _msg = '先在盘面上点一格');
       return;
     }
-    // 数字盘上的「剩余个数」角标：每个数字一共该出现几次 - 已经出现几次
-    final per = _perNumber;
-    final placed = <int, int>{};
-    for (final row in b.cells) {
-      for (final v in row) {
-        if (v != 0) placed[v] = (placed[v] ?? 0) + 1;
-      }
+    if (b.fixed[_selR][_selC]) {
+      setState(() => _msg = '这格是题目给的提示，不能改');
+      return;
     }
-    final remain = <int, int>{
-      for (var v = 1; v <= b.size; v++) v: per - (placed[v] ?? 0),
-    };
-    // 数字选择
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => _NumberPad(
-        size: b.size,
-        current: b.cells[r][c],
-        notes: b.notes[r][c],
-        noteMode: _noteMode,
-        remain: remain,
-        onPick: (v) {
-          Navigator.pop(ctx);
-          _applyNumber(r, c, v);
-        },
-      ),
-    );
+    _applyNumber(_selR, _selC, v);
   }
 
   /// 每个数字在整个盘里该出现几次：9×9 = 9，9×6（不等式）= 6
@@ -1067,6 +1085,7 @@ class _SudokuPageState extends State<SudokuPage> {
           b.notes[r][c].add(v);
         }
         _checkedWrong = {};
+        _msg = '笔记：本格候选 $v';
       });
       return;
     }
@@ -1083,6 +1102,7 @@ class _SudokuPageState extends State<SudokuPage> {
         b.notes[r][c].clear();
         _errCount++;
         _checkedWrong = {};
+        _msg = '和同行 / 同列 / 同宫的数字撞了';
       });
       return;
     }
@@ -1091,6 +1111,7 @@ class _SudokuPageState extends State<SudokuPage> {
       // 落子后这格的笔记没用了（原来不清，会跟数字叠在一起）
       b.notes[r][c].clear();
       _checkedWrong = {};
+      _msg = '';
     });
     if (rules.isComplete(b)) {
       _finish();
@@ -1144,154 +1165,274 @@ class _SudokuPageState extends State<SudokuPage> {
 
   @override
   Widget build(BuildContext context) {
+    final b = _board;
     return ToolScaffold(
       title: '数独练习',
-      subtitle: _type.label +
-          ' · ' +
-          _diff.label +
-          (_board == null ? '' : ' · 错误 $_errCount'),
-      actions: [
-        // v1.9.0+28：换题型（回选题页）。原来只能退出工具再进，很不方便。
-        if (_board != null)
-          IconButton(
-            tooltip: '换题型 / 难度',
-            onPressed: () => setState(() => _board = null),
-            icon: const Icon(Icons.tune),
-          ),
-        // 新题（保持当前题型难度重出）
-        IconButton(
-          tooltip: '新题',
-          onPressed: _busy ? null : _newGame,
-          icon: const Icon(Icons.refresh),
-        ),
-      ],
-      child: _board == null
-          ? _picker()
-          : _boardView(),
+      subtitle: b == null
+          ? '正在出题…'
+          : '${_type.label} · ${_diff.label} · 错误 $_errCount',
+      child: Column(
+        children: [
+          _topControls(),
+          _toolbar(),
+          Expanded(child: _boardArea()),
+          _pad(),
+          _statusBar(),
+        ],
+      ),
     );
   }
 
-  // ---------- 选类型 / 难度 ----------
+  // ---------- 顶部：题型 / 难度 / 新题 ----------
   //
-  // v1.9.0+28 重排：
-  //   * 删掉「说明」那一大段文字（用户点名不要）
-  //   * 「新题」按钮挪到「题型 / 难度」同一区域（原来在最下面一个孤零零的「开始」）
-  Widget _picker() {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-      children: [
-        Row(
-          children: [
-            const ToolSection('题型'),
-            const Spacer(),
-            FilledButton.icon(
-              onPressed: _busy ? null : _newGame,
-              icon: const Icon(Icons.auto_awesome, size: 18),
-              label: const Text('新题'),
+  // v2.3.0：按用户发的 HTML 版重做 —— **所有东西都在一屏里**。
+  // 原来是「先选题型页 → 再进棋盘」，绕一层；现在题型、难度、新题、
+  // 五个操作按钮、棋盘、数字盘、用时全部同屏，跟网页版一致。
+  Widget _topControls() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: _selectBox<SudokuType>(
+              icon: Icons.grid_3x3,
+              value: _type,
+              items: SudokuType.values,
+              label: (t) => t.label,
+              onChanged: (t) {
+                if (t == null || t == _type) return;
+                setState(() {
+                  _type = t;
+                  _board = null;
+                  _solution = null;
+                });
+                _newGame();
+              },
             ),
-          ],
-        ),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final t in SudokuType.values)
-              ChoiceChip(
-                label: Text(t.label),
-                selected: _type == t,
-                onSelected: (_) => setState(() => _type = t),
-              ),
-          ],
-        ),
-        const ToolSection('难度'),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final d in SudokuDifficulty.values)
-              ChoiceChip(
-                label: Text(d.label + (d == SudokuDifficulty.hell ? ' ☠' : '')),
-                selected: _diff == d,
-                onSelected: (_) => setState(() => _diff = d),
-              ),
-          ],
-        ),
-      ],
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: _selectBox<SudokuDifficulty>(
+              icon: Icons.speed,
+              value: _diff,
+              items: SudokuDifficulty.values,
+              label: (d) => d.label,
+              onChanged: (d) {
+                if (d == null || d == _diff) return;
+                setState(() {
+                  _diff = d;
+                  _board = null;
+                  _solution = null;
+                });
+                _newGame();
+              },
+            ),
+          ),
+          const SizedBox(width: 6),
+          FilledButton.tonalIcon(
+            onPressed: _busy ? null : _newGame,
+            icon: const Icon(Icons.refresh, size: 17),
+            label: const Text('新题'),
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              minimumSize: const Size(0, 40),
+              visualDensity: VisualDensity.compact,
+              textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  // ---------- 棋盘视图 ----------
-  //
-  // v1.9.0+28：底部按钮改成用户点名的 5 个
-  //   撤销 / 笔记 / 提示 / 校验 / 答案
-  // 「时间」「错误次数」挪到标题副标题里（原来底栏占一排）。
-  Widget _boardView() {
-    final b = _board!;
+  Widget _selectBox<T>({
+    required IconData icon,
+    required T value,
+    required List<T> items,
+    required String Function(T) label,
+    required ValueChanged<T?> onChanged,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      // 不写死高度：DropdownButton 自己要 40 出头，写死 40 会顶出黄条
+      padding: const EdgeInsets.only(left: 8, right: 4),
+      decoration: BoxDecoration(
+        border: Border.all(color: cs.outlineVariant),
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 15, color: cs.onSurfaceVariant),
+          const SizedBox(width: 5),
+          Expanded(
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<T>(
+                value: value,
+                isExpanded: true,
+                isDense: true,
+                borderRadius: BorderRadius.circular(10),
+                // 字号写死，避免跟着系统字体放大把 40 高的框撑破
+                style: TextStyle(fontSize: 13, color: cs.onSurface),
+                items: [
+                  for (final t in items)
+                    DropdownMenuItem<T>(
+                      value: t,
+                      child: Text(label(t), overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+                onChanged: onChanged,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------- 第二排：撤销 / 笔记 / 提示 / 校验 / 答案 ----------
+  Widget _toolbar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(2, 4, 2, 0),
+      child: Row(
+        children: [
+          _barButton(icon: Icons.undo, label: '撤销', onTap: _board == null ? null : _undo),
+          _barButton(
+            icon: Icons.edit_note,
+            label: '笔记',
+            active: _noteMode,
+            onTap: _board == null ? null : () => setState(() => _noteMode = !_noteMode),
+          ),
+          _barButton(
+            icon: _showHint ? Icons.lightbulb : Icons.lightbulb_outline,
+            label: '提示',
+            active: _showHint,
+            onTap: _board == null || _solution == null
+                ? null
+                : () => setState(() => _showHint = !_showHint),
+          ),
+          _barButton(icon: Icons.fact_check_outlined, label: '校验', onTap: _board == null ? null : _checkBoard),
+          _barButton(
+            icon: Icons.emoji_flags_outlined,
+            label: '答案',
+            onTap: _board == null ? null : _revealAnswer,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------- 棋盘 ----------
+  Widget _boardArea() {
+    final b = _board;
+    final cs = Theme.of(context).colorScheme;
+    if (b == null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 26,
+              height: 26,
+              child: CircularProgressIndicator(strokeWidth: 2.4),
+            ),
+            const SizedBox(height: 12),
+            Text('正在生成题目（现场计算，约 1 秒）…',
+                style: TextStyle(fontSize: 12.5, color: cs.onSurfaceVariant)),
+          ],
+        ),
+      );
+    }
     final n = b.size;
-    return Column(
-      children: [
-        Expanded(
-          child: Padding(
-            // 贴着屏幕边：左右 0px，宫格能有多大就多大（用户明确要求）
-            padding: const EdgeInsets.fromLTRB(0, 2, 0, 0),
-            child: Center(
-              child: AspectRatio(
-                aspectRatio: n == 9 ? 1.0 : (n == 6 && _type == SudokuType.greater) ? 1.5 : 1.0,
-                child: _SudokuGrid(
-                  board: b,
-                  rules: _rules!,
-                  showHint: _showHint,
-                  solution: _solution,
-                  wrongCells: _checkedWrong,
-                  onCellTap: _onCellTap,
-                  onCellLongPress: (r, c) {
-                    if (b.fixed[r][c]) return;
-                    _pushUndo(r, c);
-                    _clearCell(r, c);
-                    toast(context, '已清除该格');
-                  },
-                ),
-              ),
+    // 不等式是 9 列 6 行；其它都是正方形
+    final ratio = _type == SudokuType.greater ? n / 6 : 1.0;
+    return Padding(
+      // 贴屏幕边：左右只留 2，宫格能有多大就多大（用户明确要求）
+      padding: const EdgeInsets.fromLTRB(2, 2, 2, 2),
+      child: Center(
+        child: AspectRatio(
+          aspectRatio: ratio,
+          child: _SudokuGrid(
+            board: b,
+            rules: _rules!,
+            showHint: _showHint,
+            solution: _solution,
+            wrongCells: _checkedWrong,
+            selR: _selR,
+            selC: _selC,
+            onCellTap: _onCellTap,
+            onCellLongPress: (r, c) {
+              if (b.fixed[r][c]) return;
+              _pushUndo(r, c);
+              _clearCell(r, c);
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------- 数字盘（常驻，不再弹底部弹窗） ----------
+  Widget _pad() {
+    final b = _board;
+    if (b == null) return const SizedBox.shrink();
+    final hasSel = _selR >= 0 && _selC >= 0;
+    return _NumberPad(
+      size: b.size,
+      current: hasSel ? b.cells[_selR][_selC] : 0,
+      notes: hasSel ? b.notes[_selR][_selC] : const <int>{},
+      noteMode: _noteMode,
+      remain: _remain,
+      onPick: _onPick,
+    );
+  }
+
+  /// 每个数字还剩几个没落（数字盘右下角的小角标）
+  Map<int, int> get _remain {
+    final b = _board;
+    if (b == null) return const <int, int>{};
+    final placed = <int, int>{};
+    for (final row in b.cells) {
+      for (final v in row) {
+        if (v != 0) placed[v] = (placed[v] ?? 0) + 1;
+      }
+    }
+    final per = _perNumber;
+    return <int, int>{for (var v = 1; v <= b.size; v++) v: per - (placed[v] ?? 0)};
+  }
+
+  // ---------- 底部状态：用时 / 已填 / 提示语 ----------
+  Widget _statusBar() {
+    final cs = Theme.of(context).colorScheme;
+    final b = _board;
+    var filled = 0;
+    if (b != null) {
+      for (final row in b.cells) {
+        for (final v in row) {
+          if (v != 0) filled++;
+        }
+      }
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+      child: Row(
+        children: [
+          Text('用时 ${_fmtElapsed()}',
+              style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+          const SizedBox(width: 14),
+          Text('已填 ${b == null ? 0 : filled} / ${b == null ? 0 : b.size * b.size}',
+              style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              _msg,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: cs.primary),
             ),
           ),
-        ),
-        Container(
-          padding: const EdgeInsets.fromLTRB(2, 4, 2, 6),
-          child: Row(
-            children: [
-              _barButton(
-                icon: Icons.undo,
-                label: '撤销',
-                onTap: _undo,
-              ),
-              _barButton(
-                icon: Icons.edit_note,
-                label: '笔记',
-                active: _noteMode,
-                onTap: () => setState(() => _noteMode = !_noteMode),
-              ),
-              _barButton(
-                icon: _showHint ? Icons.lightbulb : Icons.lightbulb_outline,
-                label: '提示',
-                active: _showHint,
-                onTap: _solution == null
-                    ? null
-                    : () => setState(() => _showHint = !_showHint),
-              ),
-              _barButton(
-                icon: Icons.fact_check_outlined,
-                label: '校验',
-                onTap: _checkBoard,
-              ),
-              _barButton(
-                icon: Icons.emoji_flags_outlined,
-                label: '答案',
-                onTap: _revealAnswer,
-              ),
-            ],
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -1303,7 +1444,9 @@ class _SudokuPageState extends State<SudokuPage> {
     bool active = false,
   }) {
     final cs = Theme.of(context).colorScheme;
-    final fg = active ? cs.onPrimaryContainer : cs.onSurfaceVariant;
+    final fg = onTap == null
+        ? cs.onSurfaceVariant.withValues(alpha: 0.4)
+        : (active ? cs.onPrimaryContainer : cs.onSurfaceVariant);
     return Expanded(
       child: InkWell(
         onTap: onTap,
@@ -1312,7 +1455,9 @@ class _SudokuPageState extends State<SudokuPage> {
         // 「笔记」开关看不出开没开 —— 用户要求「点了变色、再点褪色」）。
         child: Container(
           margin: const EdgeInsets.symmetric(horizontal: 2),
-          padding: const EdgeInsets.symmetric(vertical: 6),
+          // v2.3.0：一屏要塞下「题型 / 难度 / 五个按钮 / 棋盘 / 数字盘」，
+          // 这一排压到 4 的上下留白（原来 6）。
+          padding: const EdgeInsets.symmetric(vertical: 4),
           decoration: BoxDecoration(
             color: active ? cs.primaryContainer : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
@@ -1320,11 +1465,11 @@ class _SudokuPageState extends State<SudokuPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 22, color: fg),
+              Icon(icon, size: 21, color: fg),
               const SizedBox(height: 2),
               Text(label,
                   style: TextStyle(
-                      fontSize: 11.5,
+                      fontSize: 11,
                       fontWeight: active ? FontWeight.w700 : FontWeight.w500,
                       color: fg)),
             ],
@@ -1349,8 +1494,10 @@ class _SudokuPageState extends State<SudokuPage> {
         if (v != 0 && v != s.cells[r][c]) wrong.add('$r-$c');
       }
     }
-    setState(() => _checkedWrong = wrong);
-    toast(context, wrong.isEmpty ? '校验通过，目前没有填错的格' : '发现 ${wrong.length} 处错误，已标红');
+    setState(() {
+      _checkedWrong = wrong;
+      _msg = wrong.isEmpty ? '校验通过，目前没有填错的格' : '发现 ${wrong.length} 处错误，已标红';
+    });
   }
 
   /// 答案：确认后把完整解填进盘面（会清掉笔记）。
@@ -1388,7 +1535,7 @@ class _SudokuPageState extends State<SudokuPage> {
 
   void _undo() {
     if (_undoStack.isEmpty) {
-      toast(context, '没有可撤销的');
+      setState(() => _msg = '没有可撤销的了');
       return;
     }
     final m = _undoStack.removeLast();
@@ -1425,6 +1572,10 @@ class _SudokuGrid extends StatelessWidget {
 
   /// v1.9.0+28：「校验」标出的错格，key = "r-c"
   final Set<String> wrongCells;
+
+  /// 当前选中的格子（-1 = 没选）。v2.3.0：数字盘常驻后靠它定位。
+  final int selR;
+  final int selC;
   final void Function(int r, int c) onCellTap;
   final void Function(int r, int c)? onCellLongPress;
 
@@ -1435,6 +1586,8 @@ class _SudokuGrid extends StatelessWidget {
     required this.solution,
     required this.onCellTap,
     this.wrongCells = const <String>{},
+    this.selR = -1,
+    this.selC = -1,
     this.onCellLongPress,
   });
 
@@ -1581,6 +1734,19 @@ class _SudokuGrid extends StatelessWidget {
     } else if (checkedWrong) {
       cellBg = errColor.withValues(alpha: 0.18);
     }
+
+    // v2.3.0：选中格 + 同行 / 同列 / 同宫 高亮。
+    // 数字盘常驻之后，「我点的到底是不是这一格」必须一眼能看出来，
+    // 否则点错了数字自己都不知道。
+    final cs2 = Theme.of(context).colorScheme;
+    final hasSel = selR >= 0 && selC >= 0;
+    final isSel = hasSel && r == selR && c == selC;
+    final isPeer = hasSel && !isSel && _isPeer(r, c, isJigsaw, regionOf);
+    if (isSel) {
+      cellBg = cs2.primary.withValues(alpha: 0.22);
+    } else if (isPeer && !(showHint && solution != null && v == 0) && !checkedWrong) {
+      cellBg = cs2.primary.withValues(alpha: 0.07);
+    }
     return GestureDetector(
       onTap: () => onCellTap(r, c),
       onLongPress: onCellLongPress == null ? null : () => onCellLongPress!(r, c),
@@ -1648,6 +1814,17 @@ class _SudokuGrid extends StatelessWidget {
               ),
       ),
     );
+  }
+
+  /// (r,c) 是不是和选中格同行 / 同列 / 同宫。
+  /// 锯齿宫按真实宫界算，其它按矩形宫（不等式是 2 行 × 3 列）。
+  bool _isPeer(int r, int c, bool isJigsaw, List<List<int>>? regionOf) {
+    if (r == selR || c == selC) return true;
+    if (isJigsaw && regionOf != null) {
+      return regionOf[r][c] == regionOf[selR][selC];
+    }
+    final bh = rules.type == SudokuType.greater ? 2 : 3;
+    return r ~/ bh == selR ~/ bh && c ~/ 3 == selC ~/ 3;
   }
 
   // ---------- 笼子（杀手） ----------
@@ -2139,65 +2316,28 @@ class _NumberPad extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final rows = _rows;
     final cols = rows.map((r) => r.length).reduce((a, b) => a > b ? a : b);
-    return SafeArea(
-      top: false,
-      child: Padding(
-        // 贴屏幕边：左右只留 4
-        padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 38,
-              height: 4,
-              decoration: BoxDecoration(
-                color: cs.outlineVariant,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 8),
+    // v2.3.0：从「点格子弹出的底部弹窗」改成**常驻在棋盘下面**，
+    // 所以这里不再有拖拽手柄、SafeArea 和说明文字 —— 一屏要塞得下。
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(3, 2, 3, 0),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final row in rows)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
+              padding: const EdgeInsets.symmetric(vertical: 2),
               child: Row(
                 children: [
-                  Icon(
-                    noteMode ? Icons.edit_note : Icons.grid_3x3,
-                    size: 16,
-                    color: noteMode ? cs.primary : cs.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    noteMode
-                        ? '笔记模式 · 点数字加 / 删候选'
-                        : (current == 0 ? '选一个数字' : '当前 $current · 再点同数字可清除'),
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: noteMode ? FontWeight.w700 : FontWeight.w500,
-                      color: noteMode ? cs.primary : cs.onSurfaceVariant,
-                    ),
-                  ),
+                  for (final v in row) Expanded(child: _pickButton(context, v)),
+                  // 第二排比第一排短 → 补位占位符，保证两排按钮等宽
+                  for (var k = row.length; k < cols; k++)
+                    const Expanded(child: SizedBox.shrink()),
                 ],
               ),
             ),
-            const SizedBox(height: 8),
-            for (var i = 0; i < rows.length; i++)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3),
-                child: Row(
-                  children: [
-                    for (final v in rows[i])
-                      Expanded(child: _pickButton(context, v)),
-                    // 第二排比第一排短 → 补位占位符，保证两排按钮等宽
-                    for (var k = rows[i].length; k < cols; k++)
-                      const Expanded(child: SizedBox.shrink()),
-                  ],
-                ),
-              ),
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -2217,54 +2357,47 @@ class _NumberPad extends StatelessWidget {
       child: GestureDetector(
         onTap: () => onPick(v),
         child: Container(
-          // 高度跟着宽度走，屏幕多宽按钮就多大（v2.1.0：上限 78 → 96，更好按）
-          constraints: const BoxConstraints(maxHeight: 96),
+          // 固定 46 高：两排加起来约 100，剩下的高度全给棋盘
+          height: 46,
           decoration: BoxDecoration(
             color: bg,
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(9),
           ),
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: AspectRatio(
-            aspectRatio: 1.15,
-            child: Stack(
-              children: [
-                Center(
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Text(
+                '$v',
+                style: TextStyle(
+                  fontSize: 23,
+                  fontWeight: FontWeight.w600,
+                  color: isCurrent ? cs.onPrimaryContainer : cs.onSurface,
+                ),
+              ),
+              // 剩余个数角标（右下角）
+              Positioned(
+                right: 3,
+                bottom: 1,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0.5),
+                  decoration: BoxDecoration(
+                    color: left <= 0
+                        ? cs.primary.withValues(alpha: 0.15)
+                        : cs.surface.withValues(alpha: 0.85),
+                    borderRadius: BorderRadius.circular(7),
+                  ),
                   child: Text(
-                    '$v',
+                    left <= 0 ? '✓' : '$left',
                     style: TextStyle(
-                      fontSize: 30,
+                      fontSize: 10,
+                      height: 1.15,
                       fontWeight: FontWeight.w600,
-                      color: isCurrent ? cs.onPrimaryContainer : cs.onSurface,
+                      color: left <= 0 ? cs.primary : cs.onSurfaceVariant,
                     ),
                   ),
                 ),
-                // 剩余个数角标
-                Positioned(
-                  right: 2,
-                  bottom: 0,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                    decoration: BoxDecoration(
-                      color: left == 0
-                          ? cs.primary.withValues(alpha: 0.15)
-                          : cs.surface.withValues(alpha: 0.85),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      left <= 0 ? '✓' : '$left',
-                      style: TextStyle(
-                        fontSize: 10.5,
-                        height: 1.1,
-                        fontWeight: FontWeight.w600,
-                        color: left <= 0
-                            ? cs.primary
-                            : cs.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),

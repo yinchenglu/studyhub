@@ -51,7 +51,7 @@ publish_to: 'none'
 #   v2.0.0+36 → 1036 / 2036   ← 修 +35 的编译错（server_html_tools.dart 漏了 Padding( 外壳）
 #   v2.0.0+37 → 1037 / 2037   ← 新工具「通话记录」（原生 studyhub/calllog：批量写 CallLog）+
 #                                 「水印相机」（原生 studyhub/camera：存相册/定位/逆编码；5 套模板 + 地图小图 + 批量）
-version: 2.2.2+54
+version: 2.3.0+55
 environment:
   # 下限提到 3.12 不是随便写的：xml 7 要 ^3.11、torch_light / flutter_device_apps
   # 要 >=3.12，取最大值。
