@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -1335,10 +1336,14 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
   //
   // v2.3.0：用户说手机旋转时系统会弹一个「转横屏」的小按钮，那个其实是
   // 系统的旋转建议（改的是系统的方向锁定），不想要。改成页面里一个**固定**
-  // 的切换按钮：点一下本 App 自己进横屏，系统那边的方向锁定一个字不动。
+  // 的切换按钮。
   //
-  // 实现就是 `SystemChrome.setPreferredOrientations` —— 只影响本 Activity，
-  // 不碰系统设置；退出本页时恢复成「不限制」，别的页面照旧。
+  // v2.3.1 再改：这一版**连屏幕都不转**。用户要的是「只有水印横过来并换位置，
+  // 取景画面、底部三个按钮、右侧工具条一个字不动」—— 转屏幕会把整套 UI
+  // 一起翻过去（按钮位置、快门大小全变），那就不是他要的东西了。
+  //
+  // 现在 `_landscape` 只驱动 `_watermarkOverlay`：水印整块旋转 90° 并从
+  // 左下挪到画面左侧，模拟「横着拍出来的照片」上水印该在的位置。
   bool _landscape = false;
 
   // ---------------------------------------------------------------- 闪光灯
@@ -1371,8 +1376,6 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     final c = _cam;
     _cam = null;
     c?.dispose();
-    // 离开本页时把方向限制放开，别的页面按系统设置走
-    SystemChrome.setPreferredOrientations(const <DeviceOrientation>[]);
     super.dispose();
   }
 
@@ -1465,34 +1468,15 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
 
   // ---------------------------------------------------------------- 横屏
 
-  /// 只切本 App 的方向，不碰系统的「方向锁定」。
-  Future<void> _toggleLandscape() async {
-    final next = !_landscape;
-    setState(() => _landscape = next);
-    await _applyOrientation(next);
+  /// 只换水印的摆法，屏幕本身不转（v2.3.1）。
+  void _toggleLandscape() {
+    setState(() => _landscape = !_landscape);
+    _snack(context, _landscape ? '水印已按横屏位置摆放' : '水印已回到竖屏位置');
   }
 
-  Future<void> _applyOrientation(bool landscape) async {
-    try {
-      await SystemChrome.setPreferredOrientations(landscape
-          ? const <DeviceOrientation>[
-              DeviceOrientation.landscapeLeft,
-              DeviceOrientation.landscapeRight,
-            ]
-          : const <DeviceOrientation>[DeviceOrientation.portraitUp]);
-    } catch (_) {
-      // 个别 ROM 会拒绝，忽略即可（界面照样能点，只是不转）
-    }
-  }
-
-  /// 进编辑页时先摆正回竖屏（那片是看图用的，竖着更好操作），
-  /// 回来再按当前状态恢复。
   Future<void> _pushEditor(Widget page) async {
-    await _applyOrientation(false);
     if (!mounted) return;
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
-    if (!mounted) return;
-    await _applyOrientation(_landscape);
   }
 
   // ---------------------------------------------------------------- 闪光灯
@@ -1640,27 +1624,24 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: OrientationBuilder(
-        builder: (context, orientation) {
-          final landscape = orientation == Orientation.landscape;
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              // 双指捏合放大 / 缩小画面（v2.3.0）
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onScaleStart: _onScaleStart,
-                onScaleUpdate: _onScaleUpdate,
-                child: _preview(),
-              ),
-              if (_s.enabled) _watermarkOverlay(landscape),
-              _topBar(),
-              _bottomBar(landscape),
-              if (_zoomTip) _zoomBadge(),
-              if (_err != null) _errorLayer(),
-            ],
-          );
-        },
+      // v2.3.1：不再用 OrientationBuilder —— 屏幕不跟着转，
+      // 竖屏 / 横屏只是水印自己的两种摆法（`_landscape`）。
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // 双指捏合放大 / 缩小画面（v2.3.0）
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onScaleStart: _onScaleStart,
+            onScaleUpdate: _onScaleUpdate,
+            child: _preview(),
+          ),
+          if (_s.enabled) _watermarkOverlay(),
+          _rightRail(),
+          _bottomBar(),
+          if (_zoomTip) _zoomBadge(),
+          if (_err != null) _errorLayer(),
+        ],
       ),
     );
   }
@@ -1708,25 +1689,52 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
 
   /// 取景画面上叠加的水印。
   ///
-  /// 竖屏贴左下角、躲开底部三键；横屏整体缩到 0.82 倍、抬高一点，
-  /// 并且左右各多留一点，避开刘海 / 挖孔 / 手势条。
-  Widget _watermarkOverlay(bool landscape) {
+  /// v2.3.1：水印有两种摆法，屏幕本身不转。
+  ///   * 竖屏（默认）：贴左下角，水平排布，躲开底部按钮。
+  ///   * 横屏（点右侧那个按钮）：整块**顺时针转 90°**，从画面左侧沿竖直
+  ///     方向排布 —— 相当于把竖拍画面顺时针转成横拍照片后，水印落到了
+  ///     新画面的左上角。只动水印，取景画面和所有按钮都不动。
+  Widget _watermarkOverlay() {
     final safe = MediaQuery.of(context).padding;
     final size = MediaQuery.of(context).size;
+
+    if (!_landscape) {
+      return IgnorePointer(
+        child: Padding(
+          padding: EdgeInsets.only(
+            left: 16 + safe.left,
+            right: 16 + safe.right,
+            bottom: 152,
+          ),
+          child: Align(
+            alignment: Alignment.bottomLeft,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: size.width * 0.86),
+              child: WmView(s: _s),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final maxW = math.min(size.height * 0.62, size.width * 1.0);
     return IgnorePointer(
       child: Padding(
         padding: EdgeInsets.only(
-          left: (landscape ? 26 : 16) + safe.left,
-          right: (landscape ? 26 : 16) + safe.right,
-          bottom: landscape ? 126 : 152,
+          left: 16 + safe.left,
+          top: 12 + safe.top,
+          // 给右侧竖排按钮留出位置，也给底部快门留出位置
+          right: 74 + safe.right,
+          bottom: 116,
         ),
         child: Align(
-          alignment: Alignment.bottomLeft,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: size.width * (landscape ? 0.55 : 0.86),
+          alignment: Alignment.topLeft,
+          child: RotatedBox(
+            quarterTurns: 1,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: maxW),
+              child: WmView(s: _s, scale: 0.82),
             ),
-            child: WmView(s: _s, scale: landscape ? 0.82 : 1.0),
           ),
         ),
       ),
@@ -1749,33 +1757,38 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     );
   }
 
-  /// 顶部一排：关闭 / 闪光灯 / 定位 / 横竖屏 / 前后镜头
+  /// 右侧竖排工具条：关闭 / 闪光灯 / 定位 / 横竖屏 / 前后镜头
   ///
-  /// v2.3.0 按用户要求把「关闭、取定位、切横屏」收进同一排，关闭放在最上角。
-  Widget _topBar() {
-    return SafeArea(
-      bottom: false,
+  /// v2.3.1 按用户要求从「顶部横排」搬到**屏幕右侧边、竖直居中**：
+  /// 竖着拿手机时拇指正好够到，也不挡画面中间。
+  /// 「关闭」单独留在最上面、跟下面四个空出一段距离 —— 它是退出，
+  /// 跟调参数那几个不该挨在一起，免得手滑点到。
+  Widget _rightRail() {
+    final safe = MediaQuery.of(context).padding;
+    return Align(
+      alignment: Alignment.centerRight,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
-        child: Row(
+        padding: EdgeInsets.only(right: 6 + safe.right),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             _roundIcon(Icons.close, '退出', () => Navigator.of(context).maybePop()),
-            const Spacer(),
+            const SizedBox(height: 28),
             _roundIcon(_flashIcon(_flash), '闪光灯：${_flashLabel(_flash)}', _cycleFlash),
-            const SizedBox(width: 4),
+            const SizedBox(height: 10),
             _roundIcon(
               Icons.my_location,
               _locating ? '正在定位…' : '取当前地点',
               _locate,
               busy: _locating,
             ),
-            const SizedBox(width: 4),
+            const SizedBox(height: 10),
             _roundIcon(
               _landscape ? Icons.stay_current_portrait : Icons.stay_current_landscape,
-              _landscape ? '切回竖屏' : '切到横屏（不动系统的方向锁定）',
+              _landscape ? '水印回到竖屏位置' : '水印改成横屏位置',
               _toggleLandscape,
             ),
-            const SizedBox(width: 4),
+            const SizedBox(height: 10),
             _roundIcon(Icons.cameraswitch_outlined, '前后镜头', _flip),
           ],
         ),
@@ -1810,7 +1823,11 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     );
   }
 
-  Widget _bottomBar(bool landscape) {
+  /// 底部三个键：本地照片 / 快门 / 水印。
+  ///
+  /// v2.3.1：尺寸和位置**写死成竖屏那一套**，不再随横屏变 ——
+  /// 用户要求「切横屏时底部三个按钮不变」。
+  Widget _bottomBar() {
     return Align(
       alignment: Alignment.bottomCenter,
       child: Container(
@@ -1824,7 +1841,7 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
         child: SafeArea(
           top: false,
           child: Padding(
-            padding: EdgeInsets.fromLTRB(24, landscape ? 10 : 22, 24, 10),
+            padding: const EdgeInsets.fromLTRB(24, 22, 24, 10),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               crossAxisAlignment: CrossAxisAlignment.center,
@@ -1835,8 +1852,8 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
                 GestureDetector(
                   onTap: _shooting ? null : _shoot,
                   child: Container(
-                    width: landscape ? 62 : 74,
-                    height: landscape ? 62 : 74,
+                    width: 74,
+                    height: 74,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       border: Border.all(color: Colors.white, width: 4),

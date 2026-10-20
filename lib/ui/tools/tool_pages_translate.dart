@@ -58,10 +58,37 @@ class TranslatePage extends StatefulWidget {
   State<TranslatePage> createState() => _TranslatePageState();
 }
 
-/// 数据源。顺序就是界面上 Chip 的顺序：
-/// 先词典（有道词典最全）、再整句翻译（有道翻译 / 腾讯翻译）、
-/// 最后是「快而简」的百度词典和 MyMemory。
+/// 数据源（整句翻译 / 英汉词典那一边）。顺序就是内部枚举顺序。
 enum _Src { youdao, youdaoTx, transmart, baidu, mymemory }
+
+/// v2.3.1：**所有可切换的接口**都摆在一个列表里，不再先分「翻译 / 在线字典 /
+/// 在线词典」三页（用户：去掉上面那三个分类，直接一个查询框，下面把能查的
+/// 接口都列出来，点哪个就用哪个查）。
+///
+/// 每一行 = 一个接口。前五个是原来的「翻译」，后三个是原来的「字典 / 词典」
+/// （这三个源本身字词通吃，查「人」和查「学习」都是同一个接口）。
+enum _Api {
+  youdaoDict('有道词典', '英汉 · 音标 / 例句', _ApiKind.translate, _Src.youdao),
+  baiduDict('百度词典', '英汉 · 简明对照', _ApiKind.translate, _Src.baidu),
+  youdaoTx('有道翻译', '整句 · 中英互译', _ApiKind.translate, _Src.youdaoTx),
+  transmart('腾讯翻译', '整句 · 长句最顺', _ApiKind.translate, _Src.transmart),
+  mymemory('MyMemory', '整句 · 多语种', _ApiKind.translate, _Src.mymemory),
+  baiduHanyu('百度汉语', '汉字 / 词语 / 成语', _ApiKind.dict, null, DictSource.baidu),
+  zdic('汉典', '汉字 · 字形字源', _ApiKind.dict, null, DictSource.zdic),
+  youdaoZh('有道汉语', '汉字 / 词语 · 规范释义', _ApiKind.dict, null, DictSource.youdao);
+
+  const _Api(this.label, this.hint, this.kind, this.src, [this.dictSource]);
+
+  final String label;
+  final String hint;
+  final _ApiKind kind;
+  final _Src? src;
+  final DictSource? dictSource;
+
+  bool get isDict => kind == _ApiKind.dict;
+}
+
+enum _ApiKind { translate, dict }
 
 class _TranslatePageState extends State<TranslatePage> {
   final _input = TextEditingController();
@@ -75,25 +102,16 @@ class _TranslatePageState extends State<TranslatePage> {
     headers: const {'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36'},
   ));
 
-  _Src _src = _Src.youdao;
+  _Api _api = _Api.youdaoDict;
   bool _busy = false;
   String? _error;
   String _query = '';
 
-  /// 当前分页（v1.8.0 新增）。0=翻译 / 1=在线字典 / 2=在线词典。
-  ///
-  /// 用户第 11 条：「翻译、在线字典、在线词典**可以放一个界面一起，
-  /// 进行切换**」。所以这一页从「只做翻译」变成了三合一，
-  /// 后两页的内容在 `dict_view.dart` 里（那边是另一套完全不同的解析，
-  /// 见那个文件顶部的说明）。
-  int _tab = 0;
+  /// 每查一次 +1。字典那半边（[DictLookupView]）靠它判断「再查一次」。
+  int _runId = 0;
 
-  /// 分页的标题与副标题，顺序和 [_tab] 对应。
-  static const List<(String, String)> _tabInfo = <(String, String)>[
-    ('翻译', '英汉词典 + 句子翻译，可切换数据源'),
-    ('在线字典', '查单个汉字的读音、部首、笔画、字形、释义'),
-    ('在线词典', '查词语的意思、出处、例句、近反义词'),
-  ];
+  /// 当前接口如果是整句 / 英汉类，对应的内部数据源
+  _Src? get _src => _api.src;
 
   _Youdao? _youdao;
   List<(String, String)> _baidu = const [];
@@ -131,11 +149,12 @@ class _TranslatePageState extends State<TranslatePage> {
 
   bool get _hasCjk => RegExp(r'[\u4e00-\u9fff]').hasMatch(_query);
 
-  Future<void> _go() async {
-    final q = _input.text.trim();
-    if (q.isEmpty) {
+  /// 点「查询」，或者点下面任意一个接口。
+  void _run({String? q}) {
+    final text = (q ?? _input.text).trim();
+    if (text.isEmpty) {
       setState(() {
-        _error = '先输入要查的单词或句子';
+        _error = '先输入要查的内容';
         _youdao = null;
         _baidu = const [];
         _mymemory = null;
@@ -148,12 +167,35 @@ class _TranslatePageState extends State<TranslatePage> {
     }
     FocusScope.of(context).unfocus();
     setState(() {
-      _busy = true;
       _error = null;
-      _query = q;
+      _query = text;
+      _runId++;
+      // 换接口 / 重查时把上一家的结果全清掉，免得「看到的是上一家的」
+      _youdao = null;
+      _baidu = const [];
+      _mymemory = null;
+      _youdaoTx = null;
+      _tmart = null;
+      _tmartFrom = '';
+      _busy = !_api.isDict;
     });
+    if (!_api.isDict) _translate(text);
+  }
+
+  /// 切换接口：点哪个就用哪个查；已经查过内容就立刻重查一次。
+  void _pickApi(_Api a) {
+    if (a == _api) return;
+    setState(() => _api = a);
+    // 输入框里已经有字、或之前查过，就立刻用新接口重查；
+    // 什么都没有就只是换个接口，不弹「先输入」那种没意义的提示。
+    final typed = _input.text.trim();
+    final text = typed.isNotEmpty ? typed : _query;
+    if (text.isNotEmpty) _run(q: text);
+  }
+
+  Future<void> _translate(String q) async {
     try {
-      switch (_src) {
+      switch (_src!) {
         case _Src.youdao:
           final r = await _dio.get<String>(
             'https://dict.youdao.com/jsonapi?q=${Uri.encodeComponent(q)}',
@@ -470,156 +512,138 @@ class _TranslatePageState extends State<TranslatePage> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final info = _tabInfo[_tab];
 
     return ToolScaffold(
-      // v1.8.0：标题跟着当前分页走，进工具时一眼能看出现在在哪一页。
-      title: info.$1,
-      subtitle: info.$2,
-      // 分页条固定在顶部（不跟着列表滚），让「切换」这件事一直看得见；
-      // 下面那部分用 Expanded 占剩下的高度，两页各自滚自己的。
+      title: '翻译查词',
+      subtitle: '${_api.label} · ${_api.hint}',
+      // v2.3.1：一个输入框 + 下面一排接口，点哪个用哪个查。
+      // 原来的「翻译 / 在线字典 / 在线词典」三分页去掉了。
       child: Column(
         children: <Widget>[
-          _tabBar(),
+          _searchCard(scheme),
           Expanded(
-            child: _tab == 0
-                ? _translateBody(scheme)
-                : DictLookupView(
-                    // 给一个带 tab 号的 key：切页时 Flutter 会当成不同的
-                    // State，于是两页各有一份独立的输入框 / 数据源 / 结果，
-                    // 来回切不会互相覆盖。
-                    key: ValueKey<int>(_tab),
-                    mode: _tab == 1 ? DictMode.hanzi : DictMode.ci,
-                  ),
+            child: _api.isDict
+                ? DictLookupView(
+                    // 不给 key：换接口时复用同一个 State，靠 source / runId 触发重查。
+                    // 给 key 会重建 State，initState 和 didUpdateWidget 会各查一次。
+                    mode: DictMode.ci,
+                    embedded: true,
+                    query: _query,
+                    source: _api.dictSource,
+                    runId: _runId,
+                  )
+                : _translateBody(scheme),
           ),
         ],
       ),
     );
   }
 
-  /// 顶部的「翻译 / 在线字典 / 在线词典」切换条。
-  ///
-  /// 用 SegmentedButton（Material 3 的分段控件）而不是 TabBar：
-  /// TabBar 要配 TabController + TabBarView，还要处理生命周期，
-  /// 而这里只有三个互斥的静态页，分段控件一个 `selected` 就够了。
-  Widget _tabBar() => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-        child: SizedBox(
-          width: double.infinity,
-          child: SegmentedButton<int>(
-            // 不放图标：三个中文标签加上图标在 360dp 的窄屏上会挤出去
-            segments: const <ButtonSegment<int>>[
-              ButtonSegment<int>(value: 0, label: Text('翻译')),
-              ButtonSegment<int>(value: 1, label: Text('在线字典')),
-              ButtonSegment<int>(value: 2, label: Text('在线词典')),
-            ],
-            selected: <int>{_tab},
-            // 关掉选中时的对勾：它对勾一出现/消失会改变各段宽度，
-            // 点起来整条会左右抖一下
-            showSelectedIcon: false,
-            onSelectionChanged: (Set<int> s) => setState(() => _tab = s.first),
-          ),
-        ),
-      );
-
-  /// 原来那一套「翻译」界面，整体挪进来当一个分页用，逻辑一行没动。
-  Widget _translateBody(ColorScheme scheme) {
-    return ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-        children: [
-          // ---------------- 输入 ----------------
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  TextField(
-                    controller: _input,
-                    minLines: 1,
-                    maxLines: 4,
-                    textInputAction: TextInputAction.search,
-                    onSubmitted: (_) => _go(),
-                    decoration: InputDecoration(
-                      hintText: '输入英文单词 / 句子，或中文',
-                      border: const OutlineInputBorder(),
-                      isDense: true,
-                      suffixIcon: _input.text.isEmpty
-                          ? null
-                          : IconButton(
-                              tooltip: '清空',
-                              icon: const Icon(Icons.clear, size: 18),
-                              onPressed: () => setState(() {
-                                _input.clear();
-                                _error = null;
-                                _youdao = null;
-                                _baidu = const [];
-                                _mymemory = null;
-                                _youdaoTx = null;
-                                _tmart = null;
-                                _tmartFrom = '';
-                                _query = '';
-                              }),
-                            ),
-                    ),
+  /// 顶部的统一查询区：输入框 + 查询按钮 + 所有接口。
+  Widget _searchCard(ColorScheme scheme) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Expanded(
+                child: TextField(
+                  controller: _input,
+                  minLines: 1,
+                  maxLines: 3,
+                  textInputAction: TextInputAction.search,
+                  onSubmitted: (_) => _run(),
+                  decoration: InputDecoration(
+                    hintText: '输入英文单词、句子，或汉字 / 词语 / 成语',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                    suffixIcon: _input.text.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: '清空',
+                            icon: const Icon(Icons.clear, size: 18),
+                            onPressed: () => setState(() {
+                              _input.clear();
+                              _error = null;
+                              _youdao = null;
+                              _baidu = const [];
+                              _mymemory = null;
+                              _youdaoTx = null;
+                              _tmart = null;
+                              _tmartFrom = '';
+                              _query = '';
+                            }),
+                          ),
                   ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final s in _Src.values)
-                        ChoiceChip(
-                          label: Text(_srcName(s)),
-                          selected: _src == s,
-                          // 换数据源时把上一家的报错一起清掉，
-                          // 不然「有道没查出结果」会一直挂在界面上误导人
-                          onSelected: (_) => setState(() {
-                            _src = s;
-                            _error = null;
-                          }),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: FilledButton.icon(
-                          onPressed: _busy ? null : _go,
-                          icon: _busy
-                              ? const SizedBox(
-                                  height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                              : const Icon(Icons.search, size: 18),
-                          label: Text(_busy ? '查询中…' : '翻译'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+                ),
               ),
-            ),
+              const SizedBox(width: 8),
+              SizedBox(
+                height: 46,
+                child: FilledButton.icon(
+                  onPressed: _busy && !_api.isDict ? null : _run,
+                  icon: _busy && !_api.isDict
+                      ? const SizedBox(
+                          height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.search, size: 18),
+                  label: const Text('查询'),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 12),
-
-          if (_error != null) _errBox(scheme, _error!),
-          if (_query.isNotEmpty) ..._resultArea(scheme),
-          const SizedBox(height: 14),
-          _notes(scheme),
+          const SizedBox(height: 10),
+          Text('用哪个接口查（点一下就切过去）',
+              style: TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.w600, color: scheme.onSurfaceVariant)),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: <Widget>[
+              for (final a in _Api.values)
+                ChoiceChip(
+                  label: Text(a.label, style: const TextStyle(fontSize: 12.5)),
+                  selected: _api == a,
+                  visualDensity: VisualDensity.compact,
+                  onSelected: (_) => _pickApi(a),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
         ],
-      );
+      ),
+    );
   }
 
-  static String _srcName(_Src s) => switch (s) {
-        _Src.youdao => '有道词典',
-        _Src.youdaoTx => '有道翻译',
-        _Src.transmart => '腾讯翻译',
-        _Src.baidu => '百度词典',
-        _Src.mymemory => 'MyMemory',
-      };
+  /// 结果区（整句翻译 / 英汉词典那一半）。
+  ///
+  /// v2.3.1：输入框和接口选择已经统一挪到上面的 [_searchCard]，
+  /// 这里只剩「查出来的东西」，不再自带一套输入控件。
+  Widget _translateBody(ColorScheme scheme) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+      children: [
+        if (_busy)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 20),
+            child: Center(
+              child: SizedBox(
+                  width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
+          ),
+        if (_error != null) _errBox(scheme, _error!),
+        if (_query.isNotEmpty) ..._resultArea(scheme),
+        const SizedBox(height: 14),
+        _notes(scheme),
+      ],
+    );
+  }
 
   List<Widget> _resultArea(ColorScheme scheme) {
-    switch (_src) {
+    switch (_src!) {
       case _Src.youdao:
         final y = _youdao;
         if (y == null) return const [];
@@ -940,13 +964,15 @@ class _TranslatePageState extends State<TranslatePage> {
             const SizedBox(width: 9),
             Expanded(
               child: Text(
-                '五个数据源都是公开的免 key 接口，用的同一个网络，'
-                '哪个不通就换一个再试。\n'
-                '· 有道词典：最全，有音标 / 词形变化 / 短语 / 同近义词 / 双语例句\n'
+                '八个接口都是公开的免 key 接口，用的同一个网络，'
+                '哪个不通就换一个再试；换了会自动用新接口重查一次。\n'
+                '· 有道词典：英汉最全，有音标 / 词形变化 / 短语 / 同近义词 / 双语例句\n'
+                '· 百度词典：英汉简明对照，最快\n'
                 '· 有道翻译：整句翻译，自动判中英方向，短句快\n'
-                '· 腾讯翻译：整句翻译，长句最顺，能自动认语种（日 / 韩 / 法 / 德…都行）\n'
-                '· 百度词典：最简，给几条「词 → 译」的对照\n'
-                '· MyMemory：长句子翻得也顺，词条信息少\n'
+                '· 腾讯翻译：整句翻译，长句最顺，能自动认语种（日 / 韩 / 法 / 德…）\n'
+                '· MyMemory：长句也顺，词条信息少\n'
+                '· 百度汉语 / 汉典 / 有道汉语：汉字、词语、成语，'
+                '字形和释义分别侧重「最全 / 字源 / 最规范」\n'
                 '发音来自有道，一个词读一次就会存到本地，之后点了马上响。',
                 style: TextStyle(fontSize: 11.5, height: 1.75, color: scheme.onSurfaceVariant),
               ),

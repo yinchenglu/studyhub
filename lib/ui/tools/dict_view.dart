@@ -532,9 +532,30 @@ String _unescape(String s) => s
 
 /// 在线字典 / 在线词典页面。用 [DictMode] 区分查字还是查词。
 class DictLookupView extends StatefulWidget {
-  const DictLookupView({super.key, required this.mode});
+  const DictLookupView({
+    super.key,
+    required this.mode,
+    this.embedded = false,
+    this.query = '',
+    this.source,
+    this.runId = 0,
+  });
 
   final DictMode mode;
+
+  /// v2.3.1：`embedded = true` 时**只要结果**，输入框 / 数据源 / 查询按钮
+  /// 全部交给外面（翻译查词页把「查什么」和「用哪个接口」统一放在一套 UI 里，
+  /// 这里再放一个输入框就成了同屏两个搜索框）。
+  final bool embedded;
+
+  /// embedded 模式下要查的内容。
+  final String query;
+
+  /// embedded 模式下指定的数据源；null = 沿用上次选的那家。
+  final DictSource? source;
+
+  /// 外部每点一次查询就 +1。用在「内容没变但想再查一次」的场景。
+  final int runId;
 
   @override
   State<DictLookupView> createState() => _DictLookupViewState();
@@ -569,19 +590,52 @@ class _DictLookupViewState extends State<DictLookupView> {
   Player? _player;
 
   @override
+  void initState() {
+    super.initState();
+    if (!widget.embedded) return;
+    final s = widget.source;
+    if (s != null) _picked[widget.mode] = s;
+    if (widget.query.trim().isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) search(widget.query);
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant DictLookupView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.embedded) return;
+    final s = widget.source;
+    final srcChanged = s != null && _picked[widget.mode] != s;
+    if (s != null) _picked[widget.mode] = s;
+    if (oldWidget.runId != widget.runId ||
+        oldWidget.query != widget.query ||
+        srcChanged) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) search(widget.query);
+      });
+    }
+  }
+
+  @override
   void dispose() {
     _input.dispose();
     _player?.dispose();
     super.dispose();
   }
 
-  Future<void> _go() async {
-    final q = _input.text.trim();
+  /// 查一次。外部（翻译查词页）和本页输入框都走这里。
+  Future<void> search(String raw) async {
+    final q = raw.trim();
     if (q.isEmpty) {
-      setState(() => _error = '先输入要查的内容');
+      setState(() {
+        _error = '先输入要查的内容';
+        _r = null;
+        _query = '';
+      });
       return;
     }
-    FocusScope.of(context).unfocus();
     setState(() {
       _busy = true;
       _error = null;
@@ -602,6 +656,11 @@ class _DictLookupViewState extends State<DictLookupView> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _go() {
+    FocusScope.of(context).unfocus();
+    return search(_input.text);
   }
 
   Future<DictResult?> _fetch(DictSource s, String q) async {
@@ -714,6 +773,26 @@ class _DictLookupViewState extends State<DictLookupView> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+
+    // embedded：只出结果，输入与数据源由外层统一提供
+    if (widget.embedded) {
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 28),
+        children: <Widget>[
+          if (_busy && _r == null)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 26),
+              child: Center(
+                child: SizedBox(
+                    width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
+              ),
+            ),
+          if (_error != null) _errBox(scheme, _error!),
+          if (_r != null && !_r!.isEmpty) ..._result(scheme, _r!),
+        ],
+      );
+    }
+
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
       children: <Widget>[

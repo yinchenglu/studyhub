@@ -26,25 +26,21 @@ import 'tool_pages.dart'; // ToolScaffold
 
 // ============================================================ 类型
 
-/// 数独类型枚举。**9 种最常见异形数独**（按各大主流数独 App 的
-/// 类型排序：Sudoku.com、欧路数独、数独达人等的「异形」分类页。
+/// 数独类型枚举。
 ///
-/// 排序逻辑：**用户玩得最多 = 主流 App 排在前面**。
-///   - 标准：所有 App 都有的基础款
-///   - X-Sudoku / 对角：进阶玩家必玩
-///   - 超 Hyper / 锯齿 Jigsaw：扩展约束经典款
-///   - 杀手 Killer：日韩非常火
-///   - 不等式 / 奇偶 / 连续 / 箭头：欧路、Sudoku.com 的「变体」分类
+/// v2.3.1 新增 **四宫格（4×4）/ 六宫格（6×6）**：用户要求「增加四宫格、
+/// 六宫格内容」。它们放在最前面，因为是最容易上手的两档。
 ///
-/// 之前的「百分比」「迷你 6×6」不算异形（百分比几乎没人玩、
-/// 6×6 是入门不是异形），砍掉。
+/// 其余类型按「用户玩得最多 = 主流 App 排在前面」排序。
 enum SudokuType {
+  mini4('四宫格', '4×4 · 2×2 宫 · 入门'),
+  mini6('六宫格', '6×6 · 2×3 宫 · 入门'),
   standard('标准数独', '9×9 · 3×3 宫 · 行列均不重复'),
   diagonal('对角数独 X', '标准 + 两条主对角线也不重复'),
   hyper('超数独', '9×9，叠加四个【3×3 窗】约束'),
   jigsaw('锯齿数独', '9×9，但 9 个宫是任意锯齿形状'),
   killer('杀手数独', '9×9 + 若干「笼」，每笼数字之和 = 笼角标'),
-  greater('不等式数独', '9×6，相邻格按「>」「<」标记大小关系'),
+  greater('不等式数独', '6×6，相邻格按「>」「<」标记大小关系'),
   evenodd('奇偶数独', '9×9，部分格标注「奇/偶」约束'),
   consecutive('连续数独', '9×9，相邻格标○则两数差必为 1'),
   arrow('箭头数独', '9×9，箭头路径上数字之和 = 圆球数');
@@ -53,31 +49,41 @@ enum SudokuType {
   final String hint;
   const SudokuType(this.label, this.hint);
 
-  /// 棋盘边长。绝大多数 9；不等式 9×6。
+  /// 棋盘边长。四宫格 4、六宫格 / 不等式 6，其余 9。
   int get size {
     switch (this) {
+      case SudokuType.mini4:
+        return 4;
+      case SudokuType.mini6:
       case SudokuType.greater:
-        return 9; // 9 列 6 行 → size 取列数
+        return 6;
       default:
         return 9;
     }
   }
 
-  /// 高度。绝大多数 9；不等式只有 6。
-  int get height => this == SudokuType.greater ? 6 : size;
+  /// v2.3.1：所有类型都是正方形盘（不等式原来是 9 列 × 6 行的怪形状，
+  /// 但棋盘模型是 size×size，实际填了 9 行只显示 6 行 —— 就是用户说的
+  /// 「后面的数独显示对不对」。改成 6×6 之后彻底一致）。
+  int get height => size;
 }
 
-/// 难度。决定「挖多少格」+「保留多少提示」。
+/// 难度。决定「挖多少格」—— 按格子总数的比例算，4/6/9 宫格才都合理
+/// （原来写死挖 56 格，4×4 一共才 16 格，直接挖穿）。
 enum SudokuDifficulty {
-  easy('简单', 30), // 给 51 提示
-  medium('中等', 40), // 给 41
-  hard('困难', 50), // 给 31
-  hell('地狱', 56); // 给 25 提示，且必须唯一解
+  easy('简单', 0.37),
+  medium('中等', 0.50),
+  hard('困难', 0.63),
+  hell('地狱', 0.72);
 
   final String label;
-  /// 总共挖掉多少格（81 - 提示数）。`hell` 取最大挖洞数，并验唯一解。
-  final int holes;
-  const SudokuDifficulty(this.label, this.holes);
+
+  /// 挖掉的比例（0~1）。
+  final double ratio;
+  const SudokuDifficulty(this.label, this.ratio);
+
+  /// 这个难度在这个尺寸下该挖多少格。
+  int holesFor(int cells) => (cells * ratio).round().clamp(1, cells - 2);
 }
 
 // ============================================================ 引擎：棋盘 + 约束
@@ -151,7 +157,20 @@ abstract class SudokuRules {
   final int size;
   SudokuRules(this.type) : size = type.size;
 
+  /// 3×3 宫的行数 / 列数。4×4 是 2×2，6×6 是 2 行 × 3 列，9×9 是 3×3。
+  int get boxRows => size % 3 == 0 && size != 6 ? 3 : 2;
+  int get boxCols => size == 6 ? 3 : (size == 4 ? 2 : 3);
+
   bool isLegal(SudokuBoard b, int r, int c, int v);
+
+  /// 行 / 列 / 宫**之外**的额外约束（对角线、超数独窗口、笼、奇偶、
+  /// 连续、箭头、不等式）。
+  ///
+  /// v2.3.1 新增：快速求解器自己用位掩码处理行 / 列 / 宫，
+  /// 剩下的约束统一走这个钩子，这样每种异形只要写十几行就能接进求解器，
+  /// 不用各写一套回溯 —— 之前锯齿数独一点就卡死，就是因为「出题」那条路
+  /// 根本没把锯齿宫算进去（用标准 3×3 宫的 `isLegal` 一份份试）。
+  bool extraOk(SudokuBoard b, int r, int c, int v) => true;
 
   /// 整个棋盘是否合法且已填满。
   bool isComplete(SudokuBoard b);
@@ -215,21 +234,25 @@ abstract class SudokuRules {
     }
 
     if (requireUnique) {
-      // 简单做法：算一遍解数，若 >1 就补回来几个（留 >1 不太理想，
-      // 但项目实际不依赖解的绝对唯一，地狱难度只是「挖得狠」）
-      // ——这里用启发式「如果解数 > 2 就补回 1 格」。
-      final solver = _Solver();
-      final solCount = solver.countSolutions(puzzle, cap: 3);
+      // v2.3.1：用和本题型**一致的规则**数解数。
+      // 原来那份 `_Solver._countRec` 写死「3×3 宫 + 行列」，锯齿 / 4×4 /
+      // 6×6 上算出来的解数根本不对（锯齿的分区它压根不知道）。
+      var solCount = _FastSolver(this, rng, nodeLimit: 40000)
+          .countSolutions(puzzle, cap: 2);
       if (solCount > 1) {
-        // 找最近的洞补回去
-        for (var i = cellsToDig - 1; i >= 0; i--) {
+        // 解不唯一就一格一格补回去，最多补 8 格；
+        // 补完还不唯一就算了（至少题目本身是合法可解的）
+        var putBack = 0;
+        for (var i = cellsToDig - 1; i >= 0 && putBack < 8; i--) {
           final r = order[i][0];
           final c = order[i][1];
-          if (puzzle.cells[r][c] == 0) {
-            puzzle.cells[r][c] = full.cells[r][c];
-            puzzle.fixed[r][c] = true;
-            break;
-          }
+          if (puzzle.cells[r][c] != 0) continue;
+          puzzle.cells[r][c] = full.cells[r][c];
+          puzzle.fixed[r][c] = true;
+          putBack++;
+          solCount = _FastSolver(this, rng, nodeLimit: 40000)
+              .countSolutions(puzzle, cap: 2);
+          if (solCount <= 1) break;
         }
       }
     }
@@ -266,26 +289,34 @@ class StandardRules extends SudokuRules {
     return isValidSolution(b);
   }
 
-  // 宫大小：标准 9×9 是 3×3；杀手 / 锯齿 / 不等式 等都走这里
-  int _boxRows() => 3;
-  int _boxCols() => 3;
+  // 宫大小：4×4 → 2×2；6×6 → 2 行 × 3 列；9×9 → 3×3
+  int _boxRows() => boxRows;
+  int _boxCols() => boxCols;
 
   int _boxR(int r) => (r ~/ _boxRows()) * _boxRows();
   int _boxC(int c) => (c ~/ _boxCols()) * _boxCols();
 
   @override
   SudokuBoard generateFull(math.Random rng) {
-    final n = size;
-    final board = SudokuBoard.empty(n);
-    // 第一行放 1..n 洗牌
-    final first = List.generate(n, (i) => i + 1)..shuffle(rng);
-    for (var c = 0; c < n; c++) {
-      board.cells[0][c] = first[c];
-      board.fixed[0][c] = true;
+    // v2.3.1：改用带位掩码 + MRV 的求解器（见 `_FastSolver`）。
+    // 旧实现「第一行洗牌 + 顺序回溯」在 9×9 上勉强够用，但四种异形
+    // （锯齿 / 超 / 奇偶 / 箭头）都得靠它，一旦约束变紧就会退化成
+    // 几十万次全盘扫描 —— 用户看到的「一点就卡死」就是这么来的。
+    for (var attempt = 0; attempt < 6; attempt++) {
+      final board = SudokuBoard.empty(size);
+      if (_FastSolver(this, rng).solve(board) && isValidSolution(board)) {
+        return board;
+      }
     }
-    // 回溯填剩余
-    final solver = _Solver();
-    solver.fillAll(board, this, rng);
+    // 兜底：用拉丁方公式直接铺一个（对标准 / 对角都成立）
+    final board = SudokuBoard.empty(size);
+    final br = boxRows;
+    final shift = size % br == 0 ? br : 3;
+    for (var r = 0; r < size; r++) {
+      for (var c = 0; c < size; c++) {
+        board.cells[r][c] = (r * shift + r ~/ br + c) % size + 1;
+      }
+    }
     return board;
   }
 }
@@ -296,6 +327,11 @@ class DiagonalRules extends StandardRules {
   @override
   bool isLegal(SudokuBoard b, int r, int c, int v) {
     if (!super.isLegal(b, r, c, v)) return false;
+    return extraOk(b, r, c, v);
+  }
+
+  @override
+  bool extraOk(SudokuBoard b, int r, int c, int v) {
     if (r == c) {
       for (var i = 0; i < size; i++) {
         if (i == r) continue;
@@ -316,13 +352,23 @@ class DiagonalRules extends StandardRules {
 /// (4,1)、(4,4) 为左上角），窗内也不重。
 class HyperRules extends StandardRules {
   HyperRules(super.type);
+
+  static const _starts = [
+    [1, 1],
+    [1, 4],
+    [4, 1],
+    [4, 4],
+  ];
+
   @override
   bool isLegal(SudokuBoard b, int r, int c, int v) {
     if (!super.isLegal(b, r, c, v)) return false;
-    const starts = [
-      [1, 1], [1, 4], [4, 1], [4, 4],
-    ];
-    for (final s in starts) {
+    return extraOk(b, r, c, v);
+  }
+
+  @override
+  bool extraOk(SudokuBoard b, int r, int c, int v) {
+    for (final s in _starts) {
       final inWindow = r >= s[0] && r < s[0] + 3 && c >= s[1] && c < s[1] + 3;
       if (!inWindow) continue;
       for (var dr = 0; dr < 3; dr++) {
@@ -350,6 +396,7 @@ class JigsawRules extends StandardRules {
       if (i != c && b.cells[r][i] == v) return false;
       if (i != r && b.cells[i][c] == v) return false;
     }
+    // 宫 = 自己的锯齿分区，逐个扫同区格子
     final my = regionOf[r][c];
     for (var rr = 0; rr < size; rr++) {
       for (var cc = 0; cc < size; cc++) {
@@ -361,22 +408,26 @@ class JigsawRules extends StandardRules {
     return true;
   }
 
-  /// 随机切 9 个锯齿块。每块 9 格，且**必须连成一片**。
+  /// 锯齿的宫界是随机的，快速求解器直接读 [regionOf]（见 _FastSolver），
+  /// 所以这里不需要额外的 extraOk。
+
+  /// 随机切 N 个锯齿块（N = 棋盘边长）。每块 N 格，且**必须连成一片**。
   ///
-  /// v2.1.0 重写：上一版是「随机挑一个边界格、按概率并入邻区」，
-  /// 这个算法经常中途卡死（某区再也接不上），跑满 200 次都失败，
-  /// 最后 return 的是标准 3×3 宫 —— 用户看到的就是「锯齿数独没有锯齿」。
+  /// v2.3.1：改成按 `size` 通用（4 / 6 / 9 都行）。
   ///
-  /// 新算法：9 个种子均匀铺在 3×3 的大格子里，然后**轮流涨**，
-  /// 每轮每区各吃一个自己的边界格，直到每区满 9 格。
+  /// 算法：种子均匀铺在「√N × √N」的大格里，然后**轮流涨** ——
+  /// 每轮每区各吃一个自己的边界格，直到每区满 N 格。
   /// 因为是「从自己的边界往外吃」，连通性天然成立；边界互相咬合就是锯齿。
+  ///
+  /// 注意：这个函数只管**切形状**，不保证「这个形状有解」。可解性由
+  /// `_newGame` 里那一层「求解失败就换一种切法」兜住。
   static List<List<int>> makeRandomRegions(int size, math.Random rng) {
-    List<List<int>> standard() =>
-        List.generate(9, (r) => List.generate(9, (c) => (r ~/ 3) * 3 + c ~/ 3));
+    List<List<int>> standard() => List.generate(size,
+        (r) => List.generate(size, (c) => (r ~/ _seedRows(size)) * _seedCols(size) + c ~/ _seedCols(size)));
 
-    if (size != 9) return standard();
+    if (size < 4) return standard();
 
-    // 把一个格子的上下左右空格加进该区的「边界池」
+    // 把一格上下左右的空格加进该区的「边界池」
     void pushFrontier(List<List<int>> pool, List<List<int>> grid, int r, int c) {
       for (final d in const [
         [-1, 0],
@@ -385,43 +436,50 @@ class JigsawRules extends StandardRules {
         [0, 1],
       ]) {
         final nr = r + d[0], nc = c + d[1];
-        if (nr < 0 || nr >= 9 || nc < 0 || nc >= 9) continue;
+        if (nr < 0 || nr >= size || nc < 0 || nc >= size) continue;
         if (grid[nr][nc] != -1) continue;
         pool.add([nr, nc]);
       }
     }
 
-    for (var attempt = 0; attempt < 300; attempt++) {
-      final grid = List.generate(9, (_) => List.filled(9, -1));
-      final counts = List.filled(9, 0);
-      final pools = List.generate(9, (_) => <List<int>>[]);
+    final rows = _seedRows(size);
+    final cols = _seedCols(size);
 
-      // 1) 9 个种子：每个 3×3 大格里随机取一格（互不重叠）
+    for (var attempt = 0; attempt < 200; attempt++) {
+      final grid = List.generate(size, (_) => List.filled(size, -1));
+      final counts = List.filled(size, 0);
+      final pools = List.generate(size, (_) => <List<int>>[]);
+
+      // 1) 种子：每个大格里随机取一格（互不重叠）
       var id = 0;
-      for (var br = 0; br < 3; br++) {
-        for (var bc = 0; bc < 3; bc++) {
-          final r = br * 3 + rng.nextInt(3);
-          final c = bc * 3 + rng.nextInt(3);
+      for (var br = 0; br < rows; br++) {
+        for (var bc = 0; bc < cols; bc++) {
+          final r = br * (size ~/ rows) + rng.nextInt(size ~/ rows);
+          final c = bc * (size ~/ cols) + rng.nextInt(size ~/ cols);
+          if (grid[r][c] != -1) continue;
           grid[r][c] = id;
           counts[id] = 1;
           pushFrontier(pools[id], grid, r, c);
           id++;
         }
       }
+      if (id != size) continue;
 
       // 2) 轮流涨：每轮按随机顺序，每区各吃一个边界格
-      var filled = 9;
+      var filled = size;
       var guard = 0;
-      while (filled < 81 && guard++ < 400) {
-        final order = List<int>.generate(9, (i) => i)..shuffle(rng);
+      while (filled < size * size && guard++ < size * size * 4) {
+        final order = List<int>.generate(size, (i) => i)..shuffle(rng);
         var progressed = false;
         for (final k in order) {
-          if (counts[k] >= 9) continue;
+          if (counts[k] >= size) continue;
           final pool = pools[k];
-          // 清掉已经被别的区吃掉的
-          while (pool.isNotEmpty && grid[pool.last[0]][pool.last[1]] != -1) {
-            pool.removeLast();
-          }
+          // v2.3.1 修了一个真 bug：池里可能夹着**已经被别的区吃掉**的格子。
+          // 旧写法只 pop 尾部（`while (pool.last 已占用) removeLast()`），
+          // 中间那些一直留着，一旦被 pick 走就等于抢了别人的格子 ——
+          // 结果区域大小不均、也不连通，求出来的宫界根本不是数独宫，
+          // 出题自然「一点就卡死」。这里整池过滤一遍。
+          pool.removeWhere((p) => grid[p[0]][p[1]] != -1);
           if (pool.isEmpty) continue;
           final pick = pool.removeAt(rng.nextInt(pool.length));
           grid[pick[0]][pick[1]] = k;
@@ -429,16 +487,20 @@ class JigsawRules extends StandardRules {
           filled++;
           progressed = true;
           pushFrontier(pool, grid, pick[0], pick[1]);
-          if (filled >= 81) break;
+          if (filled >= size * size) break;
         }
         if (!progressed) break;
       }
 
-      if (filled == 81 && counts.every((c) => c == 9)) return grid;
+      if (filled == size * size && counts.every((c) => c == size)) return grid;
     }
     // 极端情况下还是回标准宫（不可能是锯齿，但至少能玩）
     return standard();
   }
+
+  /// 种子大格的行数 / 列数：4 → 2×2，6 → 2×3，9 → 3×3。
+  static int _seedRows(int size) => size == 9 ? 3 : 2;
+  static int _seedCols(int size) => size == 4 ? 2 : (size == 6 ? 3 : 3);
 }
 
 /// 杀手：每笼数字不重且和 = 笼和。
@@ -448,6 +510,11 @@ class KillerRules extends StandardRules {
   @override
   bool isLegal(SudokuBoard b, int r, int c, int v) {
     if (!super.isLegal(b, r, c, v)) return false;
+    return extraOk(b, r, c, v);
+  }
+
+  @override
+  bool extraOk(SudokuBoard b, int r, int c, int v) {
     // 笼内不重复
     final id = b.cageId?[r][c];
     if (id == null) return true;
@@ -513,6 +580,10 @@ class KillerRules extends StandardRules {
           final nr = nb[0], nc = nb[1];
           if (nr < 0 || nr >= n || nc < 0 || nc >= n) continue;
           if (visited[nr][nc]) continue;
+          // v2.3.1：笼内数字**必须互不相同**（规则要求），
+          // 否则「正确解」本身就会违反规则，用户照着答案填也报错。
+          final nv = full.cells[nr][nc];
+          if (cellsList.any((c) => full.cells[c[0]][c[1]] == nv)) continue;
           visited[nr][nc] = true;
           cellsList.add([nr, nc]);
           grew = true;
@@ -568,16 +639,22 @@ class KillerRules extends StandardRules {
   }
 }
 
-/// 不等式：9 列 × 6 行（横），相邻格按「>」「<」标记约束。
-/// 只支持**行内**不等式；列内不加（混合算法太重）。
+/// 不等式：相邻格按「>」「<」标记大小关系。
+/// v2.3.1 起是 **6×6**（原来写「9 列 × 6 行」，但棋盘模型是 N×N，
+/// 实际填了 9 行却只显示 6 行 —— 显示和判题全错）。
+/// 只做**行内**不等式；列内不加（混合算法太重）。
 class GreaterRules extends StandardRules {
   GreaterRules(super.type);
 
   @override
   bool isLegal(SudokuBoard b, int r, int c, int v) {
-    // 行内列约束 + 行内不等式 + 列向宫
     if (!super.isLegal(b, r, c, v)) return false;
-    // 不等式：c-1 用 '<'/'=' '>' 检查
+    return extraOk(b, r, c, v);
+  }
+
+  @override
+  bool extraOk(SudokuBoard b, int r, int c, int v) {
+    // marks[r][c] 表示「(r,c-1) 与 (r,c) 的关系」：'<' 左边小，'>' 左边大
     final marks = b.relationMark;
     if (marks == null) return true;
     if (c > 0 && b.cells[r][c - 1] != 0) {
@@ -592,9 +669,6 @@ class GreaterRules extends StandardRules {
     }
     return true;
   }
-
-  // 不等式棋盘：9 列 × 6 行；列向 3×3 宫在 (r=0..5, c=0..8) 内切成 2 行 × 3 列
-  //（父类 StandardRules 已按 3×3 宫布局，9 列能整除 3、6 行能整除 3，OK）
 }
 
 /// 奇偶：行 / 列 / 宫 + 部分格固定奇偶
@@ -613,6 +687,11 @@ class EvenOddRules extends StandardRules {
   @override
   bool isLegal(SudokuBoard b, int r, int c, int v) {
     if (!super.isLegal(b, r, c, v)) return false;
+    return extraOk(b, r, c, v);
+  }
+
+  @override
+  bool extraOk(SudokuBoard b, int r, int c, int v) {
     final mark = evenOdd[r][c];
     if (mark == 'e' && v.isOdd) return false;
     if (mark == 'o' && v.isEven) return false;
@@ -622,16 +701,21 @@ class EvenOddRules extends StandardRules {
   @override
   SudokuBoard generateFull(math.Random rng) {
     final full = super.generateFull(rng);
-    // 撒奇偶标记：约 8 个
+    // v2.3.1：标记必须**按解的真实奇偶**来撒。
+    // 原来是随机撒 'e'/'o'，那个解自己都可能违反 —— 用户照着答案填反而报错。
     final n = full.size;
     final marks = List.generate(n, (_) => List.filled(n, ''));
-    var toMark = 8;
-    while (toMark > 0) {
-      final r = rng.nextInt(n);
-      final c = rng.nextInt(n);
-      if (marks[r][c].isNotEmpty) continue;
-      marks[r][c] = rng.nextBool() ? 'e' : 'o';
-      toMark--;
+    final cells = <List<int>>[];
+    for (var r = 0; r < n; r++) {
+      for (var c = 0; c < n; c++) {
+        cells.add([r, c]);
+      }
+    }
+    cells.shuffle(rng);
+    final toMark = math.min(n + 3, cells.length);
+    for (var i = 0; i < toMark; i++) {
+      final r = cells[i][0], c = cells[i][1];
+      marks[r][c] = full.cells[r][c].isEven ? 'e' : 'o';
     }
     evenOdd
       ..clear()
@@ -647,21 +731,25 @@ class ConsecutiveRules extends StandardRules {
   @override
   bool isLegal(SudokuBoard b, int r, int c, int v) {
     if (!super.isLegal(b, r, c, v)) return false;
+    return extraOk(b, r, c, v);
+  }
+
+  /// v2.3.1 修了个真 bug：原来对**四个方向**都拿 `marks[r][c]` 去判，
+  /// 但标记只表示「(r,c) 与右邻」这一条边。结果左 / 上 / 下三个方向
+  /// 全被错判成「必须差 1」—— 明明不该有约束的格子填对了也报错。
+  @override
+  bool extraOk(SudokuBoard b, int r, int c, int v) {
     final marks = b.relationMark;
     if (marks == null) return true;
-    // 上下左右 ○ → 差 1
-    const dirs = [[0, 1], [0, -1], [1, 0], [-1, 0]];
-    for (final d in dirs) {
-      final nr = r + d[0], nc = c + d[1];
-      if (nr < 0 || nr >= size || nc < 0 || nc >= size) continue;
-      final m = marks[r][c];
-      if (m == 'o' || m == 'O') {
-        // 与 nr,nc 之间有「○」
-        if (b.cells[nr][nc] != 0 &&
-            (b.cells[nr][nc] - v).abs() != 1) {
-          return false;
-        }
-      }
+    // 与右邻
+    if (c + 1 < size && marks[r][c] == 'o') {
+      final o = b.cells[r][c + 1];
+      if (o != 0 && (o - v).abs() != 1) return false;
+    }
+    // 与左邻
+    if (c > 0 && marks[r][c - 1] == 'o') {
+      final o = b.cells[r][c - 1];
+      if (o != 0 && (o - v).abs() != 1) return false;
     }
     return true;
   }
@@ -681,6 +769,11 @@ class ArrowRules extends StandardRules {
   @override
   bool isLegal(SudokuBoard b, int r, int c, int v) {
     if (!super.isLegal(b, r, c, v)) return false;
+    return extraOk(b, r, c, v);
+  }
+
+  @override
+  bool extraOk(SudokuBoard b, int r, int c, int v) {
     // 球不能与路径上其它格同值（即使数值合法）
     for (final arr in arrows) {
       final ball = arr.ball;
@@ -719,81 +812,196 @@ class ArrowDef {
 
 // ============================================================ 引擎：解算器
 
-class _Solver {
-  bool fillAll(SudokuBoard b, SudokuRules rules, math.Random rng) {
-    // 找第一个空格
-    for (var r = 0; r < b.size; r++) {
-      for (var c = 0; c < b.size; c++) {
-        if (b.cells[r][c] == 0) {
-          // 试 1..n 随机顺序
-          final order = List.generate(b.size, (i) => i + 1)..shuffle(rng);
-          for (final v in order) {
-            if (rules.isLegal(b, r, c, v)) {
-              b.cells[r][c] = v;
-              if (fillAll(b, rules, rng)) return true;
-              b.cells[r][c] = 0;
-            }
-          }
+/// 快速求解器：**位掩码 + MRV**（每一步先填「可选项最少」的空格）。
+///
+/// 为什么把原来那套「顺序回溯 + 每次调 isLegal」换掉（v2.3.1）：
+///   * `isLegal` 每判一格要扫 27 个格子，锯齿数独还要扫满 81 个；
+///   * 顺序回溯在约束变紧时会退化成指数爆炸 —— 用户点「锯齿数独」
+///     直接卡死，就是因为那个随机宫界可能根本无解，它却会一直试下去。
+///
+/// 现在候选集用位运算一次算出来，先填最没得选的格子，并且有**节点上限**；
+/// 超限就认输返回 false，外层换一种宫界重新来（见 `_newGame`）。
+class _FastSolver {
+  _FastSolver(this.rules, this.rng, {this.nodeLimit = 60000})
+      : n = rules.size,
+        region = _regionsOf(rules),
+        _rowMask = List<int>.filled(rules.size, 0),
+        _colMask = List<int>.filled(rules.size, 0),
+        _regMask = List<int>.filled(rules.size, 0);
+
+  final SudokuRules rules;
+  final math.Random rng;
+  final int n;
+
+  /// `region[r][c]` = 这一格属于哪个宫（0..n-1）。锯齿读它自己的分区，
+  /// 其它按 boxRows × boxCols 切。
+  final List<List<int>> region;
+  final int nodeLimit;
+
+  int _nodes = 0;
+
+  final List<int> _rowMask;
+  final List<int> _colMask;
+  final List<int> _regMask;
+
+  static List<List<int>> _regionsOf(SudokuRules rules) {
+    if (rules is JigsawRules) return rules.regionOf;
+    final n = rules.size;
+    final br = rules.boxRows;
+    final bc = rules.boxCols;
+    final perRow = n ~/ bc;
+    return List.generate(
+        n, (r) => List.generate(n, (c) => (r ~/ br) * perRow + c ~/ bc));
+  }
+
+  int get _full => (1 << n) - 1;
+
+  List<int> get _row => _rowMask;
+  List<int> get _col => _colMask;
+  List<int> get _reg => _regMask;
+
+  /// 把棋盘上已有的数字装进位掩码。有冲突返回 false。
+  bool _load(SudokuBoard b) {
+    for (var i = 0; i < n; i++) {
+      _rowMask[i] = 0;
+      _colMask[i] = 0;
+      _regMask[i] = 0;
+    }
+    for (var r = 0; r < n; r++) {
+      for (var c = 0; c < n; c++) {
+        final v = b.cells[r][c];
+        if (v == 0) continue;
+        final bit = 1 << (v - 1);
+        final g = region[r][c];
+        if ((_row[r] & bit) != 0 ||
+            (_col[c] & bit) != 0 ||
+            (_reg[g] & bit) != 0) {
           return false;
         }
+        _row[r] |= bit;
+        _col[c] |= bit;
+        _reg[g] |= bit;
       }
     }
     return true;
   }
 
-  /// 数解数（找到 cap 个就停）。地狱难度用这个验唯一。
-  int countSolutions(SudokuBoard b, {int cap = 2}) {
-    var count = 0;
-    _countRec(b, b.size, () {
-      count++;
-      return count >= cap;
-    });
-    return count;
+  /// 把棋盘填满（原地改 [b]）。失败返回 false（b 可能被改了一半，调用方别用）。
+  bool solve(SudokuBoard b) {
+    if (!_load(b)) return false;
+    _nodes = 0;
+    return _search(b);
   }
 
-  void _countRec(SudokuBoard b, int size, bool Function() stop) {
-    for (var r = 0; r < size; r++) {
-      for (var c = 0; c < size; c++) {
-        if (b.cells[r][c] == 0) {
-          for (var v = 1; v <= size; v++) {
-            // 走默认标准规则校验
-            var ok = true;
-            for (var i = 0; i < size; i++) {
-              if (i != c && b.cells[r][i] == v) {
-                ok = false;
-                break;
-              }
-              if (i != r && b.cells[i][c] == v) {
-                ok = false;
-                break;
-              }
-            }
-            if (ok) {
-              // 宫
-              final br = (r ~/ 3) * 3, bc = (c ~/ 3) * 3;
-              for (var dr = 0; dr < 3; dr++) {
-                for (var dc = 0; dc < 3; dc++) {
-                  final rr = br + dr, cc = bc + dc;
-                  if (rr == r && cc == c) continue;
-                  if (b.cells[rr][cc] == v) {
-                    ok = false;
-                    break;
-                  }
-                }
-                if (!ok) break;
-              }
-            }
-            if (ok) {
-              b.cells[r][c] = v;
-              _countRec(b, size, stop);
-              b.cells[r][c] = 0;
-              if (stop()) return;
-            }
-          }
-          return;
+  bool _search(SudokuBoard b) {
+    if (++_nodes > nodeLimit) return false;
+
+    // ---- MRV：找候选最少的那一格 ----
+    var bestR = -1, bestC = -1, bestMask = 0, bestCount = 99;
+    for (var r = 0; r < n; r++) {
+      for (var c = 0; c < n; c++) {
+        if (b.cells[r][c] != 0) continue;
+        final avail =
+            _full & ~(_row[r] | _col[c] | _reg[region[r][c]]);
+        final cnt = _bitCount(avail);
+        if (cnt == 0) return false; // 这一格没得填 → 这条路走死了
+        if (cnt < bestCount) {
+          bestCount = cnt;
+          bestR = r;
+          bestC = c;
+          bestMask = avail;
+          if (cnt == 1) break;
         }
       }
+      if (bestCount == 1) break;
     }
+    if (bestR < 0) return true; // 没有空格 = 填满了
+
+    final cand = <int>[];
+    for (var v = 1; v <= n; v++) {
+      if ((bestMask & (1 << (v - 1))) != 0) cand.add(v);
+    }
+    cand.shuffle(rng); // 每次换顺序 → 出题不会永远一个解法
+
+    final g = region[bestR][bestC];
+    for (final v in cand) {
+      if (!rules.extraOk(b, bestR, bestC, v)) continue;
+      final bit = 1 << (v - 1);
+      b.cells[bestR][bestC] = v;
+      _row[bestR] |= bit;
+      _col[bestC] |= bit;
+      _reg[g] |= bit;
+      if (_search(b)) return true;
+      b.cells[bestR][bestC] = 0;
+      _row[bestR] &= ~bit;
+      _col[bestC] &= ~bit;
+      _reg[g] &= ~bit;
+      if (_nodes > nodeLimit) return false;
+    }
+    return false;
+  }
+
+  /// 数解数（找到 [cap] 个就停）。地狱难度用这个验唯一。
+  int countSolutions(SudokuBoard b, {int cap = 2}) {
+    if (!_load(b)) return 0;
+    _nodes = 0;
+    _count = 0;
+    _countSearch(b, cap);
+    return _count;
+  }
+
+  int _count = 0;
+
+  void _countSearch(SudokuBoard b, int cap) {
+    if (_count >= cap || _nodes > nodeLimit) return;
+    _nodes++;
+
+    var bestR = -1, bestC = -1, bestMask = 0, bestCount = 99;
+    for (var r = 0; r < n; r++) {
+      for (var c = 0; c < n; c++) {
+        if (b.cells[r][c] != 0) continue;
+        final avail = _full & ~(_row[r] | _col[c] | _reg[region[r][c]]);
+        final cnt = _bitCount(avail);
+        if (cnt == 0) return;
+        if (cnt < bestCount) {
+          bestCount = cnt;
+          bestR = r;
+          bestC = c;
+          bestMask = avail;
+          if (cnt == 1) break;
+        }
+      }
+      if (bestCount == 1) break;
+    }
+    if (bestR < 0) {
+      _count++;
+      return;
+    }
+
+    final g = region[bestR][bestC];
+    for (var v = 1; v <= n && _count < cap && _nodes <= nodeLimit; v++) {
+      if ((bestMask & (1 << (v - 1))) == 0) continue;
+      if (!rules.extraOk(b, bestR, bestC, v)) continue;
+      final bit = 1 << (v - 1);
+      b.cells[bestR][bestC] = v;
+      _row[bestR] |= bit;
+      _col[bestC] |= bit;
+      _reg[g] |= bit;
+      _countSearch(b, cap);
+      b.cells[bestR][bestC] = 0;
+      _row[bestR] &= ~bit;
+      _col[bestC] &= ~bit;
+      _reg[g] &= ~bit;
+    }
+  }
+
+  static int _bitCount(int v) {
+    var c = 0;
+    while (v != 0) {
+      v &= v - 1;
+      c++;
+    }
+    return c;
   }
 }
 
@@ -831,6 +1039,10 @@ class _SudokuPageState extends State<SudokuPage> {
 
   /// v1.9.0+28：「校验」标出来的错格（key = "r-c"），用户落子后清空
   Set<String> _checkedWrong = {};
+
+  /// 出题序号：每次出题 +1。异步生成结束时如果对不上，说明用户已经
+  /// 换了题型 / 点了新题，这一份结果直接丢掉。
+  int _genSeq = 0;
 
   @override
   void initState() {
@@ -882,16 +1094,22 @@ class _SudokuPageState extends State<SudokuPage> {
 
   /// 出题。一次性：生成全盘 → 挖洞 → 渲染。
   Future<void> _newGame() async {
+    // 用序号区分「这是第几次出题」：切换题型 / 点新题时旧的生成还在跑，
+    // 它算完时对不上号就自己丢掉，不会把新结果盖掉。
+    final seq = ++_genSeq;
     setState(() => _busy = true);
-    // 出题是同步的几千次回溯，会卡住主线程 —— 先让「正在生成…」这一帧
-    // 画出来，否则用户看到的是纯空白（v2.3.0 单屏版尤其明显）。
+    // 出题是同步计算，会卡住主线程 —— 先让「正在生成…」这一帧画出来，
+    // 否则用户看到的是纯空白（v2.3.0 单屏版尤其明显）。
     await Future<void>.delayed(const Duration(milliseconds: 24));
-    if (!mounted) return;
+    if (!mounted || seq != _genSeq) return;
     final rng = math.Random();
-    SudokuRules rules;
-    SudokuBoard full;
+
+    late SudokuRules rules;
+    late SudokuBoard full;
 
     switch (_type) {
+      case SudokuType.mini4:
+      case SudokuType.mini6:
       case SudokuType.standard:
         rules = StandardRules(_type);
         full = rules.generateFull(rng);
@@ -905,20 +1123,42 @@ class _SudokuPageState extends State<SudokuPage> {
         full = rules.generateFull(rng);
         break;
       case SudokuType.jigsaw:
-        final regions =
-            JigsawRules.makeRandomRegions(SudokuType.jigsaw.size, rng);
-        rules = JigsawRules(_type, regions);
-        full = rules.generateFull(rng);
+        // 随机切出来的宫界**不一定有解**。旧代码只有一次机会：失败就退回
+        // 标准 3×3 宫（用户看到「锯齿数独没有锯齿」），或者在没上限的
+        // 回溯里一直算下去（用户看到「一点就卡死」）。
+        // 现在最多换 12 种切法，每次求解有 2 万节点上限，多半第一次就过。
+        SudokuRules? jr;
+        SudokuBoard? jb;
+        for (var i = 0; i < 12 && jb == null; i++) {
+          final regions = JigsawRules.makeRandomRegions(_type.size, rng);
+          final r = JigsawRules(_type, regions);
+          final b = SudokuBoard.empty(_type.size);
+          if (_FastSolver(r, rng, nodeLimit: 20000).solve(b) &&
+              r.isValidSolution(b)) {
+            jr = r;
+            jb = b;
+          }
+          // 每试一种切法让出一帧，别让界面在「最坏情况」下假死
+          await Future<void>.delayed(Duration.zero);
+          if (!mounted || seq != _genSeq) return;
+        }
+        if (jr != null && jb != null) {
+          rules = jr;
+          full = jb;
+        } else {
+          // 极端兜底：退回标准宫（至少能玩，只是没有锯齿）
+          rules = StandardRules(SudokuType.standard);
+          full = rules.generateFull(rng);
+        }
         break;
       case SudokuType.killer:
         rules = KillerRules(_type);
-        full = (rules as KillerRules).generateFull(rng);
+        full = rules.generateFull(rng);
         break;
       case SudokuType.greater:
         rules = GreaterRules(_type);
         full = rules.generateFull(rng);
-        // GreaterRules：6 行 × 9 列。height 从 type.height 拿（SudokuBoard.size 是宽边）。
-        full.relationMark = _makeGreaterMarks(full.size, _type.height, rng);
+        full.relationMark = _makeGreaterMarks(full, rng);
         break;
       case SudokuType.evenodd:
         final rulesEO = EvenOddRules(_type,
@@ -929,22 +1169,27 @@ class _SudokuPageState extends State<SudokuPage> {
       case SudokuType.consecutive:
         rules = ConsecutiveRules(_type);
         full = rules.generateFull(rng);
-        full.relationMark =
-            _makeConsecutiveMarks(full.size, rng.nextDouble() < 0.18 ? 0.20 : 0.12);
+        full.relationMark = _makeConsecutiveMarks(
+            full, rng.nextDouble() < 0.18 ? 0.30 : 0.18, rng);
         break;
       case SudokuType.arrow:
         final rulesArr = ArrowRules(_type, []);
         full = rulesArr.generateFull(rng);
-        // 在合法解上**叠加**箭头
-        rulesArr.arrows.addAll(_makeArrows(full.size, rng));
+        // 在合法解上**叠加**箭头（必须与解兼容，见 _makeArrows 注释）
+        rulesArr.arrows.addAll(_makeArrows(full, rng));
         rules = rulesArr;
         break;
     }
 
-    final dig =
-        rules.digHoles(full, _diff.holes, rng, requireUnique: _diff == SudokuDifficulty.hell);
+    final n = _type.size;
+    final dig = rules.digHoles(
+      full,
+      _diff.holesFor(n * n),
+      rng,
+      requireUnique: _diff == SudokuDifficulty.hell,
+    );
 
-    if (!mounted) return;
+    if (!mounted || seq != _genSeq) return;
     setState(() {
       _rules = rules;
       _solution = full;
@@ -962,76 +1207,105 @@ class _SudokuPageState extends State<SudokuPage> {
     _save();
   }
 
-  /// 不等式：随机生成「<」「>」标记。
-  List<List<String>> _makeGreaterMarks(int cols, int rows, math.Random rng) {
-    final marks = List.generate(rows, (_) => List.filled(cols, ''));
-    for (var r = 0; r < rows; r++) {
-      // 第一列没意义
-      for (var c = 1; c < cols; c++) {
-        // 50% 放标记
-        if (rng.nextBool()) {
-          marks[r][c] = rng.nextBool() ? '<' : '>';
-        }
+  /// 不等式：按**解的真实大小关系**撒「<」「>」。
+  ///
+  /// v2.3.1 修：原来是随机撒符号，跟解毫无关系 —— 用户照正确答案填，
+  /// 反而被标红。现在只标「解里确实满足」的那些边，随机决定标或不标。
+  List<List<String>> _makeGreaterMarks(SudokuBoard full, math.Random rng) {
+    final n = full.size;
+    final marks = List.generate(n, (_) => List.filled(n, ''));
+    for (var r = 0; r < n; r++) {
+      for (var c = 1; c < n; c++) {
+        if (rng.nextDouble() > 0.6) continue;
+        final a = full.cells[r][c - 1];
+        final b = full.cells[r][c];
+        if (a == b) continue;
+        marks[r][c] = a < b ? '<' : '>';
       }
     }
     return marks;
   }
 
-  /// 连续：随机选若干对相邻格打"○"
-  List<List<String>> _makeConsecutiveMarks(int size, double ratio) {
-    final marks = List.generate(size, (_) => List.filled(size, ''));
-    final rng = math.Random();
-    for (var r = 0; r < size; r++) {
-      for (var c = 0; c < size; c++) {
-        marks[r][c] = '';
-      }
-    }
-    // 每个「○」需要一对外加 4 个边界标记，存到 marks[r][c] 里，
-    // 含义：(r,c) 与 右侧 / 下侧 邻居有「连续」
-    for (var r = 0; r < size; r++) {
-      for (var c = 0; c < size - 1; c++) {
-        if (rng.nextDouble() < ratio) marks[r][c] = 'o';
+  /// 连续：只标「解里真的差 1」的相邻对，再按比例抽一部分。
+  List<List<String>> _makeConsecutiveMarks(
+      SudokuBoard full, double ratio, math.Random rng) {
+    final n = full.size;
+    final marks = List.generate(n, (_) => List.filled(n, ''));
+    for (var r = 0; r < n; r++) {
+      for (var c = 0; c < n - 1; c++) {
+        final d = (full.cells[r][c] - full.cells[r][c + 1]).abs();
+        if (d == 1 && rng.nextDouble() < ratio) marks[r][c] = 'o';
       }
     }
     return marks;
   }
 
-  /// 箭头：在合法解上随机画 4~5 个箭头（每个圆球带 2~3 格路径）
-  List<ArrowDef> _makeArrows(int size, math.Random rng) {
+  /// 箭头：**在合法解上**挑出「路径和 = 球值」的形状。
+  ///
+  /// v2.3.1 修：旧实现随便画个球、随便走两格，跟解里的数字毫无关系 ——
+  /// 用户照正确答案填，箭头永远对不上（校验必错）。
+  ///
+  /// 现在的做法：先随机走一条 2~3 格的路径，算出路径和 sum；
+  /// 再在路径起点旁边找一个「值正好等于 sum」的格子当球。
+  List<ArrowDef> _makeArrows(SudokuBoard full, math.Random rng) {
+    final n = full.size;
+    final used = List.generate(n, (_) => List.filled(n, false));
     final out = <ArrowDef>[];
-    final used = <List<bool>>[];
-    for (var r = 0; r < size; r++) {
-      used.add(List.filled(size, false));
-    }
     var tries = 0;
-    while (out.length < 5 && tries++ < 200) {
-      final br = rng.nextInt(size);
-      final bc = rng.nextInt(size);
-      if (used[br][bc]) continue;
-      final pathLen = 2 + rng.nextInt(2);
-      final path = <List<int>>[];
-      var pr = br, pc = bc;
-      var pathTries = 0;
-      while (path.length < pathLen && pathTries++ < 30) {
-        // 沿一个方向走
-        final dir = rng.nextInt(4);
-        final dr = [0, 0, 1, -1][dir];
-        final dc = [1, -1, 0, 0][dir];
-        final nr = pr + dr, nc = pc + dc;
-        if (nr < 0 || nr >= size || nc < 0 || nc >= size) continue;
-        if (used[nr][nc]) continue;
-        if (path.any((c) => c[0] == nr && c[1] == nc)) continue;
-        pr = nr;
-        pc = nc;
-        path.add([nr, nc]);
+    while (out.length < 4 && tries++ < 800) {
+      final sr = rng.nextInt(n), sc = rng.nextInt(n);
+      if (used[sr][sc]) continue;
+
+      final path = <List<int>>[
+        [sr, sc]
+      ];
+      var pr = sr, pc = sc;
+      final wantLen = 2 + rng.nextInt(2);
+      while (path.length < wantLen) {
+        final dirs = List<int>.generate(4, (i) => i)..shuffle(rng);
+        var moved = false;
+        for (final d in dirs) {
+          final nr = pr + [0, 0, 1, -1][d];
+          final nc = pc + [1, -1, 0, 0][d];
+          if (nr < 0 || nr >= n || nc < 0 || nc >= n) continue;
+          if (used[nr][nc]) continue;
+          if (path.any((c) => c[0] == nr && c[1] == nc)) continue;
+          pr = nr;
+          pc = nc;
+          path.add([nr, nc]);
+          moved = true;
+          break;
+        }
+        if (!moved) break;
       }
       if (path.length < 2) continue;
-      // 用 ArrowDef class 包，类型清晰（Dart 推断不再塌成 List<int>）
-      out.add(ArrowDef([br, bc], List<List<int>>.from(path)));
+
+      var sum = 0;
+      for (final c in path) {
+        sum += full.cells[c[0]][c[1]];
+      }
+      if (sum > n) continue;
+
+      // 球必须与路径起点相邻（这样画出来是一条连着的箭头）
+      final cands = <List<int>>[];
+      for (var dr = -1; dr <= 1; dr++) {
+        for (var dc = -1; dc <= 1; dc++) {
+          if (dr == 0 && dc == 0) continue;
+          final br = path.first[0] + dr, bc = path.first[1] + dc;
+          if (br < 0 || br >= n || bc < 0 || bc >= n) continue;
+          if (used[br][bc]) continue;
+          if (path.any((c) => c[0] == br && c[1] == bc)) continue;
+          if (full.cells[br][bc] == sum) cands.add([br, bc]);
+        }
+      }
+      if (cands.isEmpty) continue;
+
+      final ball = cands[rng.nextInt(cands.length)];
+      out.add(ArrowDef(ball, List<List<int>>.from(path)));
+      used[ball[0]][ball[1]] = true;
       for (final c in path) {
         used[c[0]][c[1]] = true;
       }
-      used[br][bc] = true;
     }
     return out;
   }
@@ -1064,8 +1338,8 @@ class _SudokuPageState extends State<SudokuPage> {
     _applyNumber(_selR, _selC, v);
   }
 
-  /// 每个数字在整个盘里该出现几次：9×9 = 9，9×6（不等式）= 6
-  int get _perNumber => _type.height;
+  /// 每个数字在整个盘里该出现几次 = 边长（每行/每列各一次）。
+  int get _perNumber => _board?.size ?? _type.size;
 
   void _applyNumber(int r, int c, int v) {
     final b = _board!;
@@ -1342,15 +1616,13 @@ class _SudokuPageState extends State<SudokuPage> {
         ),
       );
     }
-    final n = b.size;
-    // 不等式是 9 列 6 行；其它都是正方形
-    final ratio = _type == SudokuType.greater ? n / 6 : 1.0;
+    // v2.3.1：所有题型现在都是方阵（不等式从 9×6 改成 6×6）
     return Padding(
       // 贴屏幕边：左右只留 2，宫格能有多大就多大（用户明确要求）
       padding: const EdgeInsets.fromLTRB(2, 2, 2, 2),
       child: Center(
         child: AspectRatio(
-          aspectRatio: ratio,
+          aspectRatio: 1,
           child: _SudokuGrid(
             board: b,
             rules: _rules!,
@@ -1594,7 +1866,7 @@ class _SudokuGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final n = board.size;
-    final height = rules.type == SudokuType.greater ? 6 : n;
+    final height = n; // v2.3.1：全部是方阵
 
     // 颜色
     final scheme = Theme.of(context).colorScheme;
@@ -1690,13 +1962,17 @@ class _SudokuGrid extends StatelessWidget {
     final v = board.cells[r][c];
     final isFixed = board.fixed[r][c];
     final n = board.size;
-    // 边框：3×3 宫 / 6×6 子宫需要粗线。锯齿模式例外 —— 标准宫线全部压掉，
-    // 只留细网格，宫界交给锯齿绘制层。
+    // 边框：宫界线按本题型的宫大小算（4×4 → 2×2、6×6 → 2 行 × 3 列、
+    // 9×9 → 3×3）。锯齿模式例外 —— 标准宫线全部压掉，只留细网格，
+    // 宫界交给锯齿绘制层。
+    final boxR = rules.boxRows;
+    final boxC = rules.boxCols;
+    final thickTop = !isJigsaw && r > 0 && r % boxR == 0;
+    final thickLeft = !isJigsaw && c > 0 && c % boxC == 0;
     final isRightThick = !isJigsaw &&
-        (c == n - 1 || (n % 3 == 0 && (c + 1) % 3 == 0 && c != n - 1));
+        (c == n - 1 || (((c + 1) % boxC == 0) && c != n - 1));
     final isBottomThick = !isJigsaw &&
-        (r == board.size - 1 ||
-            (n % 3 == 0 && (r + 1) % 3 == 0 && r != n - 1));
+        (r == n - 1 || (((r + 1) % boxR == 0) && r != n - 1));
 
     // 检查当前值是否违反规则（仅对**用户填入**的格提示，fixed 的略过）
     bool _isIllegal = false;
@@ -1754,21 +2030,13 @@ class _SudokuGrid extends StatelessWidget {
         decoration: BoxDecoration(
           color: cellBg,
           border: Border(
-            // v2.2.0：锯齿模式下 top/left 的「每 3 格一条粗线」也一并压掉
+            // v2.3.1：宫界线按本题型的宫大小算（原来写死每 3 格的）
             top: BorderSide(
-                color: !isJigsaw && r > 0 && (r % 3 == 0) && n % 3 == 0
-                    ? thickColor
-                    : lineColor,
-                width: !isJigsaw && r > 0 && (r % 3 == 0) && n % 3 == 0
-                    ? 1.5
-                    : 0.5),
+                color: thickTop ? thickColor : lineColor,
+                width: thickTop ? 1.5 : 0.5),
             left: BorderSide(
-                color: !isJigsaw && c > 0 && (c % 3 == 0) && n % 3 == 0
-                    ? thickColor
-                    : lineColor,
-                width: !isJigsaw && c > 0 && (c % 3 == 0) && n % 3 == 0
-                    ? 1.5
-                    : 0.5),
+                color: thickLeft ? thickColor : lineColor,
+                width: thickLeft ? 1.5 : 0.5),
             right: BorderSide(
                 color: isRightThick ? thickColor : lineColor, width: isRightThick ? 1.5 : 0.5),
             bottom: BorderSide(
@@ -1817,14 +2085,14 @@ class _SudokuGrid extends StatelessWidget {
   }
 
   /// (r,c) 是不是和选中格同行 / 同列 / 同宫。
-  /// 锯齿宫按真实宫界算，其它按矩形宫（不等式是 2 行 × 3 列）。
+  /// 锯齿宫按真实宫界算，其它按本题型的矩形宫。
   bool _isPeer(int r, int c, bool isJigsaw, List<List<int>>? regionOf) {
     if (r == selR || c == selC) return true;
     if (isJigsaw && regionOf != null) {
       return regionOf[r][c] == regionOf[selR][selC];
     }
-    final bh = rules.type == SudokuType.greater ? 2 : 3;
-    return r ~/ bh == selR ~/ bh && c ~/ 3 == selC ~/ 3;
+    return r ~/ rules.boxRows == selR ~/ rules.boxRows &&
+        c ~/ rules.boxCols == selC ~/ rules.boxCols;
   }
 
   // ---------- 笼子（杀手） ----------
