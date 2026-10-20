@@ -938,11 +938,17 @@ class WatermarkEditorPage extends StatefulWidget {
   /// 相机页拍完直接进来时置 true：画面渲染好就自动存一张。
   final bool autoSave;
 
+  /// v2.3.2：取景页当时是不是「横屏水印」模式。拍照保存时合成必须跟
+  /// 取景预览一致 —— 之前编辑页不知道这个状态，横屏摆好的水印拍出来
+  /// 又回到竖屏位置（用户点名的问题）。
+  final bool landscape;
+
   const WatermarkEditorPage({
     super.key,
     required this.paths,
     required this.settings,
     this.autoSave = false,
+    this.landscape = false,
   });
 
   @override
@@ -1295,6 +1301,20 @@ class _WatermarkEditorPageState extends State<WatermarkEditorPage> {
     // 缩放按**短边**算：竖图水印不至于太小，横图也不至于把画面盖住一半
     final shortSide = canvasH < _canvasW ? canvasH : _canvasW;
     final scale = (shortSide / _baseW).clamp(0.55, 3.2).toDouble();
+
+    // v2.3.2：横屏水印模式 —— 跟取景预览一致，整块顺时针转 90°、
+    // 贴画布左上角。RotatedBox 参与布局，占位按旋转后算，不会越界。
+    if (widget.landscape) {
+      return Positioned(
+        left: pad,
+        top: pad,
+        child: RotatedBox(
+          quarterTurns: 1,
+          child: WmView(s: _s, scale: scale),
+        ),
+      );
+    }
+
     return Positioned(
       left: pad,
       bottom: pad,
@@ -1361,6 +1381,13 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // v2.3.2：把方向**锁死竖屏**。用户点名「旋转手机时系统还会弹那个
+    // 转横屏的小按钮」—— 那是系统的旋转建议（Android 在「方向锁定开着 +
+    // 应用允许跟随系统旋转」时才会弹）。这一页本来就一步都不转屏
+    // （横屏只是水印换摆法），锁死竖屏既不影响任何功能，又让系统
+    // 彻底不再弹那个建议按钮。退出时恢复 []（跟随系统）。
+    SystemChrome.setPreferredOrientations(
+        <DeviceOrientation>[DeviceOrientation.portraitUp]);
     _initCam();
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _shooting) return;
@@ -1376,6 +1403,8 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
     final c = _cam;
     _cam = null;
     c?.dispose();
+    // 恢复跟随系统方向（[] = 不限制）
+    SystemChrome.setPreferredOrientations(<DeviceOrientation>[]);
     super.dispose();
   }
 
@@ -1595,6 +1624,8 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
         // 传副本：编辑页里改时间地点不会污染取景画面的水印
         settings: _s.copy(),
         autoSave: true,
+        // v2.3.2：横屏水印拍出来也要在横屏位置（跟取景预览一致）
+        landscape: _landscape,
       ));
     } catch (e) {
       _snack(context, '拍照失败：$e');
@@ -1611,6 +1642,7 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
       await _pushEditor(WatermarkEditorPage(
         paths: list.map((e) => e.path).toList(),
         settings: _s.copy(),
+        landscape: _landscape,
       ));
       if (mounted) setState(() {});
     } catch (e) {

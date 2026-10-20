@@ -9,6 +9,7 @@ import '../../providers/providers.dart';
 import 'download_site_page.dart';
 import 'server_html_tools.dart';
 import 'tool_pages.dart';
+import 'tool_pages_advcalc.dart';
 import 'tool_pages_calc.dart';
 import 'tool_pages_compass.dart';
 import 'tool_pages_convert.dart';
