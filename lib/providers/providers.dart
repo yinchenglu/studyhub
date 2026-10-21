@@ -156,6 +156,9 @@ class AccountNotifier extends StateNotifier<AccountState> {
 
   Future<void> logout() async {
     await SettingsStore.instance.logout();
+    // v2.3.4：换账号 / 换服务器时把「逻辑目录 → 真实目录」的映射清掉，
+    // 否则新服务器还在用上一台的目录名去请求。
+    AppDirs.resetFolders();
     state = state.copyWith(clearAccount: true);
   }
 }

@@ -16,6 +16,145 @@ class AppDirs {
 
   static const List<String> all = [notes, media, quiz, tools, download, backup];
 
+  // ---------------------------------------------------------- 目录适配（v2.3.4）
+
+  /// 每个逻辑目录**认哪些真实文件夹名**（英文一律不区分大小写）。
+  ///
+  /// 来历（用户原话）：「现在笔记适配的 notes，视频图片适配的 media，
+  /// 题库适配的 quiz 文件夹等，要求增加适配：笔记 → notes、Documents、
+  /// 笔记、文档、文档笔记、1 文档笔记…」。
+  ///
+  /// 也就是说 NAS 上的目录不一定叫 notes，可能是「1 文档笔记」「Documents」，
+  /// 也可能带序号前缀。这里把能认的名字都列出来，连上服务器后由
+  /// [resolveFolders] 按根目录实际存在的文件夹名挑出真正的那个。
+  ///
+  /// 匹配顺序：① 与逻辑名完全一致 → ② 去掉序号前缀后与别名完全一致 →
+  /// ③ 去掉序号前缀后「包含」某个别名（长别名优先）。
+  /// 这样「1 文档笔记」既命中「文档笔记」，「我的笔记备份」也能命中「笔记」。
+  static const Map<String, List<String>> aliases = {
+    notes: [
+      'notes', 'note', 'document', 'documents', 'doc', 'docs',
+      '笔记', '文档', '文档笔记', '记事', '记事本',
+    ],
+    media: [
+      'media', 'medias', 'video', 'videos', 'movie', 'movies',
+      '视频', '图片', '视频图片', '音视频', '影音', '媒体',
+    ],
+    quiz: [
+      'quiz', 'quizzes', 'exam', '题库', '刷题', '题库刷题', '题目', '试题',
+    ],
+    tools: [
+      'tools', 'tool', '工具', '软件工具', 'html工具', '小工具', '资源',
+    ],
+    download: [
+      'download', 'downloads', '下载', '文件下载', '下载站',
+    ],
+    backup: [
+      'backup', 'backups', '备份',
+    ],
+  };
+
+  /// 逻辑名 → 服务器上的真实文件夹名（连上服务器后自动填）
+  static final Map<String, String> _realNames = {};
+
+  /// 真实文件夹名 → 逻辑名（列表回读时用它把路径还原成逻辑路径）
+  static final Map<String, String> _logicalNames = {};
+
+  /// 这份映射是对哪个根目录（account.root）认出来的
+  static String _resolvedFor = '';
+
+  static bool get foldersResolved => _realNames.isNotEmpty;
+  static String get resolvedFor => _resolvedFor;
+
+  /// 逻辑目录 → 真实目录名；认不出来就当它本来就叫这个
+  static String realName(String logical) => _realNames[logical] ?? logical;
+
+  /// 真实目录名 → 逻辑目录名；不是受管目录就原样返回
+  static String logicalName(String real) => _logicalNames[real] ?? real;
+
+  /// 去掉「1 」「(2)」「01-」这类序号前缀、全角数字转半角、统一小写，
+  /// 用来做别名比对。
+  static String normalizeFolder(String raw) {
+    final buf = StringBuffer();
+    for (final r in raw.trim().toLowerCase().runes) {
+      if (r >= 0xFF10 && r <= 0xFF19) {
+        buf.writeCharCode(r - 0xFEE0); // 全角０-９ → 半角
+      } else if (r == 0x3000) {
+        buf.write(' ');
+      } else {
+        buf.writeCharCode(r);
+      }
+    }
+    var s = buf.toString();
+    // 序号前缀：1 / 1. / 1、 / (1) / 【1】 / 1- / 1_
+    s = s.replaceFirst(RegExp(r'^[\(\[（【]?\s*\d+\s*[\)\]）】]?[\s\.\-_、·:：]*'), '');
+    return s.trim();
+  }
+
+  /// 从根目录的文件夹名里认出每个逻辑目录对应的真实名字。
+  ///
+  /// [forRoot] 只用来记「这份映射是给哪个根目录认的」，方便换服务器时重认。
+  static void resolveFolders(Iterable<String> folderNames, {String forRoot = ''}) {
+    final names = folderNames.map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    _realNames.clear();
+    _logicalNames.clear();
+    _resolvedFor = forRoot;
+    final used = <String>{};
+
+    for (final logical in all) {
+      final want = aliases[logical] ?? <String>[logical];
+
+      // ① 名字正好等于逻辑名（大小写不敏感）—— 有标准目录就优先用标准的
+      String? hit;
+      for (final n in names) {
+        if (used.contains(n)) continue;
+        if (n.toLowerCase() == logical) {
+          hit = n;
+          break;
+        }
+      }
+
+      // ② 去掉序号前缀后与某个别名完全一致
+      if (hit == null) {
+        for (final n in names) {
+          if (used.contains(n)) continue;
+          if (want.contains(normalizeFolder(n))) {
+            hit = n;
+            break;
+          }
+        }
+      }
+
+      // ③ 退一步：包含某个别名（长别名优先，避免「文档」把「文档笔记」抢走）
+      if (hit == null) {
+        var bestLen = 0;
+        for (final n in names) {
+          if (used.contains(n)) continue;
+          final norm = normalizeFolder(n);
+          for (final a in want) {
+            if (norm.contains(a) && a.length > bestLen) {
+              hit = n;
+              bestLen = a.length;
+            }
+          }
+        }
+      }
+
+      if (hit != null) {
+        used.add(hit);
+        _realNames[logical] = hit;
+        _logicalNames[hit] = logical;
+      }
+    }
+  }
+
+  /// 退出登录 / 换服务器时清掉
+  static void resetFolders() {
+    _realNames.clear();
+    _logicalNames.clear();
+    _resolvedFor = '';
+  }
+
   /// 笔记配图统一放在「笔记所在目录」下的这个子目录里，方便集中管理
   static const String imageDirName = 'image';
 
@@ -203,7 +342,7 @@ class Defaults {
 ///             在 App 启动时如果两个不一致，会在控制台 + 调试页打印告警。
 ///             升级只需：① 改这里的字符串 ② 改 pubspec.yaml。
 ///             也可跑 `python tools/bump_version.py 1.10.0` 一次同步。
-const String kAppVersion = '2.3.3';
+const String kAppVersion = '2.3.4';
 
 /// pubspec.yaml 的 version（去掉 +N 之后必须等于 kAppVersion）。
 /// 启动时会在 main() 里 assert，保证两个一致。
@@ -211,4 +350,4 @@ const String kAppVersion = '2.3.3';
 ///
 /// v1.9.0+17 修：bump_version.py 之前**只改 kAppVersion 不改 kPubspecVersion**，
 /// 会让启动 assert 失败。这里把 bump_version.py 一起修了（见 bump_version.py）。
-const String kPubspecVersion = '2.3.3+58';
+const String kPubspecVersion = '2.3.4+59';

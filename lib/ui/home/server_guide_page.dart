@@ -72,6 +72,11 @@ class ServerGuidePage extends StatelessWidget {
                   const _Bullet('html 小工具：tools/ 里一个子文件夹一个分类，根目录下散放的 .html 单独归到「独立小工具」。'),
                   const _Bullet('没有的目录不影响使用，App 会提示缺少哪些，你在服务器上补建即可。'),
                   const _Bullet('目录想改名、加子分类都随意，App 每次打开都会重新读服务器结构。'),
+                  const _Bullet(
+                    '目录名不用非得叫 notes / media —— 叫 Documents、笔记、文档笔记、1 文档笔记、'
+                    '视频图片、2 视频图片、题库刷题、软件工具、文件下载 这些也都认（英文不分大小写，'
+                    '前面的序号会自动忽略）；一个目录只归一类，认准了就固定用它。',
+                  ),
                   const _Bullet('群晖（WebDAV Server）读写与拖进度都完整；chfs 等工具的部分版本目录遍历不全，App 会自动降级处理。'),
                 ],
               ),

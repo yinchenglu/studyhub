@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:xml/xml.dart';
 
+import '../../core/constants.dart';
 import '../models/models.dart';
 
 /// WebDAV 统一错误
@@ -65,9 +66,83 @@ class WebDavClient {
   List<String> get _rootSegments =>
       account.root.split('/').where((e) => e.trim().isNotEmpty).toList();
 
+  /// 认目录名的进行中任务（多个页面同时打开时共用同一次请求）
+  Future<void>? _foldersFuture;
+
+  /// 已经为哪个根目录尝试过认名字（失败也不要每次列目录都重试一遍）
+  /// null = 还没试过（注意不能用 '' 当哨兵：root 本身可能就是空串）
+  String? _foldersTried;
+
+  /// 认一遍根目录里的文件夹名：notes / Documents / 笔记 / 1 文档笔记 都认
+  /// （v2.3.4 目录适配）。
+  ///
+  /// 为什么放在客户端里做：App 内部（含本地数据库）一律用逻辑名，
+  /// 只有真正发请求时才换名，见 [_toServerPath]。
+  ///
+  /// 用「共享同一个 Future」而不是一个 bool 标记：笔记页、媒体页可能
+  /// 同时被打开，如果第二次直接返回，它会拿着还没建好的映射去请求
+  /// 真实目录名，结果就是 404。
+  Future<void> _ensureFolders() async {
+    // 有正在进行的请求就等它（并发打开多个页面时不会各自发一遍，也不会漏等）
+    final running = _foldersFuture;
+    if (running != null) {
+      await running;
+      return;
+    }
+    if (AppDirs.foldersResolved && AppDirs.resolvedFor == account.root) return;
+    if (_foldersTried == account.root) return;
+
+    final job = _resolveFolders();
+    _foldersFuture = job;
+    try {
+      await job;
+    } finally {
+      // 只清自己那一次，避免把别人新发起的请求抹掉
+      if (identical(_foldersFuture, job)) _foldersFuture = null;
+    }
+  }
+
+  Future<void> _resolveFolders() async {
+    _foldersTried = account.root;
+    try {
+      final entries = await _propfind('', depth: 1);
+      AppDirs.resolveFolders(
+        entries.where((e) => e.isDir).map((e) => e.name),
+        forRoot: account.root,
+      );
+    } catch (_) {
+      // 列不到根目录就按默认名走，别让整个 App 打不开
+    }
+  }
+
+  /// 逻辑路径 → 服务器真实路径（只换第一段目录名）
+  String _toServerPath(String rel) {
+    if (rel.isEmpty) return rel;
+    final i = rel.indexOf('/');
+    final head = i < 0 ? rel : rel.substring(0, i);
+    final real = AppDirs.realName(head);
+    if (real == head) return rel;
+    return i < 0 ? real : '$real${rel.substring(i)}';
+  }
+
+  /// 服务器真实路径 → 逻辑路径（列目录回读时用，保证上层看到的还是逻辑名）
+  String _toLogicalPath(String rel) {
+    if (rel.isEmpty) return rel;
+    final i = rel.indexOf('/');
+    final head = i < 0 ? rel : rel.substring(0, i);
+    final logical = AppDirs.logicalName(head);
+    if (logical == head) return rel;
+    return i < 0 ? logical : '$logical${rel.substring(i)}';
+  }
+
   /// 相对资料根的路径 → 服务器上的绝对路径（未编码）
+  ///
+  /// v2.3.4：这里统一做一次「逻辑目录 → 真实目录」的替换。App 内部一律用
+  /// notes / media / quiz 这些逻辑名（本地数据库里存的也是逻辑路径），
+  /// 只有真正发请求时才换成服务器上的「1 文档笔记」这种名字，
+  /// 这样四十多处拼路径的代码一行都不用改。
   String _absolute(String rel) {
-    final r = rel.replaceAll(RegExp(r'^/+|/+$'), '');
+    final r = _toServerPath(rel.replaceAll(RegExp(r'^/+|/+$'), ''));
     final root = '/' + _rootSegments.join('/');
     if (_rootSegments.isEmpty) return r.isEmpty ? '/' : '/$r';
     return r.isEmpty ? root : '$root/$r';
@@ -92,6 +167,7 @@ class WebDavClient {
 
   /// 列出某个相对目录下的条目。depth=1 只列当前层，depth=infinity 递归
   Future<List<DavEntry>> list(String rel, {int depth = 1}) async {
+    await _ensureFolders();
     final entries = await _propfind(rel, depth: depth);
     if (depth == 1 && entries.length <= 1) {
       // 服务器可能不支持 Depth:1（chfs 常见）→ 尝试 infinity，再不行就标记降级
@@ -239,7 +315,8 @@ class WebDavClient {
       }
       segs.removeRange(0, root.length);
     }
-    return segs.join('/');
+    // v2.3.4：把服务器上的真实目录名换回逻辑名（「1 文档笔记/xx.md」→「notes/xx.md」）
+    return _toLogicalPath(segs.join('/'));
   }
 
   // ---------------------------------------------------------------- 读
@@ -250,6 +327,7 @@ class WebDavClient {
   }
 
   Future<Uint8List> readBytes(String rel) async {
+    await _ensureFolders();
     try {
       final resp = await _dio.get<List<int>>(
         urlFor(rel),
@@ -267,6 +345,7 @@ class WebDavClient {
 
   /// 文件是否存在
   Future<bool> exists(String rel) async {
+    await _ensureFolders();
     try {
       final resp = await _dio.head(urlFor(rel), options: Options(validateStatus: (s) => s != null && s < 500));
       return (resp.statusCode ?? 0) < 400;
@@ -281,6 +360,7 @@ class WebDavClient {
       writeBytes(rel, Uint8List.fromList(utf8.encode(content)), contentType: 'text/markdown; charset=utf-8');
 
   Future<void> writeBytes(String rel, Uint8List bytes, {String? contentType}) async {
+    await _ensureFolders();
     try {
       final abs = _absolute(rel);
       // 目标目录不存在时先建（chfs / 部分服务器 PUT 不会自动建目录）
@@ -325,6 +405,7 @@ class WebDavClient {
     void Function(int sent, int total)? onProgress,
     CancelToken? cancelToken,
   }) async {
+    await _ensureFolders();
     try {
       final abs = _absolute(rel);
       // 目标目录不存在时先建（chfs / 部分服务器 PUT 不会自动建目录）
@@ -382,6 +463,7 @@ class WebDavClient {
   }
 
   Future<void> delete(String rel) async {
+    await _ensureFolders();
     try {
       final resp = await _dio.delete<void>(urlFor(rel), options: Options(validateStatus: (s) => s != null && s < 500));
       final code = resp.statusCode ?? 0;
@@ -395,6 +477,7 @@ class WebDavClient {
 
   /// 重命名 / 移动
   Future<void> move(String fromRel, String toRel) async {
+    await _ensureFolders();
     try {
       final dest = urlFor(toRel);
       final resp = await _dio.request<void>(
@@ -430,9 +513,12 @@ class WebDavClient {
     total = rootEntries.length;
 
     // 2. 缺哪些标准目录
+    //    v2.3.4：列目录回读时已经把「真实名」换回「逻辑名」了（1 文档笔记 → notes），
+    //    所以这里按逻辑名比对即可；万一目录名没认出来（映射为空），
+    //    再用真实名兜一次，避免误报「缺少 notes」。
     final names = rootEntries.where((e) => e.isDir).map((e) => e.name).toSet();
     for (final d in AppDirsConst.fixedDirs) {
-      if (!names.contains(d)) missing.add(d);
+      if (!names.contains(d) && !names.contains(AppDirs.realName(d))) missing.add(d);
     }
 
     // 3. 写入测试
