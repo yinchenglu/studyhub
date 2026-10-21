@@ -438,7 +438,15 @@ class WebDavClient {
   }
 
   /// 逐级建目录，已存在会静默跳过
-  Future<void> ensureDir(String rel) => ensureDirAbsolute(_absolute(rel));  Future<void> ensureDirAbsolute(String absPath) async {
+  ///
+  /// v2.3.4：先认一遍根目录名，否则「服务器上叫 1 文档笔记」时会在根目录
+  /// 新建出一个多余的 notes。
+  Future<void> ensureDir(String rel) async {
+    await _ensureFolders();
+    await ensureDirAbsolute(_absolute(rel));
+  }
+
+  Future<void> ensureDirAbsolute(String absPath) async {
     final segs = absPath.split('/').where((e) => e.isNotEmpty).toList();
     var cur = '';
     for (final s in segs) {
