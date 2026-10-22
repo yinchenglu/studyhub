@@ -244,8 +244,9 @@ class WebDavClient {
       }
       if (href == null || href.isEmpty) continue;
 
-      final rel = _hrefToRel(href);
-      if (rel == null) continue;
+      final segs = _hrefSegs(href);
+      if (segs == null) continue;
+      final rel = _toLogicalPath(segs.join('/'));
       if (rel == selfRel) continue; // 跳过目录自身
       final name = rel.contains('/') ? rel.substring(rel.lastIndexOf('/') + 1) : rel;
       if (name.isEmpty || name.startsWith('.')) continue; // 跳过临时文件
@@ -259,6 +260,9 @@ class WebDavClient {
         size: int.tryParse(sizeTxt ?? '') ?? 0,
         modified: _parseDate(modTxt),
         contentType: _inner(resp, 'getcontenttype'),
+        // v2.3.5：真实名（服务器上的原名，不做逻辑名替换）——
+        // 「StudyHub 根目录」要按服务器文件系统显示，见 ServerFilesPage
+        realName: segs.isEmpty ? null : segs.last,
       ));
     }
 
@@ -289,6 +293,17 @@ class WebDavClient {
 
   /// 把 href 转成「相对资料根目录」的路径；不属于本根目录的返回 null
   String? _hrefToRel(String href) {
+    final segs = _hrefSegs(href);
+    if (segs == null) return null;
+    // v2.3.4：把服务器上的真实目录名换回逻辑名（「1 文档笔记/xx.md」→「notes/xx.md」）
+    return _toLogicalPath(segs.join('/'));
+  }
+
+  /// href → 相对资料根目录的**真实**路径段（不做逻辑名替换）。
+  ///
+  /// v2.3.5 从 [_hrefToRel] 里拆出来的：列表既要逻辑名（内部到处在拼路径），
+  /// 也要真实名（根目录浏览要照实显示），一次解析出两样，别解析两遍。
+  List<String>? _hrefSegs(String href) {
     String path;
     if (href.startsWith('http://') || href.startsWith('https://')) {
       path = Uri.parse(href).path;
@@ -315,8 +330,7 @@ class WebDavClient {
       }
       segs.removeRange(0, root.length);
     }
-    // v2.3.4：把服务器上的真实目录名换回逻辑名（「1 文档笔记/xx.md」→「notes/xx.md」）
-    return _toLogicalPath(segs.join('/'));
+    return segs;
   }
 
   // ---------------------------------------------------------------- 读

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
+import '../../core/natural_sort.dart';
 import '../../core/sort_utils.dart';
 import '../../core/utils.dart';
 import '../../data/dav/webdav_client.dart';
@@ -95,7 +96,10 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
           await client.list(joinPath(_root, _sub), depth: 1);
       // v1.9.0：服务器小工具目录用 sortEntries 排序，名称按自然排序，
       // 「1.xxx」前缀的工具自动排到第一位。
-      final sorted = sortEntries(entries, const SortPref());
+      //
+      // v2.3.5：**根目录**改按服务器真实名排序 —— 目录适配会把
+      // 「1 文档笔记」显示成 notes，拿逻辑名排就跟服务器上的顺序对不上了。
+      final sorted = _sort(entries);
       if (!mounted) return;
       setState(() {
         _entries = sorted;
@@ -110,9 +114,34 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
     }
   }
 
+  /// 列表排序。
+  ///
+  /// * 速查表（tools）等子目录：沿用 [sortEntries] 的规则（「1.xxx」置顶、
+  ///   按名称自然排序、目录在前）。
+  /// * **根目录**（v2.3.5）：按服务器上的真实名称排序。
+  ///   根目录要照实反映服务器结构，用户手工编的「1 文档笔记」序号
+  ///   只有按真实名排才排得对 —— 换成逻辑名 notes/media 反而乱。
+  List<DavEntry> _sort(List<DavEntry> entries) {
+    if (_root.isNotEmpty) return sortEntries(entries, const SortPref());
+    final out = List<DavEntry>.from(entries);
+    out.sort((a, b) {
+      if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+      return naturalCompare(a.realName ?? a.name, b.realName ?? b.name);
+    });
+    return out;
+  }
+
+  /// 列表显示的名字。
+  ///
+  /// * 根目录：**显示服务器上的真实名**（用户第 5 条要求）。
+  ///   目录适配之后 `e.name` 是逻辑名（notes / media），照它显示
+  ///   会让人以为服务器上真有个叫 notes 的文件夹。
+  /// * 其它目录：去掉「1.」「2、」这类序号前缀（v1.7.0 的老规矩）。
+  String _displayName(DavEntry e) =>
+      _root.isEmpty ? (e.realName ?? e.name) : stripLeadingNumber(e.name);
+
   /// 从条目路径算出「相对浏览根」的子路径
-  String _subOf(String path) {
-    if (_root.isEmpty) return path.replaceAll(RegExp(r'^/+'), '');
+  String _subOf(String path) {    if (_root.isEmpty) return path.replaceAll(RegExp(r'^/+'), '');
     final p = path.replaceAll(RegExp(r'^/+'), '');
     return p.startsWith('$_root/') ? p.substring(_root.length + 1) : p;
   }
@@ -127,7 +156,20 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Scaffold(
+    // v2.3.5（用户第 5 条）：系统返回键在子目录里要先回上一级，
+    // 不能一步把这个页面 pop 掉。
+    //
+    // 之前只有「服务器下载站」套了 PopScope，这一页（根目录 / 速查表）
+    // 是直接 push 出来的独立路由，进到子目录后按返回键会整个退回工具菜单，
+    // 中间的层级全被跳过 —— 和下载站的行为不一致。
+    // 动态 canPop：根目录放行（正常退出页面），子目录拦下（只回上一级）。
+    return PopScope(
+      canPop: _atRoot,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _up();
+      },
+      child: Scaffold(
       appBar: AppBar(
         leading: _atRoot
             ? null
@@ -224,7 +266,7 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
                               e.isDir ? Icons.folder_outlined : _iconForExt(FileTypes.ext(e.name)),
                               color: e.isDir ? const Color(0xFF72243E) : scheme.primary,
                             ),
-                            title: Text(stripLeadingNumber(e.name), maxLines: 1, overflow: TextOverflow.ellipsis),
+                            title: Text(_displayName(e), maxLines: 1, overflow: TextOverflow.ellipsis),
                             subtitle: Text(
                               e.isDir ? '文件夹' : '${formatBytes(e.size)}${e.modified == null ? '' : ' · ${formatTime(e.modified)}'}',
                               style: const TextStyle(fontSize: 12),
@@ -240,6 +282,7 @@ class _ServerFilesPageState extends ConsumerState<ServerFilesPage> {
                         },
                       ),
                     ),
+      ),
     );
   }
 

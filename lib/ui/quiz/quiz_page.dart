@@ -341,7 +341,7 @@ class QuizPageState extends ConsumerState<QuizPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(n.entry.name, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+                      Text(quizDisplayName(n.entry.name), style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
                       const SizedBox(height: 3),
                       Text(
                         n.count > 0 ? '${n.count} 套题库' : '子目录',

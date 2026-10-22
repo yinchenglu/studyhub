@@ -52,12 +52,23 @@ class DavEntry {
   final DateTime? modified;
   final String? contentType;
 
+  /// 服务器上的**真实名字**（v2.3.5）。
+  ///
+  /// [path] 里的第一段会被目录适配换成逻辑名（`1 文档笔记` → `notes`），
+  /// 平时显示逻辑名挺好，但「StudyHub 根目录」这种要照着服务器文件系统看的
+  /// 地方，用户要看的是真实名字。所以列表回来时顺手留一份原名。
+  ///
+  /// 只在列目录时由 WebDAV 客户端填；手工构造的 DavEntry 为 null，
+  /// 显示处一律 `e.realName ?? e.name`。
+  final String? realName;
+
   const DavEntry({
     required this.path,
     required this.isDir,
     this.size = 0,
     this.modified,
     this.contentType,
+    this.realName,
   });
 
   String get name {

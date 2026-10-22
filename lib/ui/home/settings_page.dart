@@ -29,7 +29,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   double _speed = 1.0;
   int _cacheLimit = 2048;
   bool _busy = false;
-  bool _saveHistory = true;
+  // v2.3.5：原来的「保存浏览记录」总开关拆成三个，默认全开
+  bool _saveNote = true;
+  bool _saveVideo = true;
+  bool _saveQuiz = true;
   String _downloadDir = '';
   // v1.9.0：笔记目录要隐藏的文件夹名（逗号分隔字符串）
   String _noteHiddenDirs = 'image';
@@ -48,7 +51,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final dl = await CacheManager.instance.downloadSize();
     final sp = await SettingsStore.instance.playbackSpeed();
     final limit = await SettingsStore.instance.cacheLimitMb();
-    final saveHist = await SettingsStore.instance.saveViewHistory();
+    final saveNote = await SettingsStore.instance.saveNoteHistory();
+    final saveVideo = await SettingsStore.instance.saveVideoHistory();
+    final saveQuiz = await SettingsStore.instance.saveQuizHistory();
     final dlDir = await CacheManager.instance.downloadDirPath();
     final autoHide = await SettingsStore.instance.autoHidePlayerUi();
     // v1.9.0：笔记隐藏目录（显示成 csv）—— 必须在 setState 外面 await，
@@ -60,7 +65,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _downloadBytes = dl;
       _speed = sp;
       _cacheLimit = limit;
-      _saveHistory = saveHist;
+      _saveNote = saveNote;
+      _saveVideo = saveVideo;
+      _saveQuiz = saveQuiz;
       _downloadDir = dlDir;
       _autoHideUi = autoHide;
       _noteHiddenDirs = hiddenCsv;
@@ -505,13 +512,35 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ),
                 const Divider(height: 1),
                 SwitchListTile(
-                  secondary: const Icon(Icons.history_outlined),
-                  title: const Text('保存浏览记录'),
-                  subtitle: const Text('关掉后不再记录观看进度，「最近浏览」也不再新增'),
-                  value: _saveHistory,
+                  secondary: const Icon(Icons.article_outlined),
+                  title: const Text('保存文档记录'),
+                  subtitle: const Text('记录打开过哪些笔记、每个目录上次看到哪篇'),
+                  value: _saveNote,
                   onChanged: (v) async {
-                    await SettingsStore.instance.setSaveViewHistory(v);
-                    if (mounted) setState(() => _saveHistory = v);
+                    await SettingsStore.instance.setSaveNoteHistory(v);
+                    if (mounted) setState(() => _saveNote = v);
+                  },
+                ),
+                const Divider(height: 1),
+                SwitchListTile(
+                  secondary: const Icon(Icons.movie_outlined),
+                  title: const Text('保存视频记录'),
+                  subtitle: const Text('记录看到第几分钟，下次接着看；关掉后「最近浏览」不再新增视频'),
+                  value: _saveVideo,
+                  onChanged: (v) async {
+                    await SettingsStore.instance.setSaveVideoHistory(v);
+                    if (mounted) setState(() => _saveVideo = v);
+                  },
+                ),
+                const Divider(height: 1),
+                SwitchListTile(
+                  secondary: const Icon(Icons.quiz_outlined),
+                  title: const Text('保存题库记录'),
+                  subtitle: const Text('记录哪些题刷过了、每套题库刷了多少；错题本不受影响'),
+                  value: _saveQuiz,
+                  onChanged: (v) async {
+                    await SettingsStore.instance.setSaveQuizHistory(v);
+                    if (mounted) setState(() => _saveQuiz = v);
                   },
                 ),
                 const Divider(height: 1),

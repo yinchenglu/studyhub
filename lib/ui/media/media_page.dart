@@ -755,8 +755,10 @@ class MediaPageState extends ConsumerState<MediaPage> {
           maxCrossAxisExtent: _thumbSize + 24, // +24 给 padding / spacing 留余
           mainAxisSpacing: 6,
           crossAxisSpacing: 6,
-          // childAspectRatio 用 0.85：缩略图方块 + 下面留一行文件名
-          childAspectRatio: 0.85,
+          // childAspectRatio 用 0.75：缩略图方块 + 下面留**两行**文件名。
+          // v2.3.5 修：原来是 0.85 + 一行，中文长名字（如「第 3 章 细胞膜的物质运输」）
+          // 在 5~6 列的宽度下只能显示四五个字，用户反馈「文件夹名称显示不全」。
+          childAspectRatio: 0.75,
         ),
         itemCount: shown.length,
         itemBuilder: (ctx, i) {
@@ -788,10 +790,11 @@ class MediaPageState extends ConsumerState<MediaPage> {
             Icon(Icons.folder_rounded, color: const Color(0xFF7F77DD), size: _thumbSize * 0.5),
             const SizedBox(height: 4),
             Text(e.name,
-                maxLines: 1,
+                // v2.3.5：最多两行 —— 窄格子也能把长名字看全，真正过长的才省略
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 11)),
+                style: const TextStyle(fontSize: 11, height: 1.15)),
           ],
         ),
       ),
@@ -839,10 +842,11 @@ class MediaPageState extends ConsumerState<MediaPage> {
             ),
             const SizedBox(height: 3),
             Text(e.name,
-                maxLines: 1,
+                // v2.3.5：最多两行 —— 窄格子也能把长名字看全，真正过长的才省略
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 11)),
+                style: const TextStyle(fontSize: 11, height: 1.15)),
           ],
         ),
       ),

@@ -28,7 +28,13 @@ class SettingsStore {
   static const _kWrongStaySec = 'quiz_wrong_stay_sec';
   static const _kBrowseNextSec = 'quiz_browse_next_sec';
   static const _kLastServerCheck = 'last_server_check';
+  // v2.3.5：原来只有一个「保存浏览记录」总开关（_kSaveHistory），
+  // 用户要求拆成三个独立开关 —— 文档、视频、题库分别控制。
+  // 旧键保留下来做一次迁移：新键没写过时继承旧键的值，读不到才默认 true。
   static const _kSaveHistory = 'save_view_history';
+  static const _kSaveNoteHistory = 'save_note_history';
+  static const _kSaveVideoHistory = 'save_video_history';
+  static const _kSaveQuizHistory = 'save_quiz_history';
   static const _kDownloadDir = 'download_dir';
   static const _kRecentServers = 'recent_servers';
   // v1.8.0 新增：播放时自动隐藏控制栏。默认 **false** —— 见下面的注释。
@@ -410,15 +416,39 @@ class SettingsStore {
 
   // ----------------------------------------------------------- 浏览记录 / 下载目录
 
-  /// 是否记录浏览（播放）记录。关掉后不再写入播放进度，首页「最近浏览」也不再新增
-  Future<bool> saveViewHistory() async {
+  /// 是否记录**笔记**的浏览（打开过哪篇、上次看到哪）。
+  /// 关掉后不再写 notes/ 开头的记录，首页「最近浏览」也不再新增笔记条目。
+  Future<bool> saveNoteHistory() async {
     final p = await _prefs;
-    return p.getBool(_kSaveHistory) ?? true;
+    return p.getBool(_kSaveNoteHistory) ?? p.getBool(_kSaveHistory) ?? true;
   }
 
-  Future<void> setSaveViewHistory(bool v) async {
+  Future<void> setSaveNoteHistory(bool v) async {
     final p = await _prefs;
-    await p.setBool(_kSaveHistory, v);
+    await p.setBool(_kSaveNoteHistory, v);
+  }
+
+  /// 是否记录**视频 / 音频**的播放进度（含从下载站直接播的）。
+  Future<bool> saveVideoHistory() async {
+    final p = await _prefs;
+    return p.getBool(_kSaveVideoHistory) ?? p.getBool(_kSaveHistory) ?? true;
+  }
+
+  Future<void> setSaveVideoHistory(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kSaveVideoHistory, v);
+  }
+
+  /// 是否记录**题库**的刷题进度（哪些题刷过了、刷了多少）。
+  /// 只影响进度统计与「只练没刷过的」，错题本照常记录。
+  Future<bool> saveQuizHistory() async {
+    final p = await _prefs;
+    return p.getBool(_kSaveQuizHistory) ?? p.getBool(_kSaveHistory) ?? true;
+  }
+
+  Future<void> setSaveQuizHistory(bool v) async {
+    final p = await _prefs;
+    await p.setBool(_kSaveQuizHistory, v);
   }
 
   /// 播放视频时控制栏要不要「几秒后自动隐藏」（v1.8.0）。

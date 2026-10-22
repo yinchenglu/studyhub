@@ -21,6 +21,13 @@ Question questionFromWrong(WrongRecord r) => Question(
       textAccept: r.textAccept,
     );
 
+/// 题库显示名：去掉用户手工加的「1.」「2、」这类序号前缀。
+///
+/// v2.3.5（用户第 4 条）：题库文件/目录按 `1.xxx` `2.xxx` 编号是为了排序，
+/// 但列表里不该把序号念出来。序号仍然在 `path` 里，排序、匹配、写入
+/// 刷题进度全都不受影响，只有给人看的这一份名字被剥掉。
+String quizDisplayName(String raw) => stripLeadingNumber(raw);
+
 /// 一条题库引用（就是服务器上的一个 .json 文件）
 class QuizBankRef {
   final String path; // quiz/xxx/第一章.json
@@ -64,7 +71,8 @@ class QuizRepo {
         final bank = await _parseOne(f.path);
         return QuizBankRef(
           path: f.path,
-          name: bank.name.trim().isEmpty ? titleFromFileName(f.name) : bank.name.trim(),
+          name: quizDisplayName(
+              bank.name.trim().isEmpty ? titleFromFileName(f.name) : bank.name.trim()),
           count: bank.count,
           isWordBank: bank.isWordBank,
           size: f.size,
@@ -73,7 +81,7 @@ class QuizRepo {
       } catch (_) {
         return QuizBankRef(
           path: f.path,
-          name: titleFromFileName(f.name),
+          name: quizDisplayName(titleFromFileName(f.name)),
           count: 0,
           size: f.size,
           modified: f.modified,
@@ -95,7 +103,8 @@ class QuizRepo {
   /// 读取单独一套题库（按 json 文件路径）
   Future<QuestionBank> loadBankFile(String filePath) async {
     final bank = await _parseOne(filePath);
-    final name = bank.name.trim().isEmpty ? titleFromFileName(filePath) : bank.name.trim();
+    final name = quizDisplayName(
+        bank.name.trim().isEmpty ? titleFromFileName(filePath) : bank.name.trim());
     return QuestionBank(
       name: name,
       dir: filePath,
@@ -118,7 +127,8 @@ class QuizRepo {
     for (final f in files) {
       try {
         final bank = await _parseOne(f.path);
-        final name = bank.name.trim().isEmpty ? titleFromFileName(f.name) : bank.name.trim();
+        final name = quizDisplayName(
+            bank.name.trim().isEmpty ? titleFromFileName(f.name) : bank.name.trim());
         questions.addAll(bank.questions.map((q) => q.copyWith(bankDir: f.path, bankName: name)));
         words.addAll(bank.words);
         isWordBank = isWordBank || bank.isWordBank;
@@ -126,7 +136,7 @@ class QuizRepo {
         continue;
       }
     }
-    final name = dirPath == _root ? '根目录题库' : baseName(dirPath);
+    final name = dirPath == _root ? '根目录题库' : quizDisplayName(baseName(dirPath));
     return QuestionBank(
       name: files.isEmpty ? name : '$name（合并 ${files.length} 套）',
       dir: dirPath,

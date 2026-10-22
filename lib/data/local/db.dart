@@ -132,6 +132,8 @@ class AppDb {
   /// 标记某套题库里的某道题「刷过了」（对错都算刷过）
   Future<void> markDone(String bankDir, String questionId) async {
     if (bankDir.isEmpty || questionId.isEmpty) return;
+    // v2.3.5：设置里「题库记录」关掉后就不写刷题进度（错题本不受影响）
+    if (!await SettingsStore.instance.saveQuizHistory()) return;
     final d = await db;
     await d.insert(
       'quiz_done',
@@ -145,6 +147,7 @@ class AppDb {
   }
 
   Future<void> markDoneBatch(Iterable<(String, String)> items) async {
+    if (!await SettingsStore.instance.saveQuizHistory()) return;
     final d = await db;
     final now = DateTime.now().millisecondsSinceEpoch;
     final batch = d.batch();
@@ -405,6 +408,14 @@ class AppDb {
   // ------------------------------------------------------------ 播放进度
 
   Future<void> saveProgress(String path, int positionMs, int durationMs) async {
+    // v2.3.5：按路径判断归哪一类，分别受「文档记录 / 视频记录」开关控制。
+    // 关掉后既不写进度，首页「最近浏览」也不会再冒出这类条目；
+    // 已经在库里的老记录不删（用户要清可以点首页的「清空」）。
+    final isNote = path.startsWith('${AppDirs.notes}/');
+    final on = isNote
+        ? await SettingsStore.instance.saveNoteHistory()
+        : await SettingsStore.instance.saveVideoHistory();
+    if (!on) return;
     final d = await db;
     await d.insert(
       'progress',

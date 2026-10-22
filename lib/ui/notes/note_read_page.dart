@@ -591,7 +591,14 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
           ),
         ],
       ),
-      body: Listener(
+      // v2.3.5 修：md 正文最后几行被底部三个虚拟键（系统导航栏）压住。
+      //
+      // 原因：Android 15（targetSdk 35）起系统强制 edge-to-edge，Scaffold 的 body
+      // 会一直画到屏幕最底下，导航栏是**浮在上面**的，所以正文最后一屏内容会被它盖住。
+      // 外面套一层 SafeArea(top:false) —— 顶部 AppBar 已经自己避让了，不用重复留白。
+      body: SafeArea(
+        top: false,
+        child: Listener(
         behavior: HitTestBehavior.translucent,
         // v1.9.0+28 修：单屏（不用往下滚）的 md 左右划不翻篇。
         //
@@ -695,6 +702,7 @@ class _NoteReadPageState extends ConsumerState<NoteReadPage> {
                           ),
                         ),
                       ),
+        ),
       ),
     );
   }

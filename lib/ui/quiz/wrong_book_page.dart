@@ -123,7 +123,9 @@ class _WrongBookPageState extends ConsumerState<WrongBookPage> {
     final groups = <String, List<WrongRecord>>{};
     for (final r in list) {
       if (_group == 0) {
-        final k = r.bankName.isEmpty ? r.bankDir : r.bankName;
+        // v2.3.5：老记录里的题库名带着「1.」序号前缀，显示和分组都剥掉，
+        // 否则同一套题库会因为新旧记录不同被拆成两组
+        final k = r.bankName.isEmpty ? r.bankDir : quizDisplayName(r.bankName);
         groups.putIfAbsent(k, () => []).add(r);
       } else {
         if (r.tags.isEmpty) {
@@ -454,7 +456,9 @@ class _WrongDetailBody extends StatelessWidget {
         Wrap(
           spacing: 6,
           children: [
-            _chip(record.bankName.isEmpty ? record.bankDir : record.bankName, scheme.primary),
+            _chip(
+                quizDisplayName(record.bankName.isEmpty ? record.bankDir : record.bankName),
+                scheme.primary),
             _chip(Question.typeLabelOf(record.qtype), scheme.tertiary),
             _chip('错误 ${record.wrongCount} 次', scheme.error),
             for (final t in record.tags) _chip(t, scheme.onSurfaceVariant),

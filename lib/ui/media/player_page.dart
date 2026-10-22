@@ -181,6 +181,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     _index = widget.initialIndex;
     _player = Player();
     _controller = VideoController(_player);
+    // v2.3.5：进播放页就进沉浸式 —— 状态栏（时间/电量那条）不再压在画面上方。
+    //
+    // 之前只有点右上角「全屏」才会 immersiveSticky，默认播放时系统状态栏是
+    // 浮在画面顶部的（Android 15 起强制 edge-to-edge，App 画到屏幕最上沿，
+    // 状态栏直接盖在视频上）。用户要的就是「一放视频就没状态栏」。
+    // 想恢复成带状态栏的样子，点右上角的「退出全屏」即可。
+    _fullscreen = true;
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     // 一进来就允许跟着手机转 —— 用户要的是「自动向左横屏、向右横屏、竖屏」，
     // 不需要先手动点一下开关。想固定住再按锁定按钮。
     ScreenOrientation.followDevice();
@@ -325,8 +333,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   Future<void> _saveProgress() async {
     if (_duration.inMilliseconds <= 0) return;
     try {
-      // 「设置 → 保存浏览记录」关掉后不再写入进度
-      if (!await SettingsStore.instance.saveViewHistory()) return;
+      // v2.3.5：「保存视频记录」开关的判断已经下沉到 AppDb.saveProgress 里
+      // （按路径前缀区分文档 / 视频），这里不再重复读一次设置。
       await AppDb.instance.saveProgress(_current.path, _position.inMilliseconds, _duration.inMilliseconds);
     } catch (_) {}
   }
