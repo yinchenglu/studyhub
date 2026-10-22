@@ -412,115 +412,6 @@ class JigsawRules extends StandardRules {
   /// 锯齿的宫界是随机的，快速求解器直接读 [regionOf]（见 _FastSolver），
   /// 所以这里不需要额外的 extraOk。
 
-  /// 随机切 N 个锯齿块（N = 棋盘边长）。每块 N 格，且**必须连成一片**。
-  ///
-  /// v2.3.1：改成按 `size` 通用（4 / 6 / 9 都行）。
-  ///
-  /// 算法：种子均匀铺在「√N × √N」的大格里，然后**轮流涨** ——
-  /// 每轮每区各吃一个自己的边界格，直到每区满 N 格。
-  /// 因为是「从自己的边界往外吃」，连通性天然成立；边界互相咬合就是锯齿。
-  ///
-  /// 注意：这个函数只管**切形状**，不保证「这个形状有解」。可解性由
-  /// `_newGame` 里那一层「求解失败就换一种切法」兜住。
-  static List<List<int>> makeRandomRegions(int size, math.Random rng) {
-    List<List<int>> standard() => List.generate(
-        size,
-        (r) => List.generate(size,
-            (c) => (r ~/ _seedRows(size)) * _seedCols(size) + c ~/ _seedCols(size)));
-
-    if (size < 4) return standard();
-
-    // v2.3.5 重做（用户第 6 条：「锯齿数独有概率是锯齿，大部分情况是普通数独」）。
-    //
-    // 老办法是「种子 + 轮流往外吃」，形状确实随机，但**随机形状大多无解**：
-    // 6 次尝试全失败就退回内置模板，而模板 1 有 6 个宫还是完整 3×3，
-    // 玩家看到的就是一张普通九宫格 —— 这就是「大部分情况是普通数独」的来源。
-    //
-    // 新办法：从**标准宫**出发，反复把「相邻、不同宫」的两格互换归属。
-    //   * 每宫的格数不变（互换而已）；
-    //   * 交换后检查两块都还四连通，保证「宫」是连成一片的；
-    //   * 出发点是可解的标准宫，只扰动有限次，**可解率极高**。
-    // 结果形状一定是锯齿状（边界互相咬进来），而且每局都不一样。
-    final grid = standard();
-    final want = size * 3; // 9×9 → 27 次有效交换
-    var done = 0;
-    var guard = 0;
-    const dirs = <List<int>>[
-      [-1, 0],
-      [1, 0],
-      [0, -1],
-      [0, 1],
-    ];
-    while (done < want && guard++ < want * 80) {
-      final r1 = rng.nextInt(size);
-      final c1 = rng.nextInt(size);
-      final g1 = grid[r1][c1];
-      final order = List<int>.generate(4, (i) => i)..shuffle(rng);
-      for (final k in order) {
-        final r2 = r1 + dirs[k][0];
-        final c2 = c1 + dirs[k][1];
-        if (r2 < 0 || r2 >= size || c2 < 0 || c2 >= size) continue;
-        final g2 = grid[r2][c2];
-        if (g2 == g1) continue;
-        // 试着交换
-        grid[r1][c1] = g2;
-        grid[r2][c2] = g1;
-        if (_regionConnected(grid, g1, size) && _regionConnected(grid, g2, size)) {
-          done++;
-          break;
-        }
-        // 不可行就换回来
-        grid[r1][c1] = g1;
-        grid[r2][c2] = g2;
-      }
-    }
-    return grid;
-  }
-
-  /// 某个宫是不是还连成一片（四连通）。交换边界格之后用它兜住「宫被切碎」。
-  static bool _regionConnected(List<List<int>> grid, int id, int size) {
-    var sr = -1, sc = -1, total = 0;
-    for (var r = 0; r < size; r++) {
-      for (var c = 0; c < size; c++) {
-        if (grid[r][c] != id) continue;
-        total++;
-        if (sr < 0) {
-          sr = r;
-          sc = c;
-        }
-      }
-    }
-    if (total == 0 || sr < 0) return false;
-    final seen = List.generate(size, (_) => List.filled(size, false));
-    final stack = <List<int>>[
-      [sr, sc]
-    ];
-    seen[sr][sc] = true;
-    var hit = 0;
-    while (stack.isNotEmpty) {
-      final cur = stack.removeLast();
-      hit++;
-      for (final d in const [
-        [-1, 0],
-        [1, 0],
-        [0, -1],
-        [0, 1],
-      ]) {
-        final nr = cur[0] + d[0], nc = cur[1] + d[1];
-        if (nr < 0 || nr >= size || nc < 0 || nc >= size) continue;
-        if (seen[nr][nc]) continue;
-        if (grid[nr][nc] != id) continue;
-        seen[nr][nc] = true;
-        stack.add([nr, nc]);
-      }
-    }
-    return hit == total;
-  }
-
-
-  /// 种子大格的行数 / 列数：4 → 2×2，6 → 2×3，9 → 3×3。
-  static int _seedRows(int size) => size == 9 ? 3 : 2;
-  static int _seedCols(int size) => size == 4 ? 2 : (size == 6 ? 3 : 3);
 }
 
 /// 杀手：每笼数字不重且和 = 笼和。
@@ -1060,62 +951,20 @@ class _SudokuPageState extends State<SudokuPage> {
         full = rules.generateFull(rng);
         break;
       case SudokuType.jigsaw:
-        // 随机切出来的宫界**不一定有解**。旧代码只有一次机会：失败就退回
-        // 标准 3×3 宫（用户看到「锯齿数独没有锯齿」），或者在没上限的
-        // 回溯里一直算下去（用户看到「一点就卡死」）。
+        // v2.3.6（用户第 1 条）：不再现场随机切宫。
+        //   * 「种子往外涨」出的随机形状大多**无解**，失败就退回标准宫；
+        //   * 「交换相邻边界格」在标准 3×3 宫上**永远换不动** —— 互换后
+        //     两边新得的那一格只跟被换走的那格相邻，连通性检查必然失败，
+        //     交换次数恒为 0，等于原样返回标准宫。
+        // 两种路最后都落到「普通九宫格」，玩家看到的就是「只有宫格涂色」。
         //
-        // v2.3.2：先试随机切法（每局形状都不同），全失败就退到
-        // **内置模板**（见 `_jigsawTemplates`，形状固定但一定合法可解，
-        // 宫编号随机重映射），保证锯齿永远显示 —— 兜底不能再是标准宫。
-        //
-        // v2.3.5：形状生成换成「标准宫 + 边界格交换」（见 makeRandomRegions），
-        // 可解率高得多，10 次基本次次成功；模板只剩一张 9×9 的兜底。
-        SudokuRules? jr;
-        SudokuBoard? jb;
-        for (var i = 0; i < 10 && jb == null; i++) {
-          final regions = JigsawRules.makeRandomRegions(_type.size, rng);
-          final r = JigsawRules(_type, regions);
-          final b = SudokuBoard.empty(_type.size);
-          if (_FastSolver(r, rng, nodeLimit: 20000).solve(b) &&
-              r.isValidSolution(b)) {
-            jr = r;
-            jb = b;
-          }
-          // 每试一种切法让出一帧，别让界面在「最坏情况」下假死
-          await Future<void>.delayed(Duration.zero);
-          if (!mounted || seq != _genSeq) return;
-        }
-        if (jb == null) {
-          // v2.3.5：模板只有一张 9×9 的，每次随机做转置 / 翻转，
-          // 8 种朝向都试一遍，尽量别退回「标准宫」。
-          for (var attempt = 0; attempt < 8 && jb == null; attempt++) {
-            final tpl = _transformTemplate(_jigsawTemplates.first, rng);
-            if (tpl.length != _type.size) break;
-            final remap = List<int>.generate(_type.size, (i) => i)
-              ..shuffle(rng);
-            final regions = <List<int>>[
-              for (var r = 0; r < _type.size; r++)
-                [for (var c = 0; c < _type.size; c++) remap[tpl[r][c]]],
-            ];
-            final r = JigsawRules(_type, regions);
-            final b = SudokuBoard.empty(_type.size);
-            // 兜底路径放宽到 10 万节点：模板是固定形状，偶尔要在回溯上
-            // 花多一点功夫；反正这条路径极少触发（随机法基本一次过）。
-            if (_FastSolver(r, rng, nodeLimit: 100000).solve(b) &&
-                r.isValidSolution(b)) {
-              jr = r;
-              jb = b;
-              break;
-            }
-            await Future<void>.delayed(Duration.zero);
-            if (!mounted || seq != _genSeq) return;
-          }
-        }
-        if (jr != null && jb != null) {
-          rules = jr;
-          full = jb;
-        } else {
-          // 理论上走不到（模板一定能解）；真走到至少还能玩标准宫
+        // 现在直接用内置的 12 套锯齿布局（见 `_kJigsawTemplates`），
+        // 每套都带一个已验证的合法解，只做对称变换 + 重排，**不再求解**。
+        final built = _buildJigsaw(rng);
+        rules = JigsawRules(_type, built.$1);
+        full = built.$2;
+        if (!rules.isValidSolution(full)) {
+          // 自检兜底：正常走不到这里（12 套模板都离线验证过）
           rules = StandardRules(SudokuType.jigsaw);
           full = rules.generateFull(rng);
         }
@@ -1164,44 +1013,90 @@ class _SudokuPageState extends State<SudokuPage> {
     _save();
   }
 
-  /// 内置锯齿宫模板（v2.3.2）。随机切法 6 次全失败时兜底用 ——
-  /// 之前兜底是「退回标准 3×3 宫」，结果用户看到的就是一张普通九宫格，
-  /// 完全没有锯齿。这两张模板是离线生成好、写死进代码的：
-  ///   * 每个宫恰好 9 格、四连通；
-  ///   * **都验证过有解**（锯齿布局合法不代表有解，生成时逐张跑过求解器）；
-  ///   * 压测过 30 种随机顺序都能在节点上限内解出来；
-  ///   * 出题时宫编号随机重映射，玩家看不出重复形状。
-  static const List<List<List<int>>> _jigsawTemplates = [
-    // 模板（锯齿明显的那张；已验证可解、3 万节点内稳定出解）。
-    // 出题时会随机做转置 / 翻转，同一个模板能出 8 种形状。
-    [
-      [3, 3, 0, 0, 1, 1, 2, 2, 2],
-      [3, 3, 0, 1, 1, 1, 5, 2, 2],
-      [3, 0, 0, 0, 1, 1, 5, 2, 2],
-      [3, 0, 0, 4, 4, 1, 5, 2, 2],
-      [3, 0, 4, 4, 4, 1, 5, 5, 5],
-      [3, 6, 4, 4, 4, 7, 5, 5, 8],
-      [3, 6, 4, 6, 7, 7, 5, 8, 8],
-      [6, 6, 6, 6, 7, 7, 8, 8, 8],
-      [6, 6, 7, 7, 7, 7, 8, 8, 8],
-    ],
-  ];
+/// 一套内置锯齿宫布局（离线生成 + 逐套验证过）。
+///
+/// `regions` 是 81 个字符，按行铺开，'0'..'8' = 宫号；
+/// `solution` 同样是 81 个字符，'1'..'9' = 这套布局的一个**合法解**。
+class _JigsawTemplate {
+  final String regions;
+  final String solution;
+  const _JigsawTemplate(this.regions, this.solution);
+}
 
-  /// 把一张宫模板随机做「转置 / 上下翻转 / 左右翻转」。
-  ///
-  /// 这三种都是对称变换：宫的连通性和「有解」都不会改变，
-  /// 但形状看起来完全不同 —— 只有一张模板也能出 8 种锯齿花样。
-  static List<List<int>> _transformTemplate(
-      List<List<int>> tpl, math.Random rng) {
-    final n = tpl.length;
-    var g = tpl;
-    if (rng.nextBool()) {
-      g = List.generate(n, (r) => List.generate(n, (c) => tpl[c][r]));
+/// 12 套锯齿宫布局。每套都满足：
+///   * 每宫恰好 9 格，且四连通（不会出现「悬空一格」）；
+///   * 宫与宫互相咬合，**没有一个是规矩的 3×3**；
+///   * 附带已验证的合法解 —— 运行期不用再解一次，出题快、也不会翻车。
+const List<_JigsawTemplate> _kJigsawTemplates = [
+  _JigsawTemplate(
+      '330000222330111552300115522300114522341144552344444558366667888667677788667777888',
+      '123456789682793451718549623379261845591874236935628174457912368246385917864137592'),
+  _JigsawTemplate(
+      '330001122330111122300112222300145552304444555366445558364477788666678888667777788',
+      '123456789692345817718293456369178542475821963546937128834619275951782634287564391'),
+  _JigsawTemplate(
+      '331111222330011122300001522300401522344445555346647558344677588666677788667778888',
+      '123456789568927134374218965456739812795681423839142576912375648287564391641893257'),
+  _JigsawTemplate(
+      '330011122330111122300112222300005552364444558364445558364477858667777888666677788',
+      '123456789569134827857291346381627495416975238792318654974862513245783961638549172'),
+  _JigsawTemplate(
+      '330011112330011222300111252300444552304445522344455588366777588666678888666777778',
+      '123456789849623157752149368617892534985317426364781295538264971291578643476935812'),
+  _JigsawTemplate(
+      '330002222330100222300111552340141152344145155344445558367777788666677788666678888',
+      '123456789856971234682534971349782615475193862931268457718629543594817326267345198'),
+  _JigsawTemplate(
+      '330011222330011222300111122304444125300454555344455558366677778666778878666778888',
+      '123456789568947123376128945419572368852391476984613257731864592697235814245789631'),
+  _JigsawTemplate(
+      '330001222330111552300141522300141522304441525364444555367777788666677888666778888',
+      '123456789892315476618237945769824513471569328534798261385642197946173852257981634'),
+  _JigsawTemplate(
+      '331112222330011122300001522304441525300441555364444558367777588667777788666668888',
+      '123456789895761234536947812419278356382619547764583921657324198241895673978132465'),
+  _JigsawTemplate(
+      '330111222330011552300001522300111522364444552364445558364477788666777788666778888',
+      '123456789847512963789643125512789346694837251365194872956271438271368594438925617'),
+  _JigsawTemplate(
+      '330022222330111112300011222304411555300445555366447755364447888666777778666788888',
+      '123456789942368571567891234318624957759213648876539412684975123491782365235147896'),
+  _JigsawTemplate(
+      '330002222330111152340101552340001522344411552366445558364477788666778888666777788',
+      '123456789532798641948175362876912534619843275457261893785329416361584927294637158'),
+];
+
+/// 随机取一套内置锯齿宫布局，做「转置 / 上下翻 / 左右翻」+ 宫号重排 + 数字重排，
+/// 返回 (宫布局, 满盘解)。
+///
+/// v2.3.6：**不再现场随机切宫**。之前两种切法都有硬伤 ——
+///   * 「种子往外涨」：随机形状大多无解，失败就退回标准宫；
+///   * 「交换相邻边界格」：在标准 3×3 宫上永远换不动（换完两边都断成
+///     两截，连通性检查必然失败），交换次数恒为 0，等于原样返回标准宫。
+/// 玩家看到的「只有宫格涂色、没有锯齿」就是这么来的。
+(List<List<int>>, SudokuBoard) _buildJigsaw(math.Random rng) {
+  final tpl = _kJigsawTemplates[rng.nextInt(_kJigsawTemplates.length)];
+  final idMap = List<int>.generate(9, (i) => i)..shuffle(rng);
+  final digitMap = List<int>.generate(10, (i) => i)..shuffle(rng);
+  final transpose = rng.nextBool();
+  final flipV = rng.nextBool();
+  final flipH = rng.nextBool();
+  final regions = List.generate(9, (_) => List.filled(9, 0));
+  final board = SudokuBoard.empty(9);
+  for (var r = 0; r < 9; r++) {
+    for (var c = 0; c < 9; c++) {
+      var sr = transpose ? c : r;
+      var sc = transpose ? r : c;
+      if (flipV) sr = 8 - sr;
+      if (flipH) sc = 8 - sc;
+      final i = sr * 9 + sc;
+      regions[r][c] = idMap[tpl.regions.codeUnitAt(i) - 48];
+      board.cells[r][c] = digitMap[tpl.solution.codeUnitAt(i) - 48];
+      board.fixed[r][c] = true;
     }
-    if (rng.nextBool()) g = g.reversed.toList();
-    if (rng.nextBool()) g = [for (final row in g) row.reversed.toList()];
-    return g;
   }
+  return (regions, board);
+}
 
   /// 不等式：按**解的真实大小关系**撒「<」「>」。
   ///
@@ -2096,7 +1991,8 @@ class _SudokuGrid extends StatelessWidget {
             cageId: b.cageId!,
             cages: b.cages!,
             cell: cell,
-            lineColor: scheme.onSurface.withValues(alpha: 0.8),
+            lineColor: scheme.onSurface.withValues(alpha: 0.85),
+            bgColor: scheme.surface,
           ),
         ),
       ),
@@ -2174,11 +2070,14 @@ class _CagePainter extends CustomPainter {
   final Map<int, _Cage> cages;
   final double cell;
   final Color lineColor;
+  /// 笼和数字垫底色用（穿透过去的笔记小字会把数字糊掉）
+  final Color bgColor;
   _CagePainter({
     required this.cageId,
     required this.cages,
     required this.cell,
     required this.lineColor,
+    required this.bgColor,
   });
 
   @override
@@ -2187,48 +2086,87 @@ class _CagePainter extends CustomPainter {
     final paint = Paint()
       ..color = lineColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.3;
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round;
 
-    // v2.3.5（用户第 6 条）：虚线原来画在格子**真正的边线**上（c*cell 那一根），
-    // 跟格子的实线边框严丝合缝地叠在一起 —— 一粗一细看不清，像「边框变糊了」。
-    // 现在整条笼界线**往笼内缩** [inset] 像素，落在格子里面，
-    // 和实线之间有明确的空隙，虚线才看得出来。
-    final inset = (cell * 0.07).clamp(2.0, 3.4).toDouble();
+    // v2.3.6（用户第 2 条：「虚线框不完整，都没有连起来，有的边上没有」
+    // +「和的数字跟虚线重合了」）
+    //
+    // 老写法按**格**去画虚线：每格各画自己那几条边，每条边单独起虚线相位、
+    // 还各自往里缩，于是 ① 每格拐角都缩进去一点，框必然断开；
+    // ② 内部边只让「下面/右边那格」画，碰到同笼格子就整段漏掉；
+    // ③ 相邻两格各画一遍，长短不一。合起来就是「有的边没有、框连不起来」。
+    //
+    // 现在的做法：
+    //   * 每条**宫界边只画一次**（同一段被两个笼共享时按行列顺序归先遇到的那格，
+    //     否则半透明色叠两遍会发黑）；
+    //   * 虚线周期取成「格宽的整数分之一」—— 相邻边的虚线首尾自然接上，
+    //     一格接一格看过去是均匀的一条，不会在格缝处突然变密；
+    //   * 每条边两端各**多画一截**（extend），拐角处两条虚线必定叠上，
+    //     闭合就不会缺口；
+    //   * 整条线朝**格内**挪 [inset]，不再压在格子的实线边框上。
+    final inset = (cell * 0.06).clamp(1.1, 2.2).toDouble();
+    // 虚线周期：格宽 36px 时约 7.2px（5 个周期铺满一格）
+    final period = cell / math.max(3.0, (cell / 7.2).roundToDouble());
+    final dash = period * 0.62;
+    final gap = period - dash;
 
-    // 去重：一段笼界线只画一次，归给「下面那格 / 右边那格」，
-    // 否则两侧各画一条（各自内缩）会变成两条平行虚线，比不缩还乱。
+    final seen = <int>{};
     for (var r = 0; r < n; r++) {
       for (var c = 0; c < n; c++) {
         final my = cageId[r][c];
-        if (my < 0) continue; // 不属于任何笼（理论上杀手盘不会出现）
-        final topEdge = r == 0 || cageId[r - 1][c] != my;
-        final leftEdge = c == 0 || cageId[r][c - 1] != my;
-        final bottomEdge = r == n - 1 || cageId[r + 1][c] != my;
-        final rightEdge = c == n - 1 || cageId[r][c + 1] != my;
-
-        if (topEdge) {
-          _dashed(canvas, paint, Offset(c * cell + inset, r * cell + inset),
-              Offset((c + 1) * cell - inset, r * cell + inset));
+        if (my < 0) continue; // 不在任何笼里（理论上不会出现）
+        if (r == 0 || cageId[r - 1][c] != my) {
+          _edge(canvas, paint, seen, c, r, c + 1, r, 0, inset,
+              dash, gap, inset);
         }
-        if (leftEdge) {
-          _dashed(canvas, paint, Offset(c * cell + inset, r * cell + inset),
-              Offset(c * cell + inset, (r + 1) * cell - inset));
+        if (c == n - 1 || cageId[r][c + 1] != my) {
+          _edge(canvas, paint, seen, c + 1, r, c + 1, r + 1, -inset, 0,
+              dash, gap, inset);
         }
-        // 底边 / 右边只画棋盘最外圈那一条：
-        // 内部边界已由「下方 / 右方格子」的上边 / 左边负责。
-        if (bottomEdge && r == n - 1) {
-          _dashed(canvas, paint, Offset(c * cell + inset, (r + 1) * cell - inset),
-              Offset((c + 1) * cell - inset, (r + 1) * cell - inset));
+        if (r == n - 1 || cageId[r + 1][c] != my) {
+          _edge(canvas, paint, seen, c, r + 1, c + 1, r + 1, 0, -inset,
+              dash, gap, inset);
         }
-        if (rightEdge && c == n - 1) {
-          _dashed(canvas, paint, Offset((c + 1) * cell - inset, r * cell + inset),
-              Offset((c + 1) * cell - inset, (r + 1) * cell - inset));
+        if (c == 0 || cageId[r][c - 1] != my) {
+          _edge(canvas, paint, seen, c, r, c, r + 1, inset, 0,
+              dash, gap, inset);
         }
       }
     }
 
-    // 笼和角标：画在笼内「最靠上、再最靠左」那格的左上角。
-    // 字号跟格走，数字本体居中，角标占角落，互不遮挡。
+    _paintSums(canvas);
+  }
+
+  /// 画一条宫界边。[dx]/[dy] 是「往里挪」的方向（一格为单位）。
+  void _edge(Canvas canvas, Paint paint, Set<int> seen, int x1, int y1,
+      int x2, int y2, double dx, double dy, double dash, double gap,
+      double extend) {
+    // 无向去重：同一段边只画一次
+    final a0 = x1 * 16 + y1, b0 = x2 * 16 + y2;
+    final key = a0 < b0 ? a0 * 4096 + b0 : b0 * 4096 + a0;
+    if (!seen.add(key)) return;
+    final a = Offset(x1 * cell + dx, y1 * cell + dy);
+    final b = Offset(x2 * cell + dx, y2 * cell + dy);
+    final ex = b.dx - a.dx, ey = b.dy - a.dy;
+    final len = math.sqrt(ex * ex + ey * ey);
+    if (len <= 0) return;
+    final ux = ex / len, uy = ey / len;
+    var t = -extend; // 两端多画一截，拐角处两边虚线必然相接
+    final end = len + extend;
+    while (t < end) {
+      final t2 = math.min(t + dash, end);
+      canvas.drawLine(
+        Offset(a.dx + ux * t, a.dy + uy * t),
+        Offset(a.dx + ux * t2, a.dy + uy * t2),
+        paint,
+      );
+      t = t2 + gap;
+    }
+  }
+
+  /// 笼和：画在笼内「最上、再最左」那格的左上角，垫一层底色避免糊在底纹/笔记上。
+  void _paintSums(Canvas canvas) {
     cages.forEach((_, cage) {
       var br = cage.cells[0][0], bc = cage.cells[0][1];
       for (final cl in cage.cells) {
@@ -2241,41 +2179,37 @@ class _CagePainter extends CustomPainter {
         text: TextSpan(
           text: '${cage.sum}',
           style: TextStyle(
-            fontSize: cell * 0.22,
+            fontSize: cell * 0.24,
             height: 1.0,
             color: lineColor,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w800,
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, Offset(bc * cell + 2.5, br * cell + 1.5));
-    });
-  }
-
-  /// 沿一条线段画虚线（dash 3.2 / gap 2.4）。
-  void _dashed(Canvas canvas, Paint paint, Offset a, Offset b,
-      {double dash = 3.0, double gap = 2.2}) {
-    final dx = b.dx - a.dx, dy = b.dy - a.dy;
-    final len = math.sqrt(dx * dx + dy * dy);
-    if (len <= 0) return;
-    final ux = dx / len, uy = dy / len;
-    var t = 0.0;
-    while (t < len) {
-      final t2 = math.min(t + dash, len);
-      canvas.drawLine(
-        Offset(a.dx + ux * t, a.dy + uy * t),
-        Offset(a.dx + ux * t2, a.dy + uy * t2),
-        paint,
+      // 往格内多让一点，别贴到虚线（虚线本身已经往内挪了 inset）
+      final dx = bc * cell + 2.4;
+      final dy = br * cell + 2.0;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(dx - 1.4, dy - 1.0, tp.width + 2.8, tp.height + 2.0),
+          const Radius.circular(2.5),
+        ),
+        Paint()..color = bgColor.withValues(alpha: 0.92),
       );
-      t = t2 + gap;
-    }
+      tp.paint(canvas, Offset(dx, dy));
+    });
   }
 
   @override
   bool shouldRepaint(_CagePainter old) =>
-      !identical(old.cageId, cageId) || old.cell != cell || old.lineColor != lineColor;
+      !identical(old.cageId, cageId) ||
+      old.cell != cell ||
+      old.lineColor != lineColor ||
+      old.bgColor != bgColor;
 }
+
+
 
 class _JigsawPainter extends CustomPainter {
   final List<List<int>> regionOf;
