@@ -1677,6 +1677,13 @@ class _SudokuGrid extends StatelessWidget {
     // 宫界全部交给 _JigsawPainter 画，同时给每个宫铺淡底色，一眼能看出锯齿。
     final isJigsaw = rules is JigsawRules;
     final regionOf = isJigsaw ? (rules as JigsawRules).regionOf : null;
+    // v2.3.7（用户第 2 条：「锯齿刷新好多次才出一次正确的」）
+    //
+    // 老涂色是 `regionOf % 4` 取四种颜色 —— 9 个宫塞进 4 个颜色，
+    // 相邻两宫撞色时整片糊在一起，玩家看到的「宫」跟真实宫界对不上，
+    // 只有少数几次刷出来的编号组合恰好两两不同色，才「看着是对的」。
+    // 现在按宫号给 **9 个不同色相**，任意两宫都不同色，边界一眼可辨。
+    final jigsawTints = isJigsaw ? _jigsawTints(scheme) : const <Color>[];
 
     return Container(
       decoration: BoxDecoration(
@@ -1717,6 +1724,7 @@ class _SudokuGrid extends StatelessWidget {
                     errColor: errColor,
                     isJigsaw: isJigsaw,
                     regionOf: regionOf,
+                    jigsawTints: jigsawTints,
                   );
                 },
               ),
@@ -1750,6 +1758,7 @@ class _SudokuGrid extends StatelessWidget {
     required Color errColor,
     bool isJigsaw = false,
     List<List<int>>? regionOf,
+    List<Color> jigsawTints = const <Color>[],
   }) {
     final v = board.cells[r][c];
     final isFixed = board.fixed[r][c];
@@ -1782,21 +1791,8 @@ class _SudokuGrid extends StatelessWidget {
     // v2.3.2 把透明度从 0.07 提到 0.12（用户反馈「看不出锯齿」，
     // 太淡的底色在浅色主题下几乎隐形）。
     Color cellBg = Colors.transparent;
-    if (isJigsaw && regionOf != null) {
-      final scheme = Theme.of(context).colorScheme;
-      switch (regionOf[r][c] % 4) {
-        case 1:
-          cellBg = scheme.primary.withValues(alpha: 0.12);
-          break;
-        case 2:
-          cellBg = scheme.tertiary.withValues(alpha: 0.12);
-          break;
-        case 3:
-          cellBg = scheme.secondary.withValues(alpha: 0.12);
-          break;
-        default:
-          cellBg = Colors.transparent;
-      }
+    if (isJigsaw && regionOf != null && jigsawTints.isNotEmpty) {
+      cellBg = jigsawTints[regionOf[r][c] % 9];
     }
     if (showHint && solution != null && v == 0) {
       cellBg = hintColor;
@@ -1816,13 +1812,24 @@ class _SudokuGrid extends StatelessWidget {
     // 就得一行行扫 —— 现在一眼就能看到全部位置。
     final selValue = hasSel ? board.cells[selR][selC] : 0;
     final isSameNum = hasSel && !isSel && selValue != 0 && v == selValue;
+    // v2.3.7（用户第 3 条：「点击数字之后，颜色不够醒目」）
+    //
+    // 老配色三档都在「主色 + 低透明度」这一个色系里打转（0.22 / 0.20 / 0.07），
+    // 深浅差一两个百分点，屏幕上根本分不开。
+    // 现在按**三层色阶**重排，强度依次递减，一眼能分出「我点的是哪格」
+    // → 「还有哪些同数字」→ 「哪些在同一行/列/宫」：
+    //   选中格   = 主色**实底** + 数字反白（对比最强）
+    //   相同数字 = 主色 0.34 底 + 1.6px 主色描边 + 数字加粗
+    //   同行同列 = 主色 0.06 淡底（几乎只是提示）
+    Color? hlBorder;
     if (isSel) {
-      cellBg = cs2.primary.withValues(alpha: 0.22);
+      cellBg = cs2.primary;
+      hlBorder = cs2.primary;
     } else if (isSameNum) {
-      // 相同数字比「同行同列」更醒目：中等浓度的主色底
-      cellBg = cs2.primary.withValues(alpha: 0.20);
+      cellBg = cs2.primary.withValues(alpha: 0.34);
+      hlBorder = cs2.primary.withValues(alpha: 0.85);
     } else if (isPeer && !(showHint && solution != null && v == 0) && !checkedWrong) {
-      cellBg = cs2.primary.withValues(alpha: 0.07);
+      cellBg = cs2.primary.withValues(alpha: 0.06);
     }
     return GestureDetector(
       onTap: () => onCellTap(r, c),
@@ -1844,6 +1851,13 @@ class _SudokuGrid extends StatelessWidget {
                 color: isBottomThick ? thickColor : lineColor, width: isBottomThick ? 1.5 : 0.5),
           ),
         ),
+        // v2.3.7：选中格 / 相同数字额外描一圈主色（画在数字上层，压住细网格）
+        foregroundDecoration: hlBorder == null
+            ? null
+            : BoxDecoration(
+                border: Border.all(
+                    color: hlBorder, width: isSel ? 2.0 : 1.6),
+              ),
         alignment: Alignment.center,
         child: v == 0
             ? (board.notes[r][c].isEmpty
@@ -1874,16 +1888,33 @@ class _SudokuGrid extends StatelessWidget {
                 style: TextStyle(
                   fontSize: cell * 0.58,
                   // 相同数字也加粗一点，底色之外再给一层视觉区分
-                  fontWeight: (isSameNum || isSel) ? FontWeight.w800 : FontWeight.w600,
+                  fontWeight: (isSameNum || isSel) ? FontWeight.w900 : FontWeight.w600,
+                  // v2.3.7：选中格是主色实底 → 数字必须反白，否则黑字糊在
+                  // 深底上看不清；相同数字格用 onSurface 压住加重的底色。
                   color: (_isIllegal || checkedWrong)
-                      ? errColor
-                      : (isFixed
-                          ? Colors.black87
-                          : Theme.of(context).colorScheme.primary),
+                      ? (isSel ? cs2.onPrimary : errColor)
+                      : isSel
+                          ? cs2.onPrimary
+                          : isSameNum
+                              ? cs2.onSurface
+                              : (isFixed ? Colors.black87 : cs2.primary),
                 ),
               ),
       ),
     );
+  }
+
+  /// 9 个宫各一种色相（步长 40°，绕一圈正好盖满色环），任意两宫都不同色。
+  /// v2.3.7：原来 `% 4` 只用四种颜色，9 个宫必然撞色，相邻两宫一旦同色
+  /// 就糊成一整片，玩家根本看不出宫界。
+  static List<Color> _jigsawTints(ColorScheme scheme) {
+    final base = HSLColor.fromColor(scheme.primary);
+    final dark = scheme.brightness == Brightness.dark;
+    return List<Color>.generate(9, (i) {
+      final hue = (base.hue + i * 40.0) % 360.0;
+      return HSLColor.fromAHSL(dark ? 0.28 : 0.22, hue, 0.75, dark ? 0.60 : 0.74)
+          .toColor();
+    });
   }
 
   /// (r,c) 是不是和选中格同行 / 同列 / 同宫。
@@ -1988,47 +2019,137 @@ class _JigsawTemplate {
   const _JigsawTemplate(this.regions, this.solution);
 }
 
-/// 12 套锯齿宫布局。每套都满足：
+/// 40 套锯齿宫布局。每套都满足：
 ///   * 每宫恰好 9 格，且四连通（不会出现「悬空一格」）；
-///   * 宫与宫互相咬合，**没有一个是规矩的 3×3**；
+///   * 没有任何一个宫是规矩的 3×3 矩形（只要出现整块 3×3 同宫，那一片
+///     看上去就跟普通九宫格一样，玩家会以为「这不是锯齿」）；
+///   * 平均周长 ≥ 14.5（3×3 矩形是 12，越大越锯齿）；
 ///   * 附带已验证的合法解 —— 运行期不用再解一次，出题快、也不会翻车。
+///
+/// v2.3.7 重新生成：离线先造一个合法解，再反复做「边界格互换」——
+/// 每次互换都保证两宫仍连通、且宫内 1..9 不重复，所以分区天然可解，
+/// 不用事后搜索验证（老模板是随机长出来的，形状偏「胖」，看着仍像九宫格）。
 const List<_JigsawTemplate> _kJigsawTemplates = [
   _JigsawTemplate(
-      '330000222330111552300115522300114522341144552344444558366667888667677788667777888',
-      '123456789682793451718549623379261845591874236935628174457912368246385917864137592'),
+      '000112222000011222001111122333335555333445455344444455666778888666677888667777788',
+      '682947513497135628531862794749351286268479135153628947826794351974513862315286479'),
   _JigsawTemplate(
-      '330001122330111122300112222300145552304444555366445558364477788666678888667777788',
-      '123456789692345817718293456369178542475821963546937128834619275951782634287564391'),
+      '000111222030041222034441522033441552033411555633417585663477588677777888666667888',
+      '265149387941837652738562419352916874487253196619784523596471238823695741174328965'),
   _JigsawTemplate(
-      '331111222330011122300001522300401522344445555346647558344677588666677788667778888',
-      '123456789568927134374218965456739812795681423839142576912375648287564391641893257'),
+      '000122222000111112300411552330471522633477555633477585663447885663447888666477888',
+      '286937541514628739793451826937514682862379154145286973451862397628793415379145268'),
   _JigsawTemplate(
-      '330011122330111122300112222300005552364444558364445558364477858667777888666677788',
-      '123456789569134827857291346381627495416975238792318654974862513245783961638549172'),
+      '000011122001112222000111222334444555333444558633344558636677588666777588667777888',
+      '178356249563492178492178356356249817249817635817635924781563492924781563635924781'),
   _JigsawTemplate(
-      '330011112330011222300111252300444552304445522344455588366777588666678888666777778',
-      '123456789849623157752149368617892534985317426364781295538264971291578643476935812'),
+      '000111222011111222000041252333044255333444555363447855663747885666777888666777888',
+      '529681347437259816861734259186347592952816473743592168374925681618473925295168734'),
   _JigsawTemplate(
-      '330002222330100222300111552340141152344145155344445558367777788666677788666678888',
-      '123456789856971234682534971349782615475193862931268457718629543594817326267345198'),
+      '000111222000141552030141552330441522333441522363744558663747588666777888666777888',
+      '914532687253768914687149325768914532325876491491253768149325876876491253532687149'),
   _JigsawTemplate(
-      '330011222330011222300111122304444125300454555344455558366677778666778878666778888',
-      '123456789568947123376128945419572368852391476984613257731864592697235814245789631'),
+      '001112222000011122000111222334445555333344455333444555666677778666777888667788888',
+      '872356914941287653356941278728563491419872365563419827194728536635194782287635149'),
   _JigsawTemplate(
-      '330001222330111552300141522300141522304441525364444555367777788666677888666778888',
-      '123456789892315476618237945769824513471569328534798261385642197946173852257981634'),
+      '000111222000011222304411522306415552336415455336444455366677788367778888366777888',
+      '514968327689723541237145698723514986968372415451896273145689732896237154372451869'),
   _JigsawTemplate(
-      '331112222330011122300001522304441525300441555364444558367777588667777788666668888',
-      '123456789895761234536947812419278356382619547764583921657324198241895673978132465'),
+      '000112222030122122030111112033444555033444555336474585636774588666788888666777778',
+      '587932146461857239392641758975263481623184597814795362748529613136478925259316874'),
   _JigsawTemplate(
-      '330111222330011552300001522300111522364444552364445558364477788666777788666778888',
-      '123456789847512963789643125512789346694837251365194872956271438271368594438925617'),
+      '000111122030142122030142222330144555330144585333444885666778855666677885667777788',
+      '758243196342691758196857342819572634634918275275436819427369581963185427581724963'),
   _JigsawTemplate(
-      '330022222330111112300011222304411555300445555366447755364447888666777778666788888',
-      '123456789942368571567891234318624957759213648876539412684975123491782365235147896'),
+      '000111222001111222000014552333414522344444555333334558666666588666777888777777888',
+      '132965847478231695956874321695748132213659784847312569784123956569487213321596478'),
   _JigsawTemplate(
-      '330002222330111152340101552340001522344411552366445558364477788666778888666777788',
-      '123456789532798641948175362876912534619843275457261893785329416361584927294637158'),
+      '000114222000114222330144225300114255333714885363714885663774855666774855666777888',
+      '491832756756194382382657914238576491675941238149328675914283567567419823823765149'),
+  _JigsawTemplate(
+      '000111222000111222030144522033114552333444555336448558636748858666777888666777778',
+      '956127384271438569843569127438695271569271843712384695127843956384956712695712438'),
+  _JigsawTemplate(
+      '000111222000111222030114252330144552333444455336477558366475588666777888666777888',
+      '179846325846532179532917846253791684917684532684253917468325791325179468791468253'),
+  _JigsawTemplate(
+      '000112222000014222001114422333144455331144555333345558667777588666678888666777788',
+      '478139625391256784562847913846713592259684371137925468714392856685471239923568147'),
+  _JigsawTemplate(
+      '000111222000111222030114252330144552333444555363444585663777785666777888666778888',
+      '832146579957832614146795328614579832283614957795283461579328146461957283328461795'),
+  _JigsawTemplate(
+      '000001122000111222011112222333444458336445558336444558366775588367775788666677788',
+      '943251867867349152152768943796413285314582796285697314578936421421875639639124578'),
+  _JigsawTemplate(
+      '000111112000122212033112222003444555633477855633477855663447858663447858666777888',
+      '942657183657381492138429675381294567429576318576813249765138924294765831813942756'),
+  _JigsawTemplate(
+      '000122222011111112000001222334444455344344555333335555666666888666888888777777777',
+      '145379862286415973973682145628154397397826514514793286739268451451937628862541739'),
+  _JigsawTemplate(
+      '000111222001112222000011122333344455333444555334445585667775788666677788666778888',
+      '872459316631287945594163728925634187718592463346871259289345671167928534453716892'),
+  _JigsawTemplate(
+      '000112222000111122030111222330445558633444458663744558633774588636777588666777588',
+      '347982651165374289928156473592761348834529167716843925471238596283695714659417832'),
+  _JigsawTemplate(
+      '000111225300111225300144225303114255303444255333444255666778888677777788666667888',
+      '271453698698217354354689712435896271869172435127534869986721543543968127712345986'),
+  _JigsawTemplate(
+      '001111122000011222000112252333442555333444455633477558636447858666777888666777888',
+      '391874625265193874847256319526931748784562193139748256913487562652319487478625931'),
+  _JigsawTemplate(
+      '000011122001112222000111222333355555334444555333444445667778888666677788666777888',
+      '721846935468539712953172648172684359846953127395217486217468593539721864684395271'),
+  _JigsawTemplate(
+      '001111122000112122000312222033344455334345555334444555667777788666778788666678888',
+      '296451738514387962873629145689142573421735896357968214938216457162574389745893621'),
+  _JigsawTemplate(
+      '000111222000011122001112222333444555333444555633474855636478885666777888666777788',
+      '831947526974652381256813479183479265497526813625138794562381947318794652749265138'),
+  _JigsawTemplate(
+      '000111222300111122300412222330415555330444455366474855336774858666777888666777888',
+      '957324168342816597618975243186597324423681759579432816795243681234168975861759432'),
+  _JigsawTemplate(
+      '000011222001011222001111522333444552333444558366744558336774858666677858667777888',
+      '632178549781954632549263781325681497497532816816749325163897254978425163254316978'),
+  _JigsawTemplate(
+      '000111122000111222003112222033444555336445558336444458366777758366778758666778888',
+      '482397651561428739379516842938175426246983517157264398713652984625849173894731265'),
+  _JigsawTemplate(
+      '000111222000011222031114225033314255334344555334447585666647885667677888667777888',
+      '691852743528734196347169825483697512976521384215348679162485937854973261739216458'),
+  _JigsawTemplate(
+      '000111222000111222003114252303144255333444555363447585366477588666777888666777888',
+      '986245173317896254425137869259714638863529741174683592742361985598472316631958427'),
+  _JigsawTemplate(
+      '000111222000111122300412222330414555333444885363744885366747855666777855666777888',
+      '241756893765938421983214675859423167617895342432671589394162758126587934578349216'),
+  _JigsawTemplate(
+      '001111222000011522300114522303144525333444525663444555633778888667778788666677788',
+      '948617532253894761176325489317582946825469173694731258769153824482976315531248697'),
+  _JigsawTemplate(
+      '000000222000111222311114255313414225333444555363474588663477558666667888677777888',
+      '536781924429635178187249635718492356653817249942356781294563817365178492871924563'),
+  _JigsawTemplate(
+      '000111222000141252030144252033114552333144452333445555666788888667777778666677888',
+      '132964758578132469649578231496785123785321946321649875857213694964857312213496587'),
+  _JigsawTemplate(
+      '000111115001111225000022225333344255334344255334444255666688888666888778667777777',
+      '392187456456293781781654392179846235648532179235971648524319867867425913913768524'),
+  _JigsawTemplate(
+      '000111222000111225330114225300144255333444255633447855636477858666777888666777888',
+      '417685329932174856568932174856293417293417685741568932174856293685329741329741568'),
+  _JigsawTemplate(
+      '000112222000111122033441522003411525333447555366447885336477855666477888666777888',
+      '546728319391564872278931645782193564465872931913456287139645728654287193827319456'),
+  _JigsawTemplate(
+      '000011222000111222001111522333444552334444555333364558666664858666777888777777888',
+      '485912367673584921219376548892631475754298613136457289347825196961743852528169734'),
+  _JigsawTemplate(
+      '000022222001011222001111112333455555334444445333644555636668888666788788677777778',
+      '695841723148327695723596148437652981981734256256189437519478362362915874874263519'),
 ];
 
 /// 随机取一套内置锯齿宫布局，做「转置 / 上下翻 / 左右翻」+ 宫号重排 + 数字重排，
@@ -2080,93 +2201,195 @@ class _CagePainter extends CustomPainter {
     required this.bgColor,
   });
 
+  // v2.3.7（用户第 1 条：「相邻虚线框不能共用虚线，要各是各，
+  // 所有虚线框的框线都独立存在，连续且不超出」）
+  //
+  // 老写法按**网格边**画：一条边被两个笼共用时只画一遍（`seen` 去重），
+  // 于是两个笼的框在那一段**完全重合**，看着就是一根共用的线，
+  // 分不清谁是谁的；而且每条边各自起虚线相位、两端各外伸 `extend`，
+  // 外伸那一截在棋盘边缘、在笼子拐角都会探到框外去。
+  //
+  // 现在换个思路：**每个笼子只画它自己的轮廓**。
+  //   1. 把笼内所有朝向笼外的边按逆时针串成一个闭环（每条边带内法线）；
+  //   2. 整条闭环朝**笼内**平移 inset —— 顶点用相邻两条偏移线求交，
+  //      拐角严丝合缝，也不会探出笼外；
+  //   3. 沿闭环**一圈连续**画虚线：虚线相位跨顶点往下走，一圈走满正好
+  //      收口（周期取 total / 整数），中途不断、结尾不多画。
+  //
+  // 相邻两个笼各自缩到自己那一侧，共享边处天然变成两条平行虚线、
+  // 中间留 2×inset 的空，各是各的，绝不会共用。
   @override
   void paint(Canvas canvas, Size size) {
-    final n = cageId.length;
     final paint = Paint()
       ..color = lineColor
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.6
-      ..strokeCap = StrokeCap.round;
+      // 圆头会在闭环接缝处拱出去一点，改成平头，收口更干净
+      ..strokeCap = StrokeCap.butt;
 
-    // v2.3.6（用户第 2 条：「虚线框不完整，都没有连起来，有的边上没有」
-    // +「和的数字跟虚线重合了」）
-    //
-    // 老写法按**格**去画虚线：每格各画自己那几条边，每条边单独起虚线相位、
-    // 还各自往里缩，于是 ① 每格拐角都缩进去一点，框必然断开；
-    // ② 内部边只让「下面/右边那格」画，碰到同笼格子就整段漏掉；
-    // ③ 相邻两格各画一遍，长短不一。合起来就是「有的边没有、框连不起来」。
-    //
-    // 现在的做法：
-    //   * 每条**宫界边只画一次**（同一段被两个笼共享时按行列顺序归先遇到的那格，
-    //     否则半透明色叠两遍会发黑）；
-    //   * 虚线周期取成「格宽的整数分之一」—— 相邻边的虚线首尾自然接上，
-    //     一格接一格看过去是均匀的一条，不会在格缝处突然变密；
-    //   * 每条边两端各**多画一截**（extend），拐角处两条虚线必定叠上，
-    //     闭合就不会缺口；
-    //   * 整条线朝**格内**挪 [inset]，不再压在格子的实线边框上。
-    final inset = (cell * 0.06).clamp(1.1, 2.2).toDouble();
-    // 虚线周期：格宽 36px 时约 7.2px（5 个周期铺满一格）
-    final period = cell / math.max(3.0, (cell / 7.2).roundToDouble());
-    final dash = period * 0.62;
-    final gap = period - dash;
+    // 缩进量：格宽 40px 时约 3px，格子再小也不低于 1.3px
+    final inset = (cell * 0.075).clamp(1.3, 2.6).toDouble();
 
-    final seen = <int>{};
-    for (var r = 0; r < n; r++) {
-      for (var c = 0; c < n; c++) {
-        final my = cageId[r][c];
-        if (my < 0) continue; // 不在任何笼里（理论上不会出现）
-        if (r == 0 || cageId[r - 1][c] != my) {
-          _edge(canvas, paint, seen, c, r, c + 1, r, 0, inset,
-              dash, gap, inset);
-        }
-        if (c == n - 1 || cageId[r][c + 1] != my) {
-          _edge(canvas, paint, seen, c + 1, r, c + 1, r + 1, -inset, 0,
-              dash, gap, inset);
-        }
-        if (r == n - 1 || cageId[r + 1][c] != my) {
-          _edge(canvas, paint, seen, c, r + 1, c + 1, r + 1, 0, -inset,
-              dash, gap, inset);
-        }
-        if (c == 0 || cageId[r][c - 1] != my) {
-          _edge(canvas, paint, seen, c, r, c, r + 1, inset, 0,
-              dash, gap, inset);
-        }
+    cages.forEach((_, cage) {
+      for (final loop in _outline(cage)) {
+        final pts = _shrink(loop, inset);
+        if (pts.length >= 3) _dashLoop(canvas, paint, pts);
+      }
+    });
+
+    _paintSums(canvas, inset);
+  }
+
+  /// 把一个笼子的外边界串成闭环（格坐标，未乘 cell）。
+  ///
+  /// 每条边都给成「逆时针」方向，这样内法线统一是 `(-dy, dx)`：
+  /// 上边界从左往右、右边界从上往下、下边界从右往左、左边界从下往上。
+  List<List<Offset>> _outline(_Cage cage) {
+    final segs = <List<Offset>>[];
+    for (final cl in cage.cells) {
+      final r = cl[0], c = cl[1];
+      final id = cageId[r][c];
+      bool mine(int rr, int cc) =>
+          rr >= 0 && rr < cageId.length && cc >= 0 && cc < cageId.length &&
+          cageId[rr][cc] == id;
+      if (!mine(r - 1, c)) {
+        segs.add([Offset(c.toDouble(), r.toDouble()), Offset(c + 1.0, r.toDouble())]);
+      }
+      if (!mine(r, c + 1)) {
+        segs.add([Offset(c + 1.0, r.toDouble()), Offset(c + 1.0, r + 1.0)]);
+      }
+      if (!mine(r + 1, c)) {
+        segs.add([Offset(c + 1.0, r + 1.0), Offset(c.toDouble(), r + 1.0)]);
+      }
+      if (!mine(r, c - 1)) {
+        segs.add([Offset(c.toDouble(), r + 1.0), Offset(c.toDouble(), r.toDouble())]);
       }
     }
 
-    _paintSums(canvas);
+    String key(Offset p) => '${p.dx.round()},${p.dy.round()}';
+    final byStart = <String, List<List<Offset>>>{};
+    for (final s in segs) {
+      byStart.putIfAbsent(key(s[0]), () => <List<Offset>>[]).add(s);
+    }
+
+    final used = <List<Offset>>{};
+    final loops = <List<Offset>>[];
+    for (final s in segs) {
+      if (used.contains(s)) continue;
+      final loop = <Offset>[s[0]];
+      var cur = s;
+      used.add(cur);
+      var guard = 0;
+      while (guard++ < segs.length + 2) {
+        loop.add(cur[1]);
+        final cands = byStart[key(cur[1])];
+        List<Offset>? nxt;
+        if (cands != null) {
+          for (final e in cands) {
+            if (!used.contains(e)) {
+              nxt = e;
+              break;
+            }
+          }
+        }
+        if (nxt == null) break;
+        used.add(nxt);
+        cur = nxt;
+      }
+      // 最后一点等于起点，去掉重复顶点
+      if (loop.length > 1 && loop.last == loop.first) loop.removeLast();
+      if (loop.length >= 3) loops.add(loop);
+    }
+    return loops;
   }
 
-  /// 画一条宫界边。[dx]/[dy] 是「往里挪」的方向（一格为单位）。
-  void _edge(Canvas canvas, Paint paint, Set<int> seen, int x1, int y1,
-      int x2, int y2, double dx, double dy, double dash, double gap,
-      double extend) {
-    // 无向去重：同一段边只画一次
-    final a0 = x1 * 16 + y1, b0 = x2 * 16 + y2;
-    final key = a0 < b0 ? a0 * 4096 + b0 : b0 * 4096 + a0;
-    if (!seen.add(key)) return;
-    final a = Offset(x1 * cell + dx, y1 * cell + dy);
-    final b = Offset(x2 * cell + dx, y2 * cell + dy);
-    final ex = b.dx - a.dx, ey = b.dy - a.dy;
-    final len = math.sqrt(ex * ex + ey * ey);
-    if (len <= 0) return;
-    final ux = ex / len, uy = ey / len;
-    var t = -extend; // 两端多画一截，拐角处两边虚线必然相接
-    final end = len + extend;
-    while (t < end) {
-      final t2 = math.min(t + dash, end);
-      canvas.drawLine(
-        Offset(a.dx + ux * t, a.dy + uy * t),
-        Offset(a.dx + ux * t2, a.dy + uy * t2),
-        paint,
-      );
-      t = t2 + gap;
+  /// 闭环朝笼内平移 [inset] 像素，返回像素坐标顶点。
+  /// 每个顶点取「前一条偏移线」与「后一条偏移线」的交点 —— 拐角不会开口。
+  List<Offset> _shrink(List<Offset> loop, double inset) {
+    final k = inset / cell;
+    final out = <Offset>[];
+    final m = loop.length;
+    for (var i = 0; i < m; i++) {
+      final prev = loop[(i - 1 + m) % m];
+      final cur = loop[i];
+      final next = loop[(i + 1) % m];
+      var d1 = cur - prev;
+      var d2 = next - cur;
+      if (d1.distance < 1e-6 || d2.distance < 1e-6) {
+        out.add(Offset(cur.dx * cell, cur.dy * cell));
+        continue;
+      }
+      final l1 = d1.distance, l2 = d2.distance;
+      d1 = Offset(d1.dx / l1, d1.dy / l1);
+      d2 = Offset(d2.dx / l2, d2.dy / l2);
+      // 逆时针走行的内法线
+      final n1 = Offset(-d1.dy, d1.dx);
+      final n2 = Offset(-d2.dy, d2.dx);
+      final a = prev + n1 * k;
+      final b = cur + n2 * k;
+      final den = d1.dx * d2.dy - d1.dy * d2.dx;
+      Offset p;
+      if (den.abs() < 1e-6) {
+        // 两条边共线（直边中段），直接平移
+        p = cur + n1 * k;
+      } else {
+        final t = ((b.dx - a.dx) * d2.dy - (b.dy - a.dy) * d2.dx) / den;
+        p = a + d1 * t;
+      }
+      out.add(Offset(p.dx * cell, p.dy * cell));
+    }
+    return out;
+  }
+
+  /// 沿闭环画一整圈虚线：相位按**周长**连续推进，一圈正好整数个周期，
+  /// 收口处是一个 gap，不会突然多画一截或断开。
+  void _dashLoop(Canvas canvas, Paint paint, List<Offset> pts) {
+    final segLen = <double>[];
+    var total = 0.0;
+    for (var i = 0; i < pts.length; i++) {
+      final l = (pts[(i + 1) % pts.length] - pts[i]).distance;
+      segLen.add(l);
+      total += l;
+    }
+    if (total < 6) return;
+
+    // 虚线周期取「一格的 1/5 上下」，再按周长取整 —— 每段长短一致
+    final ideal = (cell / 5).clamp(4.0, 9.0).toDouble();
+    final count = math.max(4, (total / ideal).round());
+    final period = total / count;
+    final dash = period * 0.58;
+
+    var acc = 0.0;
+    var di = 0;
+    for (var i = 0; i < pts.length; i++) {
+      final l = segLen[i];
+      if (l <= 0) continue;
+      final a = pts[i];
+      final b = pts[(i + 1) % pts.length];
+      final ux = (b.dx - a.dx) / l, uy = (b.dy - a.dy) / l;
+      while (di < count && (di * period + dash) <= acc) {
+        di++;
+      }
+      var kk = di;
+      while (kk < count && kk * period < acc + l) {
+        final s0 = math.max(kk * period, acc) - acc;
+        final s1 = math.min(kk * period + dash, acc + l) - acc;
+        if (s1 > s0 + 0.01) {
+          canvas.drawLine(
+            Offset(a.dx + ux * s0, a.dy + uy * s0),
+            Offset(a.dx + ux * s1, a.dy + uy * s1),
+            paint,
+          );
+        }
+        kk++;
+      }
+      acc += l;
     }
   }
 
   /// 笼和：画在笼内「最上、再最左」那格的左上角，垫一层底色避免糊在底纹/笔记上。
-  void _paintSums(Canvas canvas) {
+  /// 位置比虚线再往里让一点，不跟框线压在一起。
+  void _paintSums(Canvas canvas, double inset) {
     cages.forEach((_, cage) {
       var br = cage.cells[0][0], bc = cage.cells[0][1];
       for (final cl in cage.cells) {
@@ -2179,7 +2402,7 @@ class _CagePainter extends CustomPainter {
         text: TextSpan(
           text: '${cage.sum}',
           style: TextStyle(
-            fontSize: cell * 0.24,
+            fontSize: cell * 0.25,
             height: 1.0,
             color: lineColor,
             fontWeight: FontWeight.w800,
@@ -2187,15 +2410,14 @@ class _CagePainter extends CustomPainter {
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      // 往格内多让一点，别贴到虚线（虚线本身已经往内挪了 inset）
-      final dx = bc * cell + 2.4;
-      final dy = br * cell + 2.0;
+      final dx = bc * cell + inset + 1.8;
+      final dy = br * cell + inset + 1.6;
       canvas.drawRRect(
         RRect.fromRectAndRadius(
-          Rect.fromLTWH(dx - 1.4, dy - 1.0, tp.width + 2.8, tp.height + 2.0),
+          Rect.fromLTWH(dx - 1.4, dy - 0.8, tp.width + 2.8, tp.height + 1.6),
           const Radius.circular(2.5),
         ),
-        Paint()..color = bgColor.withValues(alpha: 0.92),
+        Paint()..color = bgColor.withValues(alpha: 0.95),
       );
       tp.paint(canvas, Offset(dx, dy));
     });
@@ -2204,12 +2426,11 @@ class _CagePainter extends CustomPainter {
   @override
   bool shouldRepaint(_CagePainter old) =>
       !identical(old.cageId, cageId) ||
+      !identical(old.cages, cages) ||
       old.cell != cell ||
       old.lineColor != lineColor ||
       old.bgColor != bgColor;
 }
-
-
 
 class _JigsawPainter extends CustomPainter {
   final List<List<int>> regionOf;
