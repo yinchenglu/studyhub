@@ -2020,8 +2020,10 @@ class _SudokuGrid extends StatelessWidget {
             bgColor: scheme.surface,
             sumColor: scheme.onSurfaceVariant,
             // v2.3.9（用户：「点击某个格子后，他所在的虚线框也突出显示」）
-            selR: _selR,
-            selC: _selC,
+            // 注意：_cageOverlay 在 _SudokuGrid（StatelessWidget）里，
+            // 选中坐标要走本类的 selR/selC 字段，不是 State 的 _selR/_selC。
+            selR: selR,
+            selC: selC,
             highlightColor: scheme.primary,
           ),
         ),
