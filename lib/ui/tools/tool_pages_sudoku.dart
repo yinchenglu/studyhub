@@ -51,6 +51,9 @@ enum SudokuType {
   jigsaw('锯齿数独', '9×9 · 宫是不规则锯齿形状',
       '每行、每列照常 1~9 不重复；但「宫」变成了 9 块不规则的锯齿——'
           '同一种底色 + 粗边线围住的就是一个宫。'),
+  windoku('窗口数独', '9×9 · 额外 4 个九宫窗口',
+      '在九宫格规则之上，还有 4 个「窗口」——每块 3×3，用浅蓝粗框标出：'
+          '每个窗口里的 1~9 也不能重复（窗口和普通宫可以重叠，约束叠加）。'),
   killer('杀手数独', '9×9 + 虚线笼，笼内之和 = 角标',
       '在九宫格规则之上，虚线框（笼）把若干格圈在一起：笼内数字不能重复，'
           '且笼内所有数字之和 = 左上角标的小数字。'),
@@ -412,6 +415,54 @@ class JigsawRules extends StandardRules {
   /// 锯齿的宫界是随机的，快速求解器直接读 [regionOf]（见 _FastSolver），
   /// 所以这里不需要额外的 extraOk。
 
+}
+
+/// 窗口数独（Windoku）：标准行/列/宫之外，再加 4 个「窗口」。
+///
+/// 窗口是 3×3 的小九宫，位置在行 1~3 / 5~7 与列 1~3 / 5~7 的交叉处 ——
+/// 正好落在四个角上的 3×3 故宫之间，跟普通宫**部分重叠**，所以约束是叠加的。
+/// 例：左上角那个 3×3 宫和左上窗口在 (1,1)(1,2)(2,1)(2,2) 四格重叠。
+class WindokuRules extends StandardRules {
+  WindokuRules(super.type);
+
+  /// 4 个窗口的左上角（行, 列），每个窗口 3×3。
+  static const List<List<int>> windowTops = [
+    [1, 1],
+    [1, 5],
+    [5, 1],
+    [5, 5],
+  ];
+
+  /// (r,c) 所在的窗口左上角；不在任何窗口里返回 null。
+  static List<int>? windowOf(int r, int c) {
+    for (final t in windowTops) {
+      if (r >= t[0] && r < t[0] + 3 && c >= t[1] && c < t[1] + 3) return t;
+    }
+    return null;
+  }
+
+  /// 窗口内不能重数。
+  bool _windowOk(SudokuBoard b, int r, int c, int v) {
+    final t = windowOf(r, c);
+    if (t == null) return true;
+    for (var rr = t[0]; rr < t[0] + 3; rr++) {
+      for (var cc = t[1]; cc < t[1] + 3; cc++) {
+        if (rr == r && cc == c) continue;
+        if (b.cells[rr][cc] == v) return false;
+      }
+    }
+    return true;
+  }
+
+  @override
+  bool isLegal(SudokuBoard b, int r, int c, int v) {
+    if (!super.isLegal(b, r, c, v)) return false;
+    return _windowOk(b, r, c, v);
+  }
+
+  /// 快速求解器只用位掩码管行/列/宫，窗口走这个钩子。
+  @override
+  bool extraOk(SudokuBoard b, int r, int c, int v) => _windowOk(b, r, c, v);
 }
 
 /// 杀手：每笼数字不重且和 = 笼和。
@@ -966,6 +1017,16 @@ class _SudokuPageState extends State<SudokuPage> {
         if (!rules.isValidSolution(full)) {
           // 自检兜底：正常走不到这里（12 套模板都离线验证过）
           rules = StandardRules(SudokuType.jigsaw);
+          full = rules.generateFull(rng);
+        }
+        break;
+      case SudokuType.windoku:
+        rules = WindokuRules(_type);
+        full = rules.generateFull(rng);
+        // 窗口约束比标准九宫强，`generateFull` 的拉丁方兜底不保证满足窗口
+        // （兜底公式在 3×3 窗口里会重复）。所以这里再验一遍，不合法就重来，
+        // 绝不能让玩家拿到一份「按答案填也判错」的盘。
+        for (var i = 0; i < 50 && !rules.isValidSolution(full); i++) {
           full = rules.generateFull(rng);
         }
         break;
@@ -1677,13 +1738,17 @@ class _SudokuGrid extends StatelessWidget {
     // 宫界全部交给 _JigsawPainter 画，同时给每个宫铺淡底色，一眼能看出锯齿。
     final isJigsaw = rules is JigsawRules;
     final regionOf = isJigsaw ? (rules as JigsawRules).regionOf : null;
-    // v2.3.7（用户第 2 条：「锯齿刷新好多次才出一次正确的」）
+    // v2.3.8（用户：「锯齿数独还是没有成功，没有出现锯齿」+「配色参考截图」）
     //
-    // 老涂色是 `regionOf % 4` 取四种颜色 —— 9 个宫塞进 4 个颜色，
-    // 相邻两宫撞色时整片糊在一起，玩家看到的「宫」跟真实宫界对不上，
-    // 只有少数几次刷出来的编号组合恰好两两不同色，才「看着是对的」。
-    // 现在按宫号给 **9 个不同色相**，任意两宫都不同色，边界一眼可辨。
-    final jigsawTints = isJigsaw ? _jigsawTints(scheme) : const <Color>[];
+    // v2.3.7 把宫界全交给覆盖层 _JigsawPainter 画 —— 真机上只要这一层出
+    // 任何意外（尺寸/重绘/层级），锯齿就一根线都没有，单点依赖太脆。
+    // 现在改**双保险**：宫界线同时画进每个格子的 BorderSide（上邻/左邻
+    // 不同宫 → 上/左边框用宫界色），覆盖层再叠加画粗一遍。即使覆盖层
+    // 失灵，格子边框本身也能拼出完整锯齿。
+    //
+    // 配色对齐参考截图：整盘白底，宫界/笼线都用**浅蓝细线**，不再用深黑
+    // 粗线；锯齿宫底色回到**两档极浅蓝**（参考图就是浅蓝/白交替的马赛克）。
+    final jagLineColor = scheme.primary.withValues(alpha: 0.9);
 
     return Container(
       decoration: BoxDecoration(
@@ -1724,7 +1789,7 @@ class _SudokuGrid extends StatelessWidget {
                     errColor: errColor,
                     isJigsaw: isJigsaw,
                     regionOf: regionOf,
-                    jigsawTints: jigsawTints,
+                    jagLineColor: jagLineColor,
                   );
                 },
               ),
@@ -1733,6 +1798,7 @@ class _SudokuGrid extends StatelessWidget {
                 _cageOverlay(board, cell, scheme),
               if (rules is JigsawRules)
                 _jigsawOverlay(rules, cell, scheme),
+              if (rules is WindokuRules) _windowOverlay(cell, scheme),
               if (rules is GreaterRules && board.relationMark != null)
                 _greaterOverlay(board, cell, scheme),
               if (rules is EvenOddRules)
@@ -1758,22 +1824,35 @@ class _SudokuGrid extends StatelessWidget {
     required Color errColor,
     bool isJigsaw = false,
     List<List<int>>? regionOf,
-    List<Color> jigsawTints = const <Color>[],
+    Color jagLineColor = const Color(0xFF90A4AE),
   }) {
     final v = board.cells[r][c];
     final isFixed = board.fixed[r][c];
     final n = board.size;
     // 边框：宫界线按本题型的宫大小算（4×4 → 2×2、6×6 → 2 行 × 3 列、
-    // 9×9 → 3×3）。锯齿模式例外 —— 标准宫线全部压掉，只留细网格，
-    // 宫界交给锯齿绘制层。
+    // 9×9 → 3×3）。锯齿模式例外 —— 标准 3×3 宫线要压掉，改按**真实锯齿宫**
+    // 判定：上邻 / 左邻跟自己不是同一个宫，这条边上就是宫界线。
+    //
+    // v2.3.8：这就是「锯齿双保险」的第一道 —— 宫界线直接画在格子边框上。
+    // 覆盖层 _JigsawPainter 只当加粗的第二遍，任何一层失效都还有另一层。
     final boxR = rules.boxRows;
     final boxC = rules.boxCols;
-    final thickTop = !isJigsaw && r > 0 && r % boxR == 0;
-    final thickLeft = !isJigsaw && c > 0 && c % boxC == 0;
-    final isRightThick = !isJigsaw &&
-        (c == n - 1 || (((c + 1) % boxC == 0) && c != n - 1));
-    final isBottomThick = !isJigsaw &&
-        (r == n - 1 || (((r + 1) % boxR == 0) && r != n - 1));
+    bool jagEdge(int rr, int cc) {
+      if (!isJigsaw || regionOf == null) return false;
+      if (rr < 0 || rr >= n || cc < 0 || cc >= n) return true; // 盘边
+      return regionOf[rr][cc] != regionOf[r][c];
+    }
+    // 锯齿时遇到盘边不画（盘框本身已经有 1.5px 深色外框）
+    final jagTop = isJigsaw && r > 0 && jagEdge(r - 1, c);
+    final jagLeft = isJigsaw && c > 0 && jagEdge(r, c - 1);
+    final jagRight = isJigsaw && c < n - 1 && jagEdge(r, c + 1);
+    final jagBottom = isJigsaw && r < n - 1 && jagEdge(r + 1, c);
+    final thickTop = jagTop || (!isJigsaw && r > 0 && r % boxR == 0);
+    final thickLeft = jagLeft || (!isJigsaw && c > 0 && c % boxC == 0);
+    final isRightThick = jagRight ||
+        (!isJigsaw && (c == n - 1 || (((c + 1) % boxC == 0) && c != n - 1)));
+    final isBottomThick = jagBottom ||
+        (!isJigsaw && (r == n - 1 || (((r + 1) % boxR == 0) && r != n - 1)));
 
     // 检查当前值是否违反规则（仅对**用户填入**的格提示，fixed 的略过）
     bool _isIllegal = false;
@@ -1788,11 +1867,17 @@ class _SudokuGrid extends StatelessWidget {
     final checkedWrong = wrongCells.contains('$r-$c');
 
     // v2.2.0：锯齿宫淡底色 —— 同一宫一个颜色，边界一眼能看出来。
-    // v2.3.2 把透明度从 0.07 提到 0.12（用户反馈「看不出锯齿」，
-    // 太淡的底色在浅色主题下几乎隐形）。
+    // v2.3.8：改回参考截图的风格 —— **浅蓝 / 白交替**（不再九彩色），
+    // 宫界靠浅蓝细线本身表达，整体更接近用户给的那张图。
     Color cellBg = Colors.transparent;
-    if (isJigsaw && regionOf != null && jigsawTints.isNotEmpty) {
-      cellBg = jigsawTints[regionOf[r][c] % 9];
+    if (isJigsaw && regionOf != null) {
+      cellBg = regionOf[r][c].isEven
+          ? jagLineColor.withValues(alpha: 0.10)
+          : Colors.transparent;
+    }
+    // v2.3.8 窗口数独：窗口内的格子铺一层极淡蓝，跟宫界一起把「窗口」标出来
+    if (rules is WindokuRules && WindokuRules.windowOf(r, c) != null) {
+      cellBg = Theme.of(context).colorScheme.primary.withValues(alpha: 0.05);
     }
     if (showHint && solution != null && v == 0) {
       cellBg = hintColor;
@@ -1812,24 +1897,22 @@ class _SudokuGrid extends StatelessWidget {
     // 就得一行行扫 —— 现在一眼就能看到全部位置。
     final selValue = hasSel ? board.cells[selR][selC] : 0;
     final isSameNum = hasSel && !isSel && selValue != 0 && v == selValue;
-    // v2.3.7（用户第 3 条：「点击数字之后，颜色不够醒目」）
+    // v2.3.8（用户：「配色参考这个图片」）
     //
-    // 老配色三档都在「主色 + 低透明度」这一个色系里打转（0.22 / 0.20 / 0.07），
-    // 深浅差一两个百分点，屏幕上根本分不开。
-    // 现在按**三层色阶**重排，强度依次递减，一眼能分出「我点的是哪格」
-    // → 「还有哪些同数字」→ 「哪些在同一行/列/宫」：
-    //   选中格   = 主色**实底** + 数字反白（对比最强）
-    //   相同数字 = 主色 0.34 底 + 1.6px 主色描边 + 数字加粗
-    //   同行同列 = 主色 0.06 淡底（几乎只是提示）
+    // 参考图的三档很干脆：选中格 / 同数字都是**实蓝底 + 白字**，同行同列
+    // 只是很浅的蓝。照这个来，选中格再叠一圈更深的描边做区分：
+    //   选中格   = 主色实底 + 反白 + 2.5px 深主色描边
+    //   相同数字 = 主色 0.85 实底感 + 反白 + 1.6px 主色描边
+    //   同行同列 = 主色 0.10 淡底
     Color? hlBorder;
     if (isSel) {
       cellBg = cs2.primary;
-      hlBorder = cs2.primary;
+      hlBorder = Color.alphaBlend(Colors.black.withValues(alpha: 0.25), cs2.primary);
     } else if (isSameNum) {
-      cellBg = cs2.primary.withValues(alpha: 0.34);
-      hlBorder = cs2.primary.withValues(alpha: 0.85);
+      cellBg = cs2.primary.withValues(alpha: 0.85);
+      hlBorder = cs2.primary;
     } else if (isPeer && !(showHint && solution != null && v == 0) && !checkedWrong) {
-      cellBg = cs2.primary.withValues(alpha: 0.06);
+      cellBg = cs2.primary.withValues(alpha: 0.10);
     }
     return GestureDetector(
       onTap: () => onCellTap(r, c),
@@ -1839,16 +1922,20 @@ class _SudokuGrid extends StatelessWidget {
           color: cellBg,
           border: Border(
             // v2.3.1：宫界线按本题型的宫大小算（原来写死每 3 格的）
+            // v2.3.8：锯齿模式改按**真实锯齿宫**判定（jagTop/jagLeft…），
+            // 颜色用浅蓝（对齐参考截图），线宽 1.6 压过 0.5 的细网格。
             top: BorderSide(
-                color: thickTop ? thickColor : lineColor,
-                width: thickTop ? 1.5 : 0.5),
+                color: thickTop ? (isJigsaw ? jagLineColor : thickColor) : lineColor,
+                width: thickTop ? (isJigsaw ? 1.6 : 1.5) : 0.5),
             left: BorderSide(
-                color: thickLeft ? thickColor : lineColor,
-                width: thickLeft ? 1.5 : 0.5),
+                color: thickLeft ? (isJigsaw ? jagLineColor : thickColor) : lineColor,
+                width: thickLeft ? (isJigsaw ? 1.6 : 1.5) : 0.5),
             right: BorderSide(
-                color: isRightThick ? thickColor : lineColor, width: isRightThick ? 1.5 : 0.5),
+                color: isRightThick ? (isJigsaw ? jagLineColor : thickColor) : lineColor,
+                width: isRightThick ? (isJigsaw ? 1.6 : 1.5) : 0.5),
             bottom: BorderSide(
-                color: isBottomThick ? thickColor : lineColor, width: isBottomThick ? 1.5 : 0.5),
+                color: isBottomThick ? (isJigsaw ? jagLineColor : thickColor) : lineColor,
+                width: isBottomThick ? (isJigsaw ? 1.6 : 1.5) : 0.5),
           ),
         ),
         // v2.3.7：选中格 / 相同数字额外描一圈主色（画在数字上层，压住细网格）
@@ -1856,7 +1943,7 @@ class _SudokuGrid extends StatelessWidget {
             ? null
             : BoxDecoration(
                 border: Border.all(
-                    color: hlBorder, width: isSel ? 2.0 : 1.6),
+                    color: hlBorder, width: isSel ? 2.5 : 1.6),
               ),
         alignment: Alignment.center,
         child: v == 0
@@ -1896,25 +1983,13 @@ class _SudokuGrid extends StatelessWidget {
                       : isSel
                           ? cs2.onPrimary
                           : isSameNum
-                              ? cs2.onSurface
+                              // 同数格也跟着铺了实底，数字必须反白
+                              ? cs2.onPrimary
                               : (isFixed ? Colors.black87 : cs2.primary),
                 ),
               ),
       ),
     );
-  }
-
-  /// 9 个宫各一种色相（步长 40°，绕一圈正好盖满色环），任意两宫都不同色。
-  /// v2.3.7：原来 `% 4` 只用四种颜色，9 个宫必然撞色，相邻两宫一旦同色
-  /// 就糊成一整片，玩家根本看不出宫界。
-  static List<Color> _jigsawTints(ColorScheme scheme) {
-    final base = HSLColor.fromColor(scheme.primary);
-    final dark = scheme.brightness == Brightness.dark;
-    return List<Color>.generate(9, (i) {
-      final hue = (base.hue + i * 40.0) % 360.0;
-      return HSLColor.fromAHSL(dark ? 0.28 : 0.22, hue, 0.75, dark ? 0.60 : 0.74)
-          .toColor();
-    });
   }
 
   /// (r,c) 是不是和选中格同行 / 同列 / 同宫。
@@ -1937,8 +2012,10 @@ class _SudokuGrid extends StatelessWidget {
             cageId: b.cageId!,
             cages: b.cages!,
             cell: cell,
-            lineColor: scheme.onSurface.withValues(alpha: 0.85),
+            // v2.3.8：对齐参考截图 —— 笼线是**浅蓝细虚线**，不再是深黑粗虚线
+            lineColor: scheme.primary.withValues(alpha: 0.62),
             bgColor: scheme.surface,
+            sumColor: scheme.onSurfaceVariant,
           ),
         ),
       ),
@@ -1958,7 +2035,21 @@ class _SudokuGrid extends StatelessWidget {
             regionOf: rules.regionOf,
             cell: cell,
             n: n,
-            lineColor: scheme.onSurface,
+            lineColor: scheme.primary.withValues(alpha: 0.9),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------- 窗口（窗口数独） ----------
+  Widget _windowOverlay(double cell, ColorScheme scheme) {
+    return SizedBox.expand(
+      child: IgnorePointer(
+        child: CustomPaint(
+          painter: _WindowPainter(
+            cell: cell,
+            color: scheme.primary.withValues(alpha: 0.85),
           ),
         ),
       ),
@@ -2193,12 +2284,15 @@ class _CagePainter extends CustomPainter {
   final Color lineColor;
   /// 笼和数字垫底色用（穿透过去的笔记小字会把数字糊掉）
   final Color bgColor;
+  /// 笼和数字的颜色（参考截图里是灰色小字，跟虚线同色会看不清）
+  final Color sumColor;
   _CagePainter({
     required this.cageId,
     required this.cages,
     required this.cell,
     required this.lineColor,
     required this.bgColor,
+    required this.sumColor,
   });
 
   // v2.3.7（用户第 1 条：「相邻虚线框不能共用虚线，要各是各，
@@ -2220,15 +2314,17 @@ class _CagePainter extends CustomPainter {
   // 中间留 2×inset 的空，各是各的，绝不会共用。
   @override
   void paint(Canvas canvas, Size size) {
+    // v2.3.8：参考截图的笼线是**细的浅蓝短虚线**（约 1px、短划密排），
+    // 不再是 1.6px 的深色长虚线。
     final paint = Paint()
       ..color = lineColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.6
+      ..strokeWidth = 1.2
       // 圆头会在闭环接缝处拱出去一点，改成平头，收口更干净
       ..strokeCap = StrokeCap.butt;
 
-    // 缩进量：格宽 40px 时约 3px，格子再小也不低于 1.3px
-    final inset = (cell * 0.075).clamp(1.3, 2.6).toDouble();
+    // 缩进量：格宽 40px 时约 2px
+    final inset = (cell * 0.05).clamp(1.0, 2.0).toDouble();
 
     cages.forEach((_, cage) {
       for (final loop in _outline(cage)) {
@@ -2353,11 +2449,11 @@ class _CagePainter extends CustomPainter {
     }
     if (total < 6) return;
 
-    // 虚线周期取「一格的 1/5 上下」，再按周长取整 —— 每段长短一致
-    final ideal = (cell / 5).clamp(4.0, 9.0).toDouble();
-    final count = math.max(4, (total / ideal).round());
+    // 虚线周期取「一格的 1/7 上下」（短划密排，像参考图那样），再按周长取整
+    final ideal = (cell / 7).clamp(3.0, 6.5).toDouble();
+    final count = math.max(6, (total / ideal).round());
     final period = total / count;
-    final dash = period * 0.58;
+    final dash = period * 0.5;
 
     var acc = 0.0;
     var di = 0;
@@ -2402,10 +2498,10 @@ class _CagePainter extends CustomPainter {
         text: TextSpan(
           text: '${cage.sum}',
           style: TextStyle(
-            fontSize: cell * 0.25,
+            fontSize: cell * 0.22,
             height: 1.0,
-            color: lineColor,
-            fontWeight: FontWeight.w800,
+            color: sumColor,
+            fontWeight: FontWeight.w600,
           ),
         ),
         textDirection: TextDirection.ltr,
@@ -2429,7 +2525,39 @@ class _CagePainter extends CustomPainter {
       !identical(old.cages, cages) ||
       old.cell != cell ||
       old.lineColor != lineColor ||
-      old.bgColor != bgColor;
+      old.bgColor != bgColor ||
+      old.sumColor != sumColor;
+}
+
+/// 窗口数独的 4 个 3×3 窗口边框（浅蓝圆角框，压在格子上）。
+class _WindowPainter extends CustomPainter {
+  final double cell;
+  final Color color;
+  _WindowPainter({required this.cell, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2;
+    for (final t in WindokuRules.windowTops) {
+      final rect = Rect.fromLTWH(
+        t[1] * cell + 1.0,
+        t[0] * cell + 1.0,
+        3 * cell - 2.0,
+        3 * cell - 2.0,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(3.5)),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WindowPainter old) =>
+      old.cell != cell || old.color != color;
 }
 
 class _JigsawPainter extends CustomPainter {
@@ -2448,9 +2576,8 @@ class _JigsawPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = lineColor
-      // v2.2.0：标准宫粗线被压掉之后，锯齿宫界就是唯一的「宫」边界，
-      // 加粗让它比细网格明显一截（细网格 0.5）。v2.3.2 再提到 2.4。
-      ..strokeWidth = 2.4
+      // v2.3.8：参考截图里宫界是浅蓝细线（1.5~1.8px），不再是 2.4px 深色
+      ..strokeWidth = 1.8
       ..style = PaintingStyle.stroke;
     // v1.9.0+28 修「锯齿数独看不到锯齿」：
     // 原来每段宫界线都套了 `if (!filledMask[r][c])` —— 只要这格**有提示数字**

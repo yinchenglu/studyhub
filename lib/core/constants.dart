@@ -342,7 +342,7 @@ class Defaults {
 ///             在 App 启动时如果两个不一致，会在控制台 + 调试页打印告警。
 ///             升级只需：① 改这里的字符串 ② 改 pubspec.yaml。
 ///             也可跑 `python tools/bump_version.py 1.10.0` 一次同步。
-const String kAppVersion = '2.3.7';
+const String kAppVersion = '2.3.8';
 
 /// pubspec.yaml 的 version（去掉 +N 之后必须等于 kAppVersion）。
 /// 启动时会在 main() 里 assert，保证两个一致。
@@ -350,4 +350,4 @@ const String kAppVersion = '2.3.7';
 ///
 /// v1.9.0+17 修：bump_version.py 之前**只改 kAppVersion 不改 kPubspecVersion**，
 /// 会让启动 assert 失败。这里把 bump_version.py 一起修了（见 bump_version.py）。
-const String kPubspecVersion = '2.3.7+62';
+const String kPubspecVersion = '2.3.8+63';
