@@ -1725,8 +1725,10 @@ class _SudokuGrid extends StatelessWidget {
 
     // 颜色
     final scheme = Theme.of(context).colorScheme;
-    final lineColor = scheme.outlineVariant;
-    final thickColor = scheme.outline;
+    // v2.3.9（用户：「参考图片，改成蓝色线条」）：细网格浅蓝、
+    // 宫界/外框深一点的蓝，整盘线条统一蓝色系（对齐参考截图）。
+    final lineColor = scheme.primary.withValues(alpha: 0.32);
+    final thickColor = scheme.primary.withValues(alpha: 0.70);
     final bg = scheme.surface;
     final hintColor = scheme.primary.withValues(alpha: 0.18);
     final errColor = const Color(0xFFB23A3A);
@@ -1973,9 +1975,10 @@ class _SudokuGrid extends StatelessWidget {
             : Text(
                 '$v',
                 style: TextStyle(
-                  fontSize: cell * 0.58,
-                  // 相同数字也加粗一点，底色之外再给一层视觉区分
-                  fontWeight: (isSameNum || isSel) ? FontWeight.w900 : FontWeight.w600,
+                  // v2.3.9（用户：「字体再大一点，不用加粗」）：0.58 → 0.66，
+                  // 字重统一常规，选中/同数靠实底反白区分，不再靠加粗。
+                  fontSize: cell * 0.66,
+                  fontWeight: FontWeight.w400,
                   // v2.3.7：选中格是主色实底 → 数字必须反白，否则黑字糊在
                   // 深底上看不清；相同数字格用 onSurface 压住加重的底色。
                   color: (_isIllegal || checkedWrong)
@@ -2016,6 +2019,10 @@ class _SudokuGrid extends StatelessWidget {
             lineColor: scheme.primary.withValues(alpha: 0.62),
             bgColor: scheme.surface,
             sumColor: scheme.onSurfaceVariant,
+            // v2.3.9（用户：「点击某个格子后，他所在的虚线框也突出显示」）
+            selR: _selR,
+            selC: _selC,
+            highlightColor: scheme.primary,
           ),
         ),
       ),
@@ -2254,7 +2261,13 @@ const List<_JigsawTemplate> _kJigsawTemplates = [
 (List<List<int>>, SudokuBoard) _buildJigsaw(math.Random rng) {
   final tpl = _kJigsawTemplates[rng.nextInt(_kJigsawTemplates.length)];
   final idMap = List<int>.generate(9, (i) => i)..shuffle(rng);
-  final digitMap = List<int>.generate(10, (i) => i)..shuffle(rng);
+  // v2.3.9 根因修复：老写法把 0 也卷进洗牌 —— 0 在棋盘里是「空格」，
+  // 只要 1~9 里有任何一个被映到 0，full 板就带空格，isValidSolution
+  // 必失败，出题分支随即静默退回 StandardRules（标准 3×3 宫）。
+  // 这就是「刷好多次也出不来锯齿」的真正原因：约 88% 的随机种子都中招，
+  // 只有 digitMap 恰好把 0 留在 0 号位的那 ~12% 才能看到锯齿。
+  // 修法：0 号位固定不用，只洗 1~9。
+  final digitMap = [0, ...List<int>.generate(9, (i) => i + 1)..shuffle(rng)];
   final transpose = rng.nextBool();
   final flipV = rng.nextBool();
   final flipH = rng.nextBool();
@@ -2286,6 +2299,11 @@ class _CagePainter extends CustomPainter {
   final Color bgColor;
   /// 笼和数字的颜色（参考截图里是灰色小字，跟虚线同色会看不清）
   final Color sumColor;
+  /// v2.3.9：选中格坐标（-1 = 没选中）；选中格所在的笼整体突出显示
+  final int selR;
+  final int selC;
+  /// 选中笼的强调色（填充 + 加粗描边都用它）
+  final Color highlightColor;
   _CagePainter({
     required this.cageId,
     required this.cages,
@@ -2293,6 +2311,9 @@ class _CagePainter extends CustomPainter {
     required this.lineColor,
     required this.bgColor,
     required this.sumColor,
+    this.selR = -1,
+    this.selC = -1,
+    required this.highlightColor,
   });
 
   // v2.3.7（用户第 1 条：「相邻虚线框不能共用虚线，要各是各，
@@ -2326,12 +2347,41 @@ class _CagePainter extends CustomPainter {
     // 缩进量：格宽 40px 时约 2px
     final inset = (cell * 0.05).clamp(1.0, 2.0).toDouble();
 
+    // v2.3.9：选中格所在的笼 —— 先垫一层淡色填充（画在虚线下面），
+    // 等所有笼的虚线画完后，再把这个笼的轮廓用更粗的实线描一遍。
+    final selId = (selR >= 0 && selR < cageId.length && selC >= 0 && selC < cageId.length)
+        ? cageId[selR][selC]
+        : -1;
+    final selCage = (selId >= 0 && cages.containsKey(selId)) ? cages[selId] : null;
+    if (selCage != null) {
+      final fill = Paint()..color = highlightColor.withValues(alpha: 0.12);
+      for (final cl in selCage.cells) {
+        canvas.drawRect(
+          Rect.fromLTWH(cl[1] * cell, cl[0] * cell, cell, cell),
+          fill,
+        );
+      }
+    }
+
     cages.forEach((_, cage) {
       for (final loop in _outline(cage)) {
         final pts = _shrink(loop, inset);
         if (pts.length >= 3) _dashLoop(canvas, paint, pts);
       }
     });
+
+    // 选中笼描加粗实线（其它笼仍是细虚线，一眼分出「我点的是这个笼」）
+    if (selCage != null) {
+      final hi = Paint()
+        ..color = highlightColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..strokeCap = StrokeCap.butt;
+      for (final loop in _outline(selCage)) {
+        final pts = _shrink(loop, inset);
+        if (pts.length >= 3) _dashLoop(canvas, hi, pts);
+      }
+    }
 
     _paintSums(canvas, inset);
   }
@@ -2526,7 +2576,10 @@ class _CagePainter extends CustomPainter {
       old.cell != cell ||
       old.lineColor != lineColor ||
       old.bgColor != bgColor ||
-      old.sumColor != sumColor;
+      old.sumColor != sumColor ||
+      old.selR != selR ||
+      old.selC != selC ||
+      old.highlightColor != highlightColor;
 }
 
 /// 窗口数独的 4 个 3×3 窗口边框（浅蓝圆角框，压在格子上）。
