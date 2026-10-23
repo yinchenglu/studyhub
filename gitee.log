@@ -1,0 +1,17 @@
+→ 已读到 GITEE_TOKEN（32 个字符）
+→ 校验令牌
+  Gitee 账号：yin-cheng-lu
+→ 使用指定仓库 yin-cheng-lu/StudyHub
+  已存在：yin-cheng-lu/StudyHub（私有=False）
+  仓库：yin-cheng-lu/StudyHub
+→ 推分支 main（源：refs/remotes/origin/main）和标签
+→ 处理 Gitee 发行版 v100（手动指定 GITEE_RELEASE_TAG）
+  已创建发行版 #1232116
+  上传 app-arm64-v8a-release.apk（21.1 MB）
+    完成，用时 176 秒
+    -> https://gitee.com/yin-cheng-lu/StudyHub/releases/download/v100/app-arm64-v8a-release.apk
+  上传 app-armeabi-v7a-release.apk（21.0 MB）
+    完成，用时 575 秒
+    -> https://gitee.com/yin-cheng-lu/StudyHub/releases/download/v100/app-armeabi-v7a-release.apk
+  回读确认：2 个附件都在
+✔ Gitee 同步完成：https://gitee.com/yin-cheng-lu/StudyHub/releases/tag/v100
