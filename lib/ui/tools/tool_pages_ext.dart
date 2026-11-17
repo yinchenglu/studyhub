@@ -772,6 +772,19 @@ class _LevelHelperPageState extends State<LevelHelperPage> {
       _busy = true;
       _err = null;
     });
+    // v2.4.0（用户：「翻转相机到自拍相机，没有画面」）
+    //
+    // 换镜头前先把旧控制器**彻底关掉**（dispose 是异步的，必须 await）。
+    // 一部分机型同一时刻只允许一个相机客户端：旧的还占着就去开新的，
+    // 新纹理拿不到帧 —— 表现正是「切到前置后画面全黑、也不报错」。
+    // 先 await dispose 再 initialize，资源干净释放，系统也有时间回收。
+    final old = _cam;
+    _cam = null;
+    if (old != null) {
+      try {
+        await old.dispose();
+      } catch (_) {}
+    }
     CameraController? c;
     try {
       final st = await Permission.camera.request();
@@ -806,12 +819,10 @@ class _LevelHelperPageState extends State<LevelHelperPage> {
         await c.dispose();
         return;
       }
-      final old = _cam;
       setState(() {
         _cam = c;
         _busy = false;
       });
-      if (old != null && old != c) old.dispose();
     } catch (e) {
       if (c != null) {
         try {
@@ -1609,7 +1620,6 @@ class _MorsePageState extends State<MorsePage> {
   bool _toMorse = true;
   Timer? _flashTimer;
   bool _flashing = false;
-  bool _light = false;
 
   static const _table = <String, String>{
     'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.',
@@ -1673,14 +1683,15 @@ class _MorsePageState extends State<MorsePage> {
     }
   }
 
-  /// 用整屏亮暗把摩斯码「闪」出来
-  void _flash() {
+  /// v2.4.0（用户：「闪光演示，改成相机的闪光灯」）：
+  /// 老版本用整屏白光闪 —— 白天根本看不见，还费电伤眼。
+  /// 现在改用相机闪光灯（TorchLight，跟「急救手电」同一插件）。
+  /// 点划节奏不变：点 = 亮 140ms，划 = 亮 3×140ms，单位间暗 140ms。
+  Future<void> _flash() async {
     if (_flashing) {
       _flashTimer?.cancel();
-      setState(() {
-        _flashing = false;
-        _light = false;
-      });
+      setState(() => _flashing = false);
+      await _torch(false);
       keepScreenOn(false);
       return;
     }
@@ -1701,51 +1712,63 @@ class _MorsePageState extends State<MorsePage> {
       timeline.add(false);
       timeline.add(false);
     }
-    setState(() {
-      _flashing = true;
-      _light = false;
-    });
+    setState(() => _flashing = true);
     keepScreenOn(true);
-    var i = 0;
-    void tick() {
-      if (!mounted) return;
-      if (i >= timeline.length) {
-        _flashTimer?.cancel();
-        setState(() {
-          _flashing = false;
-          _light = false;
-        });
-        keepScreenOn(false);
-        return;
-      }
-      setState(() => _light = !_light);
-      _flashTimer = Timer(const Duration(milliseconds: 140), tick);
-      i++;
+    for (final on in timeline) {
+      if (!mounted || !_flashing) break;
+      await _torch(on);
+      // 等待也做成可打断的：Timer 只负责给 stop 一个挂入口，
+      // 真正的节拍用 Future.delayed 逐段走，中途点屏幕能立即退出。
+      await Future<void>.delayed(const Duration(milliseconds: 140));
     }
+    if (!mounted) return;
+    _flashTimer?.cancel();
+    if (_flashing) setState(() => _flashing = false);
+    await _torch(false);
+    keepScreenOn(false);
+  }
 
-    _flashTimer = Timer(const Duration(milliseconds: 140), tick);
+  Future<void> _torch(bool on) async {
+    try {
+      if (on) {
+        await TorchLight.enableTorch();
+      } else {
+        await TorchLight.disableTorch();
+      }
+    } catch (_) {
+      // 没有闪光灯的设备（部分平板）：静默忽略，画面上还有全屏提示页
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: _light ? Colors.white : null,
+      // v2.4.0：闪光改走相机闪光灯，整屏白底闪烁整个拿掉
       appBar: _flashing
           ? null
           : AppBar(
               title: const Text('摩斯电码'),
-              actions: [
-                IconButton(
-                  tooltip: '用屏幕闪光把电码闪出来',
-                  onPressed: _flash,
-                  icon: const Icon(Icons.flash_on),
-                ),
-              ],
+              // v2.4.0（用户：「去掉右上角的闪光按钮」）：入口只留下面的按钮
             ),
       body: _flashing
-          ? GestureDetector(onTap: _flash, child: const SizedBox.expand())
-          : ListView(
+          ? GestureDetector(
+              onTap: _flash,
+              child: Container(
+                color: Colors.black,
+                alignment: Alignment.center,
+                child: Text(
+                  '闪光灯发报中…\n点屏幕任意位置停止',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.8), fontSize: 14, height: 1.8),
+                ),
+              ),
+            )
+          : SafeArea(
+              // v2.4.0（用户：「下面的文字被手机的3个虚拟按键遮挡了」）：
+              // 裸 Scaffold，edge-to-edge 下导航条浮在内容上，补 SafeArea。
+              top: false,
+              child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
               children: [
                 SegmentedButton<bool>(
@@ -1780,8 +1803,8 @@ class _MorsePageState extends State<MorsePage> {
                     Expanded(
                       child: OutlinedButton.icon(
                         onPressed: _output.isEmpty ? null : _flash,
-                        icon: const Icon(Icons.flash_on, size: 18),
-                        label: const Text('闪光演示'),
+                        icon: const Icon(Icons.highlight, size: 18),
+                        label: const Text('闪光灯演示'),
                       ),
                     ),
                   ],
@@ -1835,6 +1858,7 @@ class _MorsePageState extends State<MorsePage> {
                   style: TextStyle(fontSize: 12.5, height: 1.9, color: scheme.onSurfaceVariant),
                 ),
               ],
+            ),
             ),
     );
   }

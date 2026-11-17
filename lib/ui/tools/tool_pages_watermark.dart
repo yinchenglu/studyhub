@@ -1381,13 +1381,14 @@ class _WatermarkCameraPageState extends State<WatermarkCameraPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // v2.3.2：把方向**锁死竖屏**。用户点名「旋转手机时系统还会弹那个
-    // 转横屏的小按钮」—— 那是系统的旋转建议（Android 在「方向锁定开着 +
-    // 应用允许跟随系统旋转」时才会弹）。这一页本来就一步都不转屏
-    // （横屏只是水印换摆法），锁死竖屏既不影响任何功能，又让系统
-    // 彻底不再弹那个建议按钮。退出时恢复 []（跟随系统）。
-    SystemChrome.setPreferredOrientations(
-        <DeviceOrientation>[DeviceOrientation.portraitUp]);
+    // v2.4.0（用户：「横屏的时候，照片还是竖屏显示的，系统还是认为这是竖屏」）
+    //
+    // v2.3.2 曾把方向锁死竖屏（为防系统的旋转建议小按钮），但那样手机
+    // 物理横过来拍时，取景、照片全是竖屏的 —— 用户明确不要。
+    // 现在方向**解锁**：手机转过去（系统开了自动旋转时），取景画面、
+    // 按钮、水印整体跟着转，拍出来的照片也是真横屏。
+    // 「水印横屏摆法」按钮保留：自动旋转关着、想竖持手机拍横画面时用。
+    SystemChrome.setPreferredOrientations(<DeviceOrientation>[]);
     _initCam();
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _shooting) return;

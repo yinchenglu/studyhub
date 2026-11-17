@@ -129,13 +129,19 @@ class _UnitConvertPageState extends State<UnitConvertPage> {
           ),
         ),
       ),
-      body: _cat == _kinIndex
-          ? const _KinBody()
-          : _cat == _rmbIndex
-              ? const _RmbBody()
-              : _cat == _radixIndex
-                  ? const _RadixBody()
-                  : _unitBody(scheme),
+      // v2.4.0（用户：「下面的字看不到了，被手机的3个虚拟按键遮住了」）：
+      // 这个页面用的是裸 Scaffold（没走 ToolScaffold），edge-to-edge 下
+      // 三键导航条浮在 body 上。包一层 SafeArea（只要 bottom）。
+      body: SafeArea(
+        top: false,
+        child: _cat == _kinIndex
+            ? const _KinBody()
+            : _cat == _rmbIndex
+                ? const _RmbBody()
+                : _cat == _radixIndex
+                    ? const _RadixBody()
+                    : _unitBody(scheme),
+      ),
     );
   }
 

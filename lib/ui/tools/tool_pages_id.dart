@@ -404,9 +404,17 @@ class _IdCardPageState extends State<IdCardPage> with SingleTickerProviderStateM
           onPressed: _showHelp,
         ),
       ],
-      bottom: TabBar(
-        controller: _tab,
-        tabs: const [Tab(text: '单个查询'), Tab(text: '批量查询')],
+      // v2.4.0（用户：「下面的单个，批量按钮增加底色，方便识别」）：
+      // 给 TabBar 铺一层底色 + 选中态主色，跟背景区分开。
+      bottom: Container(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.65),
+        child: TabBar(
+          controller: _tab,
+          labelColor: Theme.of(context).colorScheme.primary,
+          unselectedLabelColor: Theme.of(context).colorScheme.onSurfaceVariant,
+          indicatorColor: Theme.of(context).colorScheme.primary,
+          tabs: const [Tab(text: '单个查询'), Tab(text: '批量查询')],
+        ),
       ),
       child: _regErr != null
           ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Text('区划码表读不出来：$_regErr')))
@@ -519,7 +527,10 @@ class _IdCardPageState extends State<IdCardPage> with SingleTickerProviderStateM
             _kv('市 / 州', r.city.isEmpty ? '—' : r.city),
             _kv('区 / 县', r.dist.isEmpty ? '—' : r.dist),
             _kv('区划码', r.area),
-            _kv('出生日期', r.age == null ? r.birth : '${r.birth}（$r.age 岁）'),
+            // v2.4.0 修复：原来写成 '$r.age 岁' —— Dart 的 $ 插值只取
+            // 标识符本身，".age" 被当成字面文字，显示出来是
+            // 「Instance of 'IdInfo'.age 岁」。必须写 ${r.age}。
+            _kv('出生日期', r.age == null ? r.birth : '${r.birth}（${r.age} 岁）'),
             _kv('性别', r.gender),
             _kv('校验位', r.checkOk ? '${r.given} ✓ 通过' : '${r.given} ✗ 应为「${r.want}」'),
             if (r.isOld15) _kv('补全后', r.id18),
@@ -528,13 +539,10 @@ class _IdCardPageState extends State<IdCardPage> with SingleTickerProviderStateM
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () => copyText(
-                      context,
-                      '${r.input}\t${r.addr}\t${r.birth}\t${r.gender}\t'
-                      '${r.prov}\t${r.city}\t${r.dist}\t${r.checkOk ? '校验通过' : '校验位不符'}',
-                    ),
+                    // v2.4.0（用户：「只复制身份证号码和归属地」）
+                    onPressed: () => copyText(context, '${r.input}\t${r.addr}'),
                     icon: const Icon(Icons.copy_all, size: 18),
-                    label: const Text('复制全部结果'),
+                    label: const Text('复制号码和归属地'),
                   ),
                 ),
               ],
@@ -613,13 +621,11 @@ class _IdCardPageState extends State<IdCardPage> with SingleTickerProviderStateM
                   style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
               const Spacer(),
               TextButton.icon(
+                // v2.4.0（用户：「只复制身份证号码和归属地」）
                 onPressed: () => copyText(
                   context,
                   _list
-                      .map((e) => e.ok
-                          ? '${e.input}\t${e.addr}\t${e.birth}\t${e.gender}\t'
-                              '${e.prov}\t${e.city}\t${e.dist}\t${e.checkOk ? '校验通过' : '校验位不符'}'
-                          : '${e.input}\t${e.err}')
+                      .map((e) => e.ok ? '${e.input}\t${e.addr}' : '${e.input}\t${e.err}')
                       .join('\n'),
                 ),
                 icon: const Icon(Icons.copy_all, size: 16),

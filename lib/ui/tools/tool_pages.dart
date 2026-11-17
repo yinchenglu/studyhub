@@ -685,6 +685,19 @@ class _ProtractorPageState extends State<ProtractorPage> {
       _busy = true;
       _err = null;
     });
+    // v2.4.0（用户：「翻转相机到自拍相机，没有画面」）
+    //
+    // 换镜头前先把旧控制器**彻底关掉**（dispose 是异步的，必须 await）。
+    // 一部分机型同一时刻只允许一个相机客户端：旧的还占着就去开新的，
+    // 新纹理拿不到帧 —— 表现正是「切到前置后画面全黑、也不报错」。
+    // 先 await dispose 再 initialize，资源干净释放，系统也有时间回收。
+    final old = _cam;
+    _cam = null;
+    if (old != null) {
+      try {
+        await old.dispose();
+      } catch (_) {}
+    }
     CameraController? c;
     try {
       final st = await Permission.camera.request();
@@ -726,13 +739,10 @@ class _ProtractorPageState extends State<ProtractorPage> {
         await c.dispose();
         return;
       }
-      // 换镜头时可能上一个还没销毁，这里统一收掉
-      final old = _cam;
       setState(() {
         _cam = c;
         _busy = false;
       });
-      if (old != null && old != c) old.dispose();
     } catch (e) {
       // 初始化失败也要把半成品控制器关掉，不然相机资源会一直被占着
       if (c != null) {

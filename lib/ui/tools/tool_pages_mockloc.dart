@@ -364,10 +364,7 @@ class _MockLocPageState extends State<MockLocPage> with WidgetsBindingObserver {
                       ? 'Android 只允许「被选为模拟位置信息应用」的 App 修改定位，这一关已经过了 —— '
                           '填好坐标点「开始模拟」就行。'
                       : 'Android 只允许「被选为模拟位置信息应用」的 App 修改定位。\n'
-                          '路径：设置 → 开发者选项 → 选择模拟位置信息应用 → 学聚。\n\n'
-                          '列表里看不到「学聚」怎么办：说明装的是旧版本 —— '
-                          '旧包没向系统报名，装 1.9.0+32 及以后的版本就会有；'
-                          '装完重新打开一次开发者选项页面即可。',
+                          '路径：设置 → 开发者选项 → 选择模拟位置信息应用 → 学聚。\n\n',
                   style: TextStyle(
                     fontSize: 12.5,
                     height: 1.6,

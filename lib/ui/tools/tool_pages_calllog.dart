@@ -28,8 +28,9 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
   static const MethodChannel _ch = MethodChannel('studyhub/calllog');
 
   final TextEditingController _numbers = TextEditingController();
-  final TextEditingController _gapMin = TextEditingController(text: '1');
-  final TextEditingController _gapMax = TextEditingController(text: '3');
+  // v2.4.0（用户：「默认间隔改成3-5分钟」）
+  final TextEditingController _gapMin = TextEditingController(text: '3');
+  final TextEditingController _gapMax = TextEditingController(text: '5');
   final TextEditingController _durMin = TextEditingController(text: '30');
   final TextEditingController _durMax = TextEditingController(text: '60');
 
@@ -44,6 +45,13 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
   bool _connected = true;
 
   DateTime _start = DateTime.now();
+
+  /// v2.4.0：随机未接（默认开）—— 随机挑 15%~20% 的号码，
+  /// 在正式通话前补 1~3 条「未接」，并把该号码的正式通话往后挪 3~5 个顺序。
+  bool _missed = true;
+
+  /// v2.4.0：号码随机顺序（默认关）
+  bool _shuffle = false;
 
   /// -1 = 默认卡；否则是 sims 的下标
   int _simIndex = -1;
@@ -102,17 +110,29 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
 
   // ------------------------------------------------------------------ 号码
 
-  /// 从文本框里解析号码：换行 / 逗号 / 分号 分隔都认，首位 + 和数字保留。
+  /// 从文本框里解析号码。
+  ///
+  /// v2.4.0（用户：「要能自动识别每行的电话号码，自动去除电话号码
+  /// 同一行的汉字和符号」）：按行扫描，每行抓**第一个 6 位以上的数字串**
+  /// （数字之间允许夹空格 / 横线 / 全角横线），再把夹的符号去掉 ——
+  /// 「张三 138 0013 8000 办公」「13800138000（移动）」都能认出
+  /// 13800138000。行里没有像样的数字串就整行只留数字兜底。
   List<String> _parseNumbers() {
-    final raw = _numbers.text
-        .split(RegExp(r'[\n,，;；]+'))
-        .map((e) => e.trim().replaceAll(RegExp(r'[\s-]'), ''))
-        .where((e) => e.isNotEmpty)
-        .toList();
     final seen = <String>{};
     final out = <String>[];
-    for (final n in raw) {
-      if (seen.add(n)) out.add(n);
+    final lines = _numbers.text.split(RegExp(r'[\n,，;；]+'));
+    for (final line in lines) {
+      final t = line.trim();
+      if (t.isEmpty) continue;
+      final m = RegExp(r'\d[\d\s\-－—]{5,}').firstMatch(t);
+      final String num;
+      if (m != null) {
+        num = m.group(0)!.replaceAll(RegExp(r'[\s\-－—]'), '');
+      } else {
+        num = t.replaceAll(RegExp(r'[^0-9+]'), '');
+      }
+      if (num.isEmpty) continue;
+      if (seen.add(num)) out.add(num);
     }
     return out;
   }
@@ -192,10 +212,15 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
         return;
       }
     }
-    final nums = _parseNumbers();
+    var nums = _parseNumbers();
     if (nums.isEmpty) {
       setState(() => _err = '先在「通话号码」里填号码，或用「从通讯录导入」');
       return;
+    }
+
+    // v2.4.0：号码随机顺序（默认关，按输入顺序生成）
+    if (_shuffle) {
+      nums.shuffle(Random());
     }
 
     // type：1 呼入 / 2 呼出 / 3 未接
@@ -210,17 +235,70 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
         ? ((_sims[_simIndex]['id'] as num?)?.toInt() ?? -1)
         : -1;
 
+    // ---------- v2.4.0：随机未接（默认开） ----------
+    // 随机挑 15%~20% 的号码，每个补 1~3 条「未接」记录；这些号码的
+    // 正式通话往后挪 3~5 个顺序（等别的号码先打）。
+    // 生成顺序表：每项 = (号码, 是否未接)。
+    final extra = <String, int>{};
+    if (_missed) {
+      final p = 0.15 + Random().nextDouble() * 0.05; // 15%~20%
+      for (final n in nums) {
+        if (Random().nextDouble() < p) {
+          extra[n] = 1 + Random().nextInt(3); // 1~3 条
+        }
+      }
+    }
+    final plan = <({String num, bool missed})>[];
+    // 延迟队列：正式通话等 3~5 个「位置」再排进去
+    final waiting = <({String num, int left})>[];
+    void appendPlan(String num, bool missed) {
+      plan.add((num: num, missed: missed));
+      // 每排进一条，等待中的正式通话就近一步，到点的直接排入
+      for (var i = 0; i < waiting.length;) {
+        final w = waiting[i];
+        if (w.left <= 1) {
+          waiting.removeAt(i);
+          plan.add((num: w.num, missed: false));
+        } else {
+          waiting[i] = (num: w.num, left: w.left - 1);
+          i++;
+        }
+      }
+    }
+
+    for (final n in nums) {
+      final k = extra[n] ?? 0;
+      for (var j = 0; j < k; j++) {
+        appendPlan(n, true); // 未接在前
+      }
+      if (k > 0) {
+        // 正式通话往后排 3~5 个顺序（在下一次 appendPlan 时倒数）
+        waiting.add((num: n, left: 3 + Random().nextInt(3)));
+      } else {
+        appendPlan(n, false);
+      }
+    }
+    // 号码太少时可能等不到倒计时结束，收尾全部排入
+    for (final w in waiting) {
+      plan.add((num: w.num, missed: false));
+    }
+
     final items = <Map<String, dynamic>>[];
     var cursor = _start.millisecondsSinceEpoch;
-    for (var i = 0; i < nums.length; i++) {
+    for (var i = 0; i < plan.length; i++) {
       if (i > 0) {
-        cursor += _rangeInt(_gapMin, _gapMax, 1, 3) * 60 * 1000;
+        cursor += _rangeInt(_gapMin, _gapMax, 3, 5) * 60 * 1000;
       }
-      final dur = _connected ? _rangeInt(_durMin, _durMax, 30, 60) : 0;
+      final e = plan[i];
+      final dur = e.missed ? 0 : (_connected ? _rangeInt(_durMin, _durMax, 30, 60) : 0);
+      // v2.4.0（用户：「秒/微秒默认是0，改成随机」）：每条记录的秒和
+      // 毫秒都随机 —— 不再全是「xx:xx:00.000」这种一眼假的整齐时间。
+      // 随机量最大 60s，远小于最小间隔 3 分钟，顺序不会乱。
+      final ts = cursor + Random().nextInt(60) * 1000 + Random().nextInt(1000);
       items.add({
-        'number': nums[i],
-        'type': type,
-        'date': cursor,
+        'number': e.num,
+        'type': e.missed ? 3 : type,
+        'date': ts,
         'duration': dur,
         if (simId >= 0) 'simId': simId,
       });
@@ -237,9 +315,11 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
       final ok = (r?['ok'] as num?)?.toInt() ?? 0;
       final fail = (r?['fail'] as num?)?.toInt() ?? 0;
       final errs = (r?['errors'] as List?)?.map((e) => '$e').toList() ?? const <String>[];
+      final missedCount = plan.where((e) => e.missed).length;
       setState(() {
         _busy = false;
         _result = '已写入 $ok 条通话记录' +
+            (_missed && missedCount > 0 ? '（含随机未接 $missedCount 条）' : '') +
             (fail > 0 ? '，$fail 条失败' : '') +
             (errs.isEmpty ? '' : '\n失败原因：${errs.join('；')}');
       });
@@ -359,6 +439,35 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
               ),
             ),
 
+          // ---------- v2.4.0：随机未接 / 随机顺序 ----------
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            value: _missed,
+            onChanged: (v) => setState(() => _missed = v),
+            activeColor: scheme.primary,
+            title: const Text('随机未接（默认开）',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+            subtitle: Text(
+              '随机挑 15%~20% 的号码，在正式通话前补 1~3 条「未接」，'
+              '并把该号码的正式通话往后挪 3~5 个顺序。',
+              style: TextStyle(fontSize: 11.5, height: 1.5, color: scheme.onSurfaceVariant),
+            ),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            value: _shuffle,
+            onChanged: (v) => setState(() => _shuffle = v),
+            activeColor: scheme.primary,
+            title: const Text('号码随机顺序（默认关）',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+            subtitle: Text(
+              '打开后打乱号码先后顺序；关闭则按输入顺序依次生成。',
+              style: TextStyle(fontSize: 11.5, height: 1.5, color: scheme.onSurfaceVariant),
+            ),
+          ),
+
           const SizedBox(height: 14),
 
           // ---------- 号码 ----------
@@ -377,7 +486,7 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
             keyboardType: TextInputType.multiline,
             onChanged: (_) => setState(() {}),
             decoration: const InputDecoration(
-              hintText: '一行一个号码，也可以用逗号分隔\n例如：\n13800138000\n13900139000',
+              hintText: '一行一个号码；同一行的姓名、备注、符号会自动去掉\n例如：\n张三 138 0013 8000 办公\n13900139000（移动）',
               border: OutlineInputBorder(),
               isDense: true,
             ),
@@ -506,7 +615,8 @@ class _CallLogToolPageState extends State<CallLogToolPage> {
           const SizedBox(height: 18),
           Text(
             '说明：写进系统通话记录后，可在「电话 → 通话记录」里看到。'
-            '生成的记录与真实记录在数据库层面无法区分，请自行判断使用场合。',
+            '生成的记录与真实记录在数据库层面无法区分，请自行判断使用场合。'
+            '每条记录的秒和毫秒会随机抖动，不会全是整分整秒。',
             style: TextStyle(fontSize: 11.5, height: 1.7, color: scheme.onSurfaceVariant),
           ),
         ],
